@@ -206,35 +206,156 @@ def extract_drawing_numbers(text: str, debug=False) -> List[str]:
     return drawing_numbers
 
 
-def determine_drawing_number_types(drawing_numbers: List[Tuple[str, Tuple[float, float]]]) -> Dict[str, str]:
+def calculate_distance(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:
     """
-    座標に基づいて図番と流用元図番を判別する
+    2点間の距離を計算する
+
+    Args:
+        coord1: (X座標, Y座標)
+        coord2: (X座標, Y座標)
+
+    Returns:
+        float: ユークリッド距離
+    """
+    import math
+    dx = coord1[0] - coord2[0]
+    dy = coord1[1] - coord2[1]
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def determine_drawing_number_types(
+    drawing_numbers: List[Tuple[str, Tuple[float, float]]],
+    all_labels: Optional[List[Tuple[str, Tuple[float, float]]]] = None,
+    filename: Optional[str] = None,
+    debug: bool = False
+) -> Dict[str, str]:
+    """
+    ラベルと座標に基づいて図番と流用元図番を判別する（改善版）
+
+    判別ルール:
+    1. ファイル名と一致する図面番号を「図番」とする
+    2. 「流用元図番」ラベルの近くにある図面番号を「流用元図番」とする
+    3. 「DWG No.」ラベルの近くにある図面番号を「図番」として確認
+    4. フォールバック: 座標ベース（右下が図番、左上が流用元図番）
 
     Args:
         drawing_numbers: (図面番号, (X座標, Y座標))のリスト
+        all_labels: (ラベル, (X座標, Y座標))のリスト（全テキスト）
+        filename: ファイル名（拡張子なし）
+        debug: デバッグ情報を出力するかどうか
 
     Returns:
         dict: {'main_drawing': '図番', 'source_drawing': '流用元図番'}
     """
-    if len(drawing_numbers) < 2:
-        # 図面番号が1つまたは0個の場合
-        if len(drawing_numbers) == 1:
-            return {'main_drawing': drawing_numbers[0][0], 'source_drawing': None}
-        else:
-            return {'main_drawing': None, 'source_drawing': None}
+    if len(drawing_numbers) == 0:
+        return {'main_drawing': None, 'source_drawing': None}
 
-    # 座標でソート（右下が図番、それ以外が流用元図番）
-    # 一般的に図番は図面の右下に配置される
-    sorted_numbers = sorted(drawing_numbers, key=lambda x: (x[1][0] + x[1][1]), reverse=True)
+    if len(drawing_numbers) == 1:
+        return {'main_drawing': drawing_numbers[0][0], 'source_drawing': None}
 
-    # 最も右下にあるものを図番とする
-    main_drawing = sorted_numbers[0][0]
+    main_drawing = None
+    source_drawing = None
 
-    # 残りの中で最も座標値が大きいものを流用元図番とする
-    if len(sorted_numbers) > 1:
-        source_drawing = sorted_numbers[1][0]
-    else:
-        source_drawing = None
+    # ファイル名から推定される図番を取得
+    file_stem = None
+    if filename:
+        from pathlib import Path
+        file_stem = Path(filename).stem
+
+    # 1. ファイル名と一致する図面番号を図番とする
+    if file_stem:
+        for dn, coords in drawing_numbers:
+            if dn == file_stem or dn in file_stem or file_stem in dn:
+                main_drawing = dn
+                if debug:
+                    print(f"図番をファイル名から判別: {main_drawing}")
+                break
+
+    # 2. ラベルベースの判別（all_labelsが提供されている場合）
+    if all_labels:
+        # 「流用元図番」ラベルを探す
+        source_label_positions = []
+        for label, coords in all_labels:
+            # 「流用元図番」「流用元」などのラベルを検出
+            if '流用元図番' in label or '流用元' in label:
+                source_label_positions.append(coords)
+                if debug:
+                    print(f"流用元図番ラベル発見: '{label}' at ({coords[0]:.2f}, {coords[1]:.2f})")
+
+        # 「DWG No.」ラベルを探す
+        dwg_label_positions = []
+        for label, coords in all_labels:
+            label_upper = label.upper().replace('\n', '').replace('\r', '').replace(' ', '')
+            if 'DWG' in label_upper and 'NO' in label_upper:
+                dwg_label_positions.append(coords)
+                if debug:
+                    print(f"DWG No.ラベル発見: '{label}' at ({coords[0]:.2f}, {coords[1]:.2f})")
+
+        # 流用元図番を「流用元図番」ラベルに最も近い図面番号から判別
+        if source_label_positions:
+            min_distance = float('inf')
+            closest_dn = None
+
+            for dn, dn_coords in drawing_numbers:
+                # 既に図番として判定されている場合はスキップ
+                if main_drawing and dn == main_drawing:
+                    continue
+
+                for label_coords in source_label_positions:
+                    distance = calculate_distance(dn_coords, label_coords)
+                    if debug:
+                        print(f"  {dn} から 流用元ラベル までの距離: {distance:.2f}")
+
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_dn = dn
+
+            # 距離が妥当な範囲内（例: 100単位以内）であれば採用
+            if closest_dn and min_distance < 200:
+                source_drawing = closest_dn
+                if debug:
+                    print(f"流用元図番をラベルから判別: {source_drawing} (距離: {min_distance:.2f})")
+
+        # 図番を「DWG No.」ラベルに最も近い図面番号から確認
+        if dwg_label_positions and not main_drawing:
+            min_distance = float('inf')
+            closest_dn = None
+
+            for dn, dn_coords in drawing_numbers:
+                for label_coords in dwg_label_positions:
+                    distance = calculate_distance(dn_coords, label_coords)
+                    if debug:
+                        print(f"  {dn} から DWG No.ラベル までの距離: {distance:.2f}")
+
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_dn = dn
+
+            # 距離が妥当な範囲内であれば採用
+            if closest_dn and min_distance < 200:
+                main_drawing = closest_dn
+                if debug:
+                    print(f"図番をDWG No.ラベルから判別: {main_drawing} (距離: {min_distance:.2f})")
+
+    # 3. フォールバック: 座標ベースの判別
+    if not main_drawing or not source_drawing:
+        # 座標でソート（右下が図番、それ以外が流用元図番）
+        sorted_numbers = sorted(drawing_numbers, key=lambda x: (x[1][0] + x[1][1]), reverse=True)
+
+        if not main_drawing:
+            # 最も右下にあるものを図番とする
+            main_drawing = sorted_numbers[0][0]
+            if debug:
+                print(f"図番を座標から判別: {main_drawing} (右下)")
+
+        if not source_drawing and len(sorted_numbers) > 1:
+            # main_drawing以外で最も座標値が大きいものを流用元図番とする
+            for dn, coords in sorted_numbers[1:]:
+                if dn != main_drawing:
+                    source_drawing = dn
+                    if debug:
+                        print(f"流用元図番を座標から判別: {source_drawing}")
+                    break
 
     return {'main_drawing': main_drawing, 'source_drawing': source_drawing}
 
@@ -291,6 +412,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         # すべてのテキストエンティティを抽出（選択されたレイヤーのみ）
         labels = []
         drawing_number_candidates = []  # 図面番号候補を座標付きで保存
+        all_labels_with_coords = []  # 全ラベル（座標付き）- 図面番号判別用
 
 
         # 実際の抽出処理 - 全ての場所からエンティティを収集
@@ -371,6 +493,9 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 if clean_text:  # クリーンテキストがある場合のみ処理
                     # 図面番号抽出オプションが有効な場合の処理
                     if extract_drawing_numbers_option:
+                        # 全ラベルを座標付きで保存（図面番号判別用）
+                        all_labels_with_coords.append((clean_text, coordinates))
+
                         # クリーンテキストから図面番号を抽出
                         drawing_numbers = extract_drawing_numbers(clean_text, debug)
                         for dn in drawing_numbers:
@@ -383,9 +508,14 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         # 総抽出数を記録
         info["total_extracted"] = len(labels)
 
-        # 図面番号の判別
+        # 図面番号の判別（改善版ロジックを使用）
         if extract_drawing_numbers_option and drawing_number_candidates:
-            drawing_info = determine_drawing_number_types(drawing_number_candidates)
+            drawing_info = determine_drawing_number_types(
+                drawing_number_candidates,
+                all_labels=all_labels_with_coords,
+                filename=dxf_file,
+                debug=debug
+            )
             info["main_drawing_number"] = drawing_info['main_drawing']
             info["source_drawing_number"] = drawing_info['source_drawing']
             info["all_drawing_numbers"] = [dn[0] for dn in drawing_number_candidates]

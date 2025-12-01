@@ -61,7 +61,9 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
                 '処理レイヤー数': info.get('processed_layers', 0),
                 '全レイヤー数': info.get('total_layers', 0),
                 '図番': info.get('main_drawing_number', ''),
-                '流用元図番': info.get('source_drawing_number', '')
+                '流用元図番': info.get('source_drawing_number', ''),
+                'タイトル': info.get('title', ''),
+                'サブタイトル': info.get('subtitle', '')
             })
 
             # 妥当性チェック結果を収集
@@ -232,6 +234,15 @@ def app():
                          "\n抽出された図面番号はサマリーシートに表示されます。"
                 )
 
+                # タイトル抽出オプション
+                extract_title_option = st.checkbox(
+                    "タイトルとサブタイトルを抽出",
+                    value=False,
+                    help="DXFファイルからタイトルとサブタイトルを抽出します。"
+                         "\n「TITLE」ラベルの右側近辺、「REVISION」の下方向に配置されたテキストから抽出します。"
+                         "\n抽出されたタイトルとサブタイトルはサマリーシートに表示されます。"
+                )
+
             with col2:
                 sort_option = st.selectbox(
                     "並び替え",
@@ -275,7 +286,8 @@ def app():
                         debug=False,
                         selected_layers=selected_layers,
                         validate_ref_designators=validate_ref_designators,
-                        extract_drawing_numbers_option=extract_drawing_numbers_option
+                        extract_drawing_numbers_option=extract_drawing_numbers_option,
+                        extract_title_option=extract_title_option
                     )
 
                     # 結果のキーを一時ファイルパスから元のファイル名に置き換え
@@ -302,7 +314,8 @@ def app():
                         'filter_option': filter_option,
                         'validate_ref_designators': validate_ref_designators,
                         'sort_order': sort_value,
-                        'extract_drawing_numbers': extract_drawing_numbers_option
+                        'extract_drawing_numbers': extract_drawing_numbers_option,
+                        'extract_title': extract_title_option
                     }
                     st.session_state.results = results
 
@@ -332,6 +345,8 @@ def app():
                     option_info.append("機器符号妥当性チェック: 有効")
             if settings.get('extract_drawing_numbers'):
                 option_info.append("図面番号抽出: 有効")
+            if settings.get('extract_title'):
+                option_info.append("タイトル抽出: 有効")
             sort_labels = {'asc': '昇順', 'desc': '降順', 'none': 'なし'}
             option_info.append(f"並び替え: {sort_labels.get(settings.get('sort_order', 'asc'))}")
 
@@ -357,6 +372,11 @@ def app():
                     if settings.get('extract_drawing_numbers'):
                         if info.get('main_drawing_number') or info.get('source_drawing_number'):
                             st.write(f"**図番**: {info.get('main_drawing_number', 'なし')} | **流用元図番**: {info.get('source_drawing_number', 'なし')}")
+
+                    # タイトル・サブタイトル情報の表示
+                    if settings.get('extract_title'):
+                        if info.get('title') or info.get('subtitle'):
+                            st.write(f"**タイトル**: {info.get('title', 'なし')} | **サブタイトル**: {info.get('subtitle', 'なし')}")
 
                     st.divider()
 

@@ -223,6 +223,282 @@ def calculate_distance(coord1: Tuple[float, float], coord2: Tuple[float, float])
     return math.sqrt(dx * dx + dy * dy)
 
 
+def is_single_uppercase_letter(text: str) -> bool:
+    """
+    英大文字1文字かどうかを判定（半角・全角両対応）
+
+    Args:
+        text: 判定対象の文字列
+
+    Returns:
+        bool: 英大文字1文字ならTrue
+    """
+    if len(text) != 1:
+        return False
+    # 半角英大文字 A-Z
+    if 'A' <= text <= 'Z':
+        return True
+    # 全角英大文字 Ａ-Ｚ（\uff21-\uff3a）
+    if '\uff21' <= text <= '\uff3a':
+        return True
+    return False
+
+
+def extract_title_and_subtitle(
+    all_labels: List[Tuple[str, Tuple[float, float]]],
+    drawing_numbers: Optional[List[Tuple[str, Tuple[float, float]]]],
+    debug: bool = False
+) -> Dict[str, Optional[str]]:
+    """
+    テキストラベルの位置関係からタイトルとサブタイトルを抽出する
+
+    抽出条件:
+    - 「TITLE」という文字列の右側近辺にタイトルとサブタイトルが配置
+    - タイトルは「REVISION」の下方向にある
+    - サブタイトルはタイトルの直下に配置
+    - サブタイトルは図番のすぐ上方に配置
+    - タイトルは複数単語の場合、半角スペースで結合
+    - サブタイトルも複数単語の場合、半角スペースで結合
+      ただし、最後が英大文字1文字の場合は除外
+
+    Args:
+        all_labels: (ラベル, (X座標, Y座標))のリスト（全テキスト）
+        drawing_numbers: (図面番号, (X座標, Y座標))のリスト（図番の位置参照用）
+        debug: デバッグ情報を出力するかどうか
+
+    Returns:
+        dict: {'title': 'タイトル文字列', 'subtitle': 'サブタイトル文字列'}
+    """
+    if not all_labels:
+        return {'title': None, 'subtitle': None}
+
+    title_text = None
+    subtitle_text = None
+
+    # 1. 「TITLE」と「REVISION」の位置を特定
+    # 複数のTITLEラベルがある場合は、一番右側（X座標が最大）のものを採用
+    title_label_positions = []
+    revision_label_positions = []
+
+    for label, coords in all_labels:
+        label_upper = label.upper().strip()
+        if label_upper == 'TITLE':
+            title_label_positions.append(coords)
+            if debug:
+                print(f"TITLE ラベル発見: ({coords[0]:.2f}, {coords[1]:.2f})")
+        elif label_upper == 'REVISION':
+            revision_label_positions.append(coords)
+            if debug:
+                print(f"REVISION ラベル発見: ({coords[0]:.2f}, {coords[1]:.2f})")
+
+    if not title_label_positions:
+        if debug:
+            print("TITLE ラベルが見つかりませんでした")
+        return {'title': None, 'subtitle': None}
+
+    # 一番右側のTITLEラベルを選択（X座標が最大）
+    title_label_pos = max(title_label_positions, key=lambda pos: pos[0])
+    if debug:
+        print(f"採用されたTITLE: ({title_label_pos[0]:.2f}, {title_label_pos[1]:.2f}) (X座標が最大)")
+
+    # 一番右側のREVISIONラベルを選択（複数ある場合）
+    revision_label_pos = None
+    if revision_label_positions:
+        revision_label_pos = max(revision_label_positions, key=lambda pos: pos[0])
+        if debug:
+            print(f"採用されたREVISION: ({revision_label_pos[0]:.2f}, {revision_label_pos[1]:.2f}) (X座標が最大)")
+
+    # 2. タイトル候補を収集
+    # 条件: TITLEの右側（X座標 > title_label_pos[0]）
+    #       REVISIONがあれば、その下方向（Y座標 < revision_label_pos[1]）
+    title_candidates = []
+
+    # TITLEラベルの右側の閾値（TITLEの右側近辺）
+    title_right_threshold = title_label_pos[0] + 10  # TITLEのX座標より右側
+    title_proximity_x = 80  # X方向の近辺範囲（TITLEのすぐ右側のみ）
+    title_proximity_y = 50   # Y方向の近辺範囲（同じ行とみなす範囲）
+
+    for label, coords in all_labels:
+        # TITLEやREVISIONのラベル自体は除外
+        label_upper = label.upper().strip()
+        if label_upper in ['TITLE', 'REVISION']:
+            continue
+
+        # 図面番号も除外
+        if drawing_numbers:
+            is_drawing_number = any(dn == label for dn, _ in drawing_numbers)
+            if is_drawing_number:
+                continue
+
+        # TITLEの右側近辺かチェック
+        x_diff = coords[0] - title_label_pos[0]
+        y_diff = abs(coords[1] - title_label_pos[1])
+
+        # TITLEの右側かつ近辺
+        if x_diff > 10 and x_diff < title_proximity_x:
+            # REVISIONがある場合、その下方向かチェック
+            if revision_label_pos:
+                # REVISIONより下方向（Y座標が小さい）
+                if coords[1] < revision_label_pos[1]:
+                    title_candidates.append((label, coords))
+                    if debug:
+                        print(f"タイトル候補: '{label}' at ({coords[0]:.2f}, {coords[1]:.2f})")
+            else:
+                # REVISIONがない場合は、TITLEの右側近辺を候補とする
+                title_candidates.append((label, coords))
+                if debug:
+                    print(f"タイトル候補: '{label}' at ({coords[0]:.2f}, {coords[1]:.2f})")
+
+    if not title_candidates:
+        if debug:
+            print("タイトル候補が見つかりませんでした")
+        return {'title': None, 'subtitle': None}
+
+    # 2.5. 重複するテキスト（座標が近く、ラベルが同じ）を除去
+    # 座標が非常に近い（許容誤差内）かつラベルが同じものを1つにまとめる
+    deduplicated_candidates = []
+    coord_tolerance = 1.0  # 座標の許容誤差
+
+    for label, coords in title_candidates:
+        is_duplicate = False
+        for existing_label, existing_coords in deduplicated_candidates:
+            # ラベルが同じで、座標が非常に近い場合は重複とみなす
+            if label == existing_label:
+                x_diff = abs(coords[0] - existing_coords[0])
+                y_diff = abs(coords[1] - existing_coords[1])
+                if x_diff <= coord_tolerance and y_diff <= coord_tolerance:
+                    is_duplicate = True
+                    if debug:
+                        print(f"重複除去: '{label}' at ({coords[0]:.2f}, {coords[1]:.2f})")
+                    break
+
+        if not is_duplicate:
+            deduplicated_candidates.append((label, coords))
+
+    if debug:
+        print(f"重複除去後: {len(title_candidates)} -> {len(deduplicated_candidates)} 候補")
+
+    title_candidates = deduplicated_candidates
+
+    if not title_candidates:
+        if debug:
+            print("重複除去後、タイトル候補がなくなりました")
+        return {'title': None, 'subtitle': None}
+
+    # 3. タイトル候補をY座標でグルーピング（同じ行の単語を結合）
+    # Y座標が近い（同じ行）ものをグループ化
+    y_tolerance = 5.0  # Y座標の許容誤差
+    grouped_candidates = []
+
+    sorted_candidates = sorted(title_candidates, key=lambda x: (-x[1][1], x[1][0]))  # Y降順、X昇順
+
+    current_group = []
+    current_y = None
+
+    for label, coords in sorted_candidates:
+        if current_y is None or abs(coords[1] - current_y) <= y_tolerance:
+            current_group.append((label, coords))
+            current_y = coords[1]
+        else:
+            if current_group:
+                grouped_candidates.append(current_group)
+            current_group = [(label, coords)]
+            current_y = coords[1]
+
+    if current_group:
+        grouped_candidates.append(current_group)
+
+    if debug:
+        print(f"グルーピング結果: {len(grouped_candidates)} グループ")
+        for i, group in enumerate(grouped_candidates):
+            print(f"  グループ {i+1}: {[label for label, _ in group]}")
+
+    # 4. TITLEラベルに最も近いグループをタイトル行とする
+    # 各グループの最小X座標を計算し、TITLEに最も近い（最小X座標が最も小さい）グループを選択
+    if grouped_candidates:
+        # 各グループの最小X座標を計算
+        groups_with_min_x = []
+        for group in grouped_candidates:
+            min_x = min([coords[0] for _, coords in group])
+            avg_y = sum([coords[1] for _, coords in group]) / len(group)
+            groups_with_min_x.append((group, min_x, avg_y))
+
+        # Y座標が最も大きい（上の方にある）グループ群を特定
+        max_y = max([avg_y for _, _, avg_y in groups_with_min_x])
+        y_threshold = 10.0  # タイトルとサブタイトルの間の許容範囲
+
+        # 上の方にあるグループの中で、X座標が最小（TITLEに最も近い）グループをタイトルとする
+        title_candidates_filtered = [(group, min_x, avg_y) for group, min_x, avg_y in groups_with_min_x if avg_y >= max_y - y_threshold]
+        title_group_info = min(title_candidates_filtered, key=lambda x: x[1])
+        title_group = title_group_info[0]
+
+        if debug:
+            print(f"タイトルグループ選択: 最小X={title_group_info[1]:.2f}, Y={title_group_info[2]:.2f}")
+        # X座標順にソートして結合
+        title_group_sorted = sorted(title_group, key=lambda x: x[1][0])
+        title_text = ' '.join([label for label, _ in title_group_sorted])
+        title_y_coord = title_group_sorted[0][1][1]  # タイトルのY座標
+
+        if debug:
+            print(f"タイトル: '{title_text}' (Y={title_y_coord:.2f})")
+
+        # 5. サブタイトルを探す（タイトルの直下）
+        # タイトルの直下 = Y座標がタイトルより小さく、かつTITLEに近い位置にあるグループ
+        subtitle_candidates = []
+
+        # タイトルグループのX座標範囲を取得
+        title_min_x = min([coords[0] for _, coords in title_group])
+        title_max_x = max([coords[0] for _, coords in title_group])
+        x_tolerance = 100.0  # サブタイトルとタイトルのX座標の許容範囲
+
+        for group, min_x, avg_y in groups_with_min_x:
+            if avg_y < title_y_coord:  # タイトルより下
+                # タイトルと同じようなX座標範囲にあるグループのみを候補とする
+                group_max_x = max([coords[0] for _, coords in group])
+                # グループのX座標範囲がタイトルと重なる、または近い場合のみ
+                if min_x <= title_max_x + x_tolerance and group_max_x >= title_min_x - x_tolerance:
+                    subtitle_candidates.append((group, min_x, avg_y))
+
+        if subtitle_candidates:
+            # Y座標がタイトルに最も近い（最も大きい）グループを選択
+            # 同じY座標の場合は、X座標が最も小さい（TITLEに近い）グループを選択
+            subtitle_group_info = max(subtitle_candidates, key=lambda x: (x[2], -x[1]))
+            subtitle_group = subtitle_group_info[0]
+
+            # サブタイトルは通常1つのテキスト要素だが、複数ある場合は結合
+            subtitle_group_sorted = sorted(subtitle_group, key=lambda x: x[1][0])
+            subtitle_labels = [label for label, _ in subtitle_group_sorted]
+
+            # 最後の要素が英大文字1文字の場合は除外
+            if len(subtitle_labels) > 1 and is_single_uppercase_letter(subtitle_labels[-1]):
+                if debug:
+                    print(f"サブタイトルから英大文字1文字を除外: '{subtitle_labels[-1]}'")
+                subtitle_labels = subtitle_labels[:-1]
+
+            subtitle_text = ' '.join(subtitle_labels)
+            subtitle_y_coord = subtitle_group_sorted[0][1][1]
+
+            if debug:
+                print(f"サブタイトルグループ選択: 最小X={subtitle_group_info[1]:.2f}, Y={subtitle_group_info[2]:.2f}")
+                print(f"サブタイトル: '{subtitle_text}' (Y={subtitle_y_coord:.2f})")
+
+            # 6. 図番との位置関係で検証（オプション）
+            if drawing_numbers:
+                # 図番のY座標の最大値を取得
+                max_drawing_y = max([coords[1] for _, coords in drawing_numbers])
+
+                # サブタイトルが図番の上方にあるか確認
+                if subtitle_y_coord > max_drawing_y:
+                    if debug:
+                        print(f"検証OK: サブタイトル(Y={subtitle_y_coord:.2f}) は 図番(Y={max_drawing_y:.2f}) の上方")
+                else:
+                    if debug:
+                        print(f"警告: サブタイトル(Y={subtitle_y_coord:.2f}) が 図番(Y={max_drawing_y:.2f}) の下方にあります")
+                    # 警告のみで、サブタイトルは採用
+
+    return {'title': title_text, 'subtitle': subtitle_text}
+
+
 def determine_drawing_number_types(
     drawing_numbers: List[Tuple[str, Tuple[float, float]]],
     all_labels: Optional[List[Tuple[str, Tuple[float, float]]]] = None,
@@ -310,8 +586,8 @@ def determine_drawing_number_types(
                         min_distance = distance
                         closest_dn = dn
 
-            # 距離が妥当な範囲内（例: 100単位以内）であれば採用
-            if closest_dn and min_distance < 200:
+            # 距離が妥当な範囲内（80単位以内）であれば採用
+            if closest_dn and min_distance < 80:
                 source_drawing = closest_dn
                 if debug:
                     print(f"流用元図番をラベルから判別: {source_drawing} (距離: {min_distance:.2f})")
@@ -331,16 +607,30 @@ def determine_drawing_number_types(
                         min_distance = distance
                         closest_dn = dn
 
-            # 距離が妥当な範囲内であれば採用
-            if closest_dn and min_distance < 200:
+            # 距離が妥当な範囲内（80単位以内）であれば採用
+            if closest_dn and min_distance < 80:
                 main_drawing = closest_dn
                 if debug:
                     print(f"図番をDWG No.ラベルから判別: {main_drawing} (距離: {min_distance:.2f})")
 
     # 3. フォールバック: 座標ベースの判別
     if not main_drawing or not source_drawing:
-        # 座標でソート（右下が図番、それ以外が流用元図番）
-        sorted_numbers = sorted(drawing_numbers, key=lambda x: (x[1][0] + x[1][1]), reverse=True)
+        # 複数図面対応: 最も右側の図面番号群のみを対象とする
+        # 最も右側のX座標を取得
+        max_x = max([coords[0] for _, coords in drawing_numbers])
+        x_tolerance = 100.0  # 同一図面とみなすX座標の許容範囲
+
+        # 最も右側の範囲内にある図面番号のみをフィルタリング
+        rightmost_numbers = [(dn, coords) for dn, coords in drawing_numbers
+                            if coords[0] >= max_x - x_tolerance]
+
+        if debug:
+            print(f"座標ベース判別: 最大X={max_x:.2f}, 対象範囲={len(rightmost_numbers)}個")
+            for dn, coords in rightmost_numbers:
+                print(f"  {dn} at ({coords[0]:.2f}, {coords[1]:.2f})")
+
+        # 最も右側の範囲内で座標ソート（右下が図番、それ以外が流用元図番）
+        sorted_numbers = sorted(rightmost_numbers, key=lambda x: (x[1][0] + x[1][1]), reverse=True)
 
         if not main_drawing:
             # 最も右下にあるものを図番とする
@@ -362,7 +652,7 @@ def determine_drawing_number_types(
 
 def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=False,
                   selected_layers=None, validate_ref_designators=False,
-                  extract_drawing_numbers_option=False):
+                  extract_drawing_numbers_option=False, extract_title_option=False):
     """
     DXFファイルからテキストラベルを抽出する
 
@@ -374,6 +664,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         selected_layers: 処理対象とするレイヤー名のリスト。Noneの場合は全レイヤーを対象とする
         validate_ref_designators: 回路記号の妥当性をチェックするかどうか
         extract_drawing_numbers_option: 図面番号を抽出するかどうか
+        extract_title_option: タイトルとサブタイトルを抽出するかどうか
 
     Returns:
         tuple: (ラベルリスト, 情報辞書)
@@ -389,7 +680,9 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         "invalid_ref_designators": [],  # 妥当性チェック用
         "main_drawing_number": None,     # 図番
         "source_drawing_number": None,   # 流用元図番
-        "all_drawing_numbers": []        # 抽出されたすべての図面番号
+        "all_drawing_numbers": [],       # 抽出されたすべての図面番号
+        "title": None,                   # タイトル
+        "subtitle": None                 # サブタイトル
     }
 
     try:
@@ -491,16 +784,17 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 raw_text, clean_text, coordinates = extract_text_from_entity(e, debug)
 
                 if clean_text:  # クリーンテキストがある場合のみ処理
-                    # 図面番号抽出オプションが有効な場合の処理
-                    if extract_drawing_numbers_option:
-                        # 全ラベルを座標付きで保存（図面番号判別用）
+                    # 座標付きラベル情報の保存（図面番号抽出またはタイトル抽出が有効な場合）
+                    if extract_drawing_numbers_option or extract_title_option:
+                        # 全ラベルを座標付きで保存
                         all_labels_with_coords.append((clean_text, coordinates))
 
+                    # 図面番号抽出オプションが有効な場合の処理
+                    if extract_drawing_numbers_option:
                         # クリーンテキストから図面番号を抽出
                         drawing_numbers = extract_drawing_numbers(clean_text, debug)
                         for dn in drawing_numbers:
                             drawing_number_candidates.append((dn, coordinates))
-
 
                     # 通常のラベルとして追加（クリーンテキストを使用）
                     labels.append(clean_text)
@@ -519,6 +813,16 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
             info["main_drawing_number"] = drawing_info['main_drawing']
             info["source_drawing_number"] = drawing_info['source_drawing']
             info["all_drawing_numbers"] = [dn[0] for dn in drawing_number_candidates]
+
+        # タイトルとサブタイトルの抽出
+        if extract_title_option and all_labels_with_coords:
+            title_info = extract_title_and_subtitle(
+                all_labels_with_coords,
+                drawing_numbers=drawing_number_candidates if extract_drawing_numbers_option else None,
+                debug=debug
+            )
+            info["title"] = title_info['title']
+            info["subtitle"] = title_info['subtitle']
 
 
 
@@ -555,7 +859,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
 
 def process_multiple_dxf_files(dxf_files, filter_non_parts=False, sort_order="asc", debug=False,
                               selected_layers=None, validate_ref_designators=False,
-                              extract_drawing_numbers_option=False):
+                              extract_drawing_numbers_option=False, extract_title_option=False):
     """
     複数のDXFファイルからラベルを抽出する
 
@@ -567,6 +871,7 @@ def process_multiple_dxf_files(dxf_files, filter_non_parts=False, sort_order="as
         selected_layers: 処理対象とするレイヤー名のリスト。Noneの場合は全レイヤーを対象とする
         validate_ref_designators: 回路記号の妥当性をチェックするかどうか
         extract_drawing_numbers_option: 図面番号を抽出するかどうか
+        extract_title_option: タイトルとサブタイトルを抽出するかどうか
 
     Returns:
         dict: ファイルパスをキー、(ラベルリスト, 情報辞書)をバリューとする辞書
@@ -583,7 +888,7 @@ def process_multiple_dxf_files(dxf_files, filter_non_parts=False, sort_order="as
                         labels, info = extract_labels(
                             file_path, filter_non_parts, sort_order, debug,
                             selected_layers, validate_ref_designators,
-                            extract_drawing_numbers_option
+                            extract_drawing_numbers_option, extract_title_option
                         )
                         results[file_path] = (labels, info)
         # 単一のDXFファイルの場合
@@ -591,7 +896,7 @@ def process_multiple_dxf_files(dxf_files, filter_non_parts=False, sort_order="as
             labels, info = extract_labels(
                 dxf_file, filter_non_parts, sort_order, debug,
                 selected_layers, validate_ref_designators,
-                extract_drawing_numbers_option
+                extract_drawing_numbers_option, extract_title_option
             )
             results[dxf_file] = (labels, info)
 

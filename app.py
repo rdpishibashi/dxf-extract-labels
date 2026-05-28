@@ -21,35 +21,27 @@ st.set_page_config(
 )
 
 def create_excel_output(results, filter_option, sort_option, validate_ref_designators):
-    """
-    抽出結果をExcelファイルとして生成する
-
-    Args:
-        results: ファイルパスをキー、(ラベルリスト, 情報辞書)をバリューとする辞書
-        filter_option: 機器符号フィルタリングが有効かどうか
-        sort_option: ソート順
-        validate_ref_designators: 機器符号妥当性チェックが有効かどうか
-
-    Returns:
-        bytes: Excelファイルのバイナリデータ
-    """
-    from collections import Counter
+    from collections import Counter, defaultdict
 
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
 
-        # フォーマットの定義
         header_format = workbook.add_format({
             'bold': True,
             'bg_color': '#D3D3D3',
             'border': 1
         })
+        link_format = workbook.add_format({
+            'color': 'blue',
+            'underline': 1
+        })
 
         # サマリーシートの作成
         summary_data = []
-        all_invalid_ref_designators = []
+        invalid_by_symbol = defaultdict(lambda: {'count': 0, 'files': []})
+        total_counter = Counter()
 
         for file_path, (labels, info) in results.items():
             filename = info.get('filename', os.path.basename(file_path))
@@ -66,15 +58,15 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
                 'サブタイトル': info.get('subtitle', '')
             })
 
-            # 妥当性チェック結果を収集
-            if validate_ref_designators and info.get('invalid_ref_designators'):
-                for invalid in info['invalid_ref_designators']:
-                    all_invalid_ref_designators.append({
-                        'ファイル名': filename,
-                        '機器符号': invalid
-                    })
+            total_counter.update(Counter(labels))
 
-        # サマリーシートの書き込み
+            if validate_ref_designators and info.get('invalid_ref_designators'):
+                for symbol in info['invalid_ref_designators']:
+                    invalid_by_symbol[symbol]['count'] += 1
+                    if filename not in invalid_by_symbol[symbol]['files']:
+                        invalid_by_symbol[symbol]['files'].append(filename)
+
+        # Summary シートの書き込み
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
@@ -82,24 +74,31 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
         for col_num, value in enumerate(summary_df.columns.values):
             summary_worksheet.write(0, col_num, value, header_format)
 
-        # 各ファイルの詳細シートを作成
-        for idx, (file_path, (labels, info)) in enumerate(results.items()):
+        # ファイル名セルに各ファイルシートへの内部リンクを設定
+        for row_num, (file_path, (labels, info)) in enumerate(results.items(), start=1):
             filename = info.get('filename', os.path.basename(file_path))
-            # ファイル名から拡張子を除去してシート名を作成
-            filename_without_ext = os.path.splitext(filename)[0]
-            sheet_name = filename_without_ext[:31]  # シート名を31文字以内に制限
+            sheet_name = os.path.splitext(filename)[0][:31]
+            summary_worksheet.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, filename)
 
-            # ラベルの出現回数をカウント
+        # Total シートの作成（Summary の直後）
+        total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
+        if total_data:
+            total_df = pd.DataFrame(total_data)
+            total_df.to_excel(writer, sheet_name='Total', index=False)
+
+            total_worksheet = writer.sheets['Total']
+            total_worksheet.write(0, 0, 'ラベル', header_format)
+            total_worksheet.write(0, 1, '個数', header_format)
+            total_worksheet.set_column('A:A', 25)
+            total_worksheet.set_column('B:B', 10)
+
+        # 各ファイルの詳細シートを作成
+        for file_path, (labels, info) in results.items():
+            filename = info.get('filename', os.path.basename(file_path))
+            sheet_name = os.path.splitext(filename)[0][:31]
+
             counter = Counter(labels)
-            all_labels = sorted(counter.keys())
-
-            # ラベルデータの作成（ラベルと個数）
-            label_data = []
-            for label in all_labels:
-                label_data.append({
-                    'ラベル': label,
-                    '個数': counter[label]
-                })
+            label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(counter.keys())]
 
             if label_data:
                 labels_df = pd.DataFrame(label_data)
@@ -108,19 +107,28 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
                 worksheet = writer.sheets[sheet_name]
                 worksheet.write(0, 0, 'ラベル', header_format)
                 worksheet.write(0, 1, '個数', header_format)
+                worksheet.set_column('A:A', 25)
+                worksheet.set_column('B:B', 10)
 
-                # 列幅を調整
-                worksheet.set_column('A:A', 25)  # ラベル列
-                worksheet.set_column('B:B', 10)  # 個数列
-
-        # 妥当性チェック結果シートの作成（該当データがある場合のみ）
-        if all_invalid_ref_designators:
-            invalid_df = pd.DataFrame(all_invalid_ref_designators)
+        # Invalid シートの作成（該当データがある場合のみ）
+        if invalid_by_symbol:
+            invalid_data = [
+                {
+                    '機器符号': sym,
+                    '個数': data['count'],
+                    'ファイル名': ', '.join(data['files'])
+                }
+                for sym, data in sorted(invalid_by_symbol.items())
+            ]
+            invalid_df = pd.DataFrame(invalid_data)
             invalid_df.to_excel(writer, sheet_name='Invalid', index=False)
 
             invalid_worksheet = writer.sheets['Invalid']
             for col_num, value in enumerate(invalid_df.columns.values):
                 invalid_worksheet.write(0, col_num, value, header_format)
+            invalid_worksheet.set_column('A:A', 20)
+            invalid_worksheet.set_column('B:B', 8)
+            invalid_worksheet.set_column('C:C', 60)
 
     output.seek(0)
     return output.getvalue()
@@ -287,7 +295,8 @@ def app():
                         selected_layers=selected_layers,
                         validate_ref_designators=validate_ref_designators,
                         extract_drawing_numbers_option=extract_drawing_numbers_option,
-                        extract_title_option=extract_title_option
+                        extract_title_option=extract_title_option,
+                        original_filenames=original_filenames
                     )
 
                     # 結果のキーを一時ファイルパスから元のファイル名に置き換え
@@ -337,51 +346,29 @@ def app():
             # 結果サマリーの表示
             st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
 
-            # 処理オプションの情報を表示
-            option_info = []
-            if settings.get('filter_option'):
-                option_info.append("機器符号フィルタリング: 有効")
-                if settings.get('validate_ref_designators'):
-                    option_info.append("機器符号妥当性チェック: 有効")
-            if settings.get('extract_drawing_numbers'):
-                option_info.append("図面番号抽出: 有効")
-            if settings.get('extract_title'):
-                option_info.append("タイトル抽出: 有効")
-            sort_labels = {'asc': '昇順', 'desc': '降順', 'none': 'なし'}
-            option_info.append(f"並び替え: {sort_labels.get(settings.get('sort_order', 'asc'))}")
-
-            if option_info:
-                st.info("処理オプション: " + " | ".join(option_info))
-
             # 統計情報の表示
-            with st.expander("📊 抽出結果統計", expanded=True):
+            with st.expander("📊 抽出結果統計", expanded=False):
+                stats_rows = []
                 for file_path, (labels, info) in results.items():
                     filename = info.get('filename', os.path.basename(file_path))
-                    col1, col2, col3, col4 = st.columns(4)
-
-                    with col1:
-                        st.metric("ファイル名", filename)
-                    with col2:
-                        st.metric("総抽出数", info.get('total_extracted', 0))
-                    with col3:
-                        st.metric("最終ラベル数", info.get('final_count', 0))
-                    with col4:
-                        st.metric("処理レイヤー数", f"{info.get('processed_layers', 0)}/{info.get('total_layers', 0)}")
-
-                    # 図面番号情報の表示
+                    row = {
+                        'ファイル名': filename,
+                        '総抽出数': info.get('total_extracted', 0),
+                        'フィルタリング除外数': info.get('filtered_count', 0),
+                        '最終ラベル数': info.get('final_count', 0),
+                        'レイヤー数': f"{info.get('processed_layers', 0)}/{info.get('total_layers', 0)}",
+                    }
                     if settings.get('extract_drawing_numbers'):
-                        if info.get('main_drawing_number') or info.get('source_drawing_number'):
-                            st.write(f"**図番**: {info.get('main_drawing_number', 'なし')} | **流用元図番**: {info.get('source_drawing_number', 'なし')}")
-
-                    # タイトル・サブタイトル情報の表示
+                        row['図番'] = info.get('main_drawing_number', '')
+                        row['流用元図番'] = info.get('source_drawing_number', '')
                     if settings.get('extract_title'):
-                        if info.get('title') or info.get('subtitle'):
-                            st.write(f"**タイトル**: {info.get('title', 'なし')} | **サブタイトル**: {info.get('subtitle', 'なし')}")
-
-                    st.divider()
+                        row['タイトル'] = info.get('title', '')
+                        row['サブタイトル'] = info.get('subtitle', '')
+                    stats_rows.append(row)
+                st.dataframe(pd.DataFrame(stats_rows), width='stretch', hide_index=True)
 
             # ダウンロードボタンの表示
-            st.subheader("📥 結果のダウンロード")
+            st.subheader("結果のダウンロード")
             col1, col2 = st.columns([3, 1])
 
             with col1:

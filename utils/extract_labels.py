@@ -182,7 +182,7 @@ def extract_title_and_subtitle(
         label_upper = label.upper().strip()
         if label_upper in ['TITLE', 'REVISION']:
             continue
-        if drawing_numbers and any(dn == label for dn, _ in drawing_numbers):
+        if drawing_numbers and any(dn == label for dn, *_ in drawing_numbers):
             continue
 
         x_diff = coords[0] - title_label_pos[0]
@@ -279,26 +279,39 @@ def extract_title_and_subtitle(
 
 
 def determine_drawing_number_types(
-    drawing_numbers: List[Tuple[str, Tuple[float, float]]],
+    drawing_numbers: List[Tuple],
     all_labels: Optional[List[Tuple[str, Tuple[float, float]]]] = None,
     filename: Optional[str] = None,
 ) -> Dict[str, str]:
-    """ラベルと座標に基づいて図番と流用元図番を判別する"""
+    """ラベルと座標に基づいて図番と流用元図番を判別する。
+
+    各候補は `(図番, 座標)` または `(図番, 座標, グループキー)`。グループキーは
+    所属タイトルブロック（INSERT）の識別子で、旧・現行のタイトルブロックが同一
+    座標に重なっているケースで「図番と流用元図番が同じブロックに属する」ことを
+    判定するために使う。図番がファイル名等で確定したら、**同じグループ内**で
+    流用元図番を判定し、別ブロック（旧版）の図番を誤って拾わないようにする。
+    """
     if len(drawing_numbers) == 0:
         return {'main_drawing': None, 'source_drawing': None}
-    if len(drawing_numbers) == 1:
-        return {'main_drawing': drawing_numbers[0][0], 'source_drawing': None}
+
+    # 候補を (図番, 座標, グループ) に正規化（グループ未指定は None）
+    norm = [(item[0], item[1], item[2] if len(item) >= 3 else None) for item in drawing_numbers]
+
+    if len(norm) == 1:
+        return {'main_drawing': norm[0][0], 'source_drawing': None}
 
     main_drawing = None
+    main_group = None
     source_drawing = None
 
     # 1. ファイル名と一致する図面番号を図番とする
     if filename:
         from pathlib import Path
         file_stem = Path(filename).stem
-        for dn, coords in drawing_numbers:
+        for dn, coords, group in norm:
             if dn == file_stem or dn in file_stem or file_stem in dn:
                 main_drawing = dn
+                main_group = group
                 break
 
     # 2. ラベルベースの判別
@@ -313,11 +326,19 @@ def determine_drawing_number_types(
                 and 'NO' in label.upper().replace('\n', '').replace('\r', '').replace(' ', ''))
         ]
 
-        # 流用元図番を「流用元図番」ラベルに最も近い図面番号から判別
+        # 流用元図番を「流用元図番」ラベルに最も近い図面番号から判別する。
+        # 図番のグループが分かっている場合は、同一グループ内の候補に限定して
+        # 判定し、重なった別ブロック（旧版）の図番を拾わないようにする。
         if source_label_positions:
+            source_pool = norm
+            if main_group is not None:
+                same_group = [c for c in norm if c[2] == main_group and c[0] != main_drawing]
+                if same_group:
+                    source_pool = same_group
+
             min_distance = float('inf')
             closest_dn = None
-            for dn, dn_coords in drawing_numbers:
+            for dn, dn_coords, group in source_pool:
                 if main_drawing and dn == main_drawing:
                     continue
                 for label_coords in source_label_positions:
@@ -333,30 +354,39 @@ def determine_drawing_number_types(
         if dwg_label_positions and not main_drawing:
             min_distance = float('inf')
             closest_dn = None
-            for dn, dn_coords in drawing_numbers:
+            closest_group = None
+            for dn, dn_coords, group in norm:
                 for label_coords in dwg_label_positions:
                     distance = calculate_distance(dn_coords, label_coords)
                     if distance < min_distance:
                         min_distance = distance
                         closest_dn = dn
+                        closest_group = group
             if closest_dn and min_distance < extraction_config.DWG_NO_LABEL_PROXIMITY:
                 main_drawing = closest_dn
+                main_group = closest_group
 
     # 3. フォールバック: 座標ベースの判別（最も右側の図面を対象）
     if not main_drawing or not source_drawing:
-        max_x = max(coords[0] for _, coords in drawing_numbers)
+        max_x = max(coords[0] for _, coords, _ in norm)
         x_tolerance = extraction_config.RIGHTMOST_DRAWING_TOLERANCE
         rightmost_numbers = [
-            (dn, coords) for dn, coords in drawing_numbers
+            (dn, coords, group) for dn, coords, group in norm
             if coords[0] >= max_x - x_tolerance
         ]
         sorted_numbers = sorted(rightmost_numbers, key=lambda x: (x[1][0] + x[1][1]), reverse=True)
 
         if not main_drawing:
             main_drawing = sorted_numbers[0][0]
+            main_group = sorted_numbers[0][2]
 
         if not source_drawing and len(sorted_numbers) > 1:
-            for dn, _ in sorted_numbers[1:]:
+            # 図番グループが分かっている場合は同一グループを優先する
+            ordered = sorted_numbers[1:]
+            if main_group is not None:
+                ordered = [c for c in ordered if c[2] == main_group] + \
+                          [c for c in ordered if c[2] != main_group]
+            for dn, _coords, _group in ordered:
                 if dn != main_drawing:
                     source_drawing = dn
                     break
@@ -405,12 +435,19 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         all_labels_with_coords = []
 
         # エンティティ収集
+        # 各要素は (entity, group_key)。group_key は所属タイトルブロック（INSERT）の
+        # 識別子。INSERT 由来は親 INSERT の handle、直接配置は自身の handle を使う。
+        # 旧・現行のタイトルブロックが同一座標に重なっているケースで、図番と流用元
+        # 図番が同じブロックに属することを判定するために用いる。
         all_entities_to_process = []
+
+        def _entity_handle(entity):
+            return getattr(entity.dxf, 'handle', None)
 
         # MODEL_SPACE
         for e in msp:
             if e.dxftype() in ['TEXT', 'MTEXT']:
-                all_entities_to_process.append(e)
+                all_entities_to_process.append((e, _entity_handle(e)))
 
         # PAPER_SPACE（Model 以外のレイアウト）
         try:
@@ -418,18 +455,20 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 if layout.name != 'Model':
                     for e in layout:
                         if e.dxftype() in ['TEXT', 'MTEXT']:
-                            all_entities_to_process.append(e)
+                            all_entities_to_process.append((e, _entity_handle(e)))
         except Exception:
             pass
 
         # INSERT エンティティを virtual_entities() で展開（座標変換を含む）
+        # 展開後の仮想エンティティには親 INSERT の handle をグループキーとして付与する。
         try:
             for e in msp:
                 if e.dxftype() == 'INSERT' and e.dxf.layer in selected_layers:
+                    insert_group = _entity_handle(e)
                     try:
                         for virtual_entity in e.virtual_entities():
                             if virtual_entity.dxftype() in ['TEXT', 'MTEXT']:
-                                all_entities_to_process.append(virtual_entity)
+                                all_entities_to_process.append((virtual_entity, insert_group))
                     except Exception:
                         pass
 
@@ -437,10 +476,11 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 if layout.name != 'Model':
                     for e in layout:
                         if e.dxftype() == 'INSERT' and e.dxf.layer in selected_layers:
+                            insert_group = _entity_handle(e)
                             try:
                                 for virtual_entity in e.virtual_entities():
                                     if virtual_entity.dxftype() in ['TEXT', 'MTEXT']:
-                                        all_entities_to_process.append(virtual_entity)
+                                        all_entities_to_process.append((virtual_entity, insert_group))
                             except Exception:
                                 pass
         except Exception:
@@ -449,7 +489,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         # 重複除去（同一種・同一レイヤー・同一座標）
         seen_entities = set()
         unique_entities = []
-        for e in all_entities_to_process:
+        for e, group_key in all_entities_to_process:
             try:
                 entity_key = (
                     e.dxftype(),
@@ -458,15 +498,15 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 )
                 if entity_key not in seen_entities:
                     seen_entities.add(entity_key)
-                    unique_entities.append(e)
+                    unique_entities.append((e, group_key))
             except Exception:
-                unique_entities.append(e)
+                unique_entities.append((e, group_key))
 
         del all_entities_to_process
         del seen_entities
 
         # テキスト抽出
-        for e in unique_entities:
+        for e, group_key in unique_entities:
             if e.dxf.layer in selected_layers:
                 raw_text, clean_text, coordinates = extract_text_from_entity(e)
 
@@ -476,7 +516,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
 
                     if extract_drawing_numbers_option:
                         for dn in extract_drawing_numbers(clean_text):
-                            drawing_number_candidates.append((dn, coordinates))
+                            drawing_number_candidates.append((dn, coordinates, group_key))
 
                     labels.append(clean_text)
                     labels_with_coordinates.append((clean_text, coordinates[0], coordinates[1]))

@@ -27,7 +27,7 @@ except ImportError:
 
     extraction_config = ExtractionConfig()
 
-from .common_utils import process_circuit_symbol_labels, filter_non_circuit_symbols
+from .common_utils import process_circuit_symbol_labels
 
 
 def get_layers_from_dxf(dxf_file):

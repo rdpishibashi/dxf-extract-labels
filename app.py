@@ -6,13 +6,15 @@ from pathlib import Path
 import pandas as pd
 from io import BytesIO
 
-# utils モジュールをインポート可能にするためのパスの追加
 current_dir = os.path.dirname(os.path.abspath(__file__))
 utils_path = os.path.join(current_dir, 'utils')
 sys.path.insert(0, utils_path)
 
-from utils.extract_labels import extract_labels, get_layers_from_dxf, process_multiple_dxf_files
-from utils.common_utils import save_uploadedfile, handle_error
+from utils.extract_labels import (
+    extract_labels, get_layers_from_dxf, process_multiple_dxf_files,
+    analyze_dxf_regions, assign_region_labels, DEFAULT_REGION_CONFIG,
+)
+from utils.common_utils import save_uploadedfile, handle_error, filter_non_circuit_symbols
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -20,7 +22,33 @@ st.set_page_config(
     layout="wide",
 )
 
-def create_excel_output(results, filter_option, sort_option, validate_ref_designators):
+
+@st.cache_data
+def _get_layers_cached(file_bytes: bytes) -> list:
+    """DXFファイルのレイヤー一覧を取得してキャッシュする（同一ファイルは再処理しない）。"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.dxf') as f:
+        f.write(file_bytes)
+        tmp_path = f.name
+    try:
+        return get_layers_from_dxf(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _on_change_radio(fname, reg_id, clicked_idx, n_cands):
+    """領域名チェックボックスをラジオボタン的に動作させるコールバック。
+    チェックが ON になったとき、同一領域の他チェックボックスを OFF にする。"""
+    ck = f"rc_{fname}_{reg_id}_{clicked_idx}"
+    if st.session_state.get(ck, False):
+        for j in range(n_cands):
+            if j != clicked_idx:
+                st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
+
+
+def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):
     from collections import Counter, defaultdict
 
     output = BytesIO()
@@ -38,7 +66,6 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
             'underline': 1
         })
 
-        # サマリーシートの作成
         summary_data = []
         invalid_by_symbol = defaultdict(lambda: {'count': 0, 'files': []})
         total_counter = Counter()
@@ -47,8 +74,8 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
             filename = info.get('filename', os.path.basename(file_path))
             summary_data.append({
                 'ファイル名': filename,
-                '総抽出数': info.get('total_extracted', 0),
-                'フィルタリング除外数': info.get('filtered_count', 0),
+                '総抽出ラベル数': info.get('total_extracted', 0),
+                '除外ラベル数': info.get('filtered_count', 0),
                 '最終ラベル数': info.get('final_count', 0),
                 '処理レイヤー数': info.get('processed_layers', 0),
                 '全レイヤー数': info.get('total_layers', 0),
@@ -66,7 +93,6 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
                     if filename not in invalid_by_symbol[symbol]['files']:
                         invalid_by_symbol[symbol]['files'].append(filename)
 
-        # Summary シートの書き込み
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
@@ -74,43 +100,44 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
         for col_num, value in enumerate(summary_df.columns.values):
             summary_worksheet.write(0, col_num, value, header_format)
 
-        # ファイル名セルに各ファイルシートへの内部リンクを設定
         for row_num, (file_path, (labels, info)) in enumerate(results.items(), start=1):
             filename = info.get('filename', os.path.basename(file_path))
             sheet_name = os.path.splitext(filename)[0][:31]
-            summary_worksheet.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, filename)
+            summary_worksheet.write_url(
+                row_num, 0, f"internal:'{sheet_name}'!A1", link_format, filename)
 
-        # Total シートの作成（Summary の直後）
-        total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
+        total_data = [
+            {'ラベル': lbl, '個数': total_counter[lbl]}
+            for lbl in sorted(total_counter.keys())
+        ]
         if total_data:
             total_df = pd.DataFrame(total_data)
             total_df.to_excel(writer, sheet_name='Total', index=False)
-
             total_worksheet = writer.sheets['Total']
             total_worksheet.write(0, 0, 'ラベル', header_format)
             total_worksheet.write(0, 1, '個数', header_format)
             total_worksheet.set_column('A:A', 25)
             total_worksheet.set_column('B:B', 10)
 
-        # 各ファイルの詳細シートを作成
         for file_path, (labels, info) in results.items():
             filename = info.get('filename', os.path.basename(file_path))
             sheet_name = os.path.splitext(filename)[0][:31]
 
             counter = Counter(labels)
-            label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(counter.keys())]
+            label_data = [
+                {'ラベル': lbl, '個数': counter[lbl]}
+                for lbl in sorted(counter.keys())
+            ]
 
             if label_data:
                 labels_df = pd.DataFrame(label_data)
                 labels_df.to_excel(writer, sheet_name=sheet_name, index=False)
-
                 worksheet = writer.sheets[sheet_name]
                 worksheet.write(0, 0, 'ラベル', header_format)
                 worksheet.write(0, 1, '個数', header_format)
                 worksheet.set_column('A:A', 25)
                 worksheet.set_column('B:B', 10)
 
-        # Invalid シートの作成（該当データがある場合のみ）
         if invalid_by_symbol:
             invalid_data = [
                 {
@@ -122,7 +149,6 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
             ]
             invalid_df = pd.DataFrame(invalid_data)
             invalid_df.to_excel(writer, sheet_name='Invalid', index=False)
-
             invalid_worksheet = writer.sheets['Invalid']
             for col_num, value in enumerate(invalid_df.columns.values):
                 invalid_worksheet.write(0, col_num, value, header_format)
@@ -133,37 +159,173 @@ def create_excel_output(results, filter_option, sort_option, validate_ref_design
     output.seek(0)
     return output.getvalue()
 
+
+def create_region_excel_output(region_results):
+    """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+        link_format = workbook.add_format({'color': 'blue', 'underline': 1})
+
+        summary_data = []
+        for fname, data in region_results.items():
+            summary_data.append({
+                'ファイル名': fname,
+                '総抽出ラベル数': data.get('total_in_frame', 0),
+                '除外ラベル数': data.get('filtered_count', 0),
+                '最終ラベル数': data.get('final_count', 0),
+                '図面枠数': data['frames'],
+                '検出領域数': data['regions_detected'],
+                '確定領域数': data['regions_named'],
+                '領域内ラベル数': data['in_region_count'],
+            })
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        summary_ws = writer.sheets['Summary']
+        for col_num, value in enumerate(summary_df.columns.values):
+            summary_ws.write(0, col_num, value, header_format)
+        for row_num, (fname, _data) in enumerate(region_results.items(), start=1):
+            sheet_name = os.path.splitext(fname)[0][:31]
+            summary_ws.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, fname)
+        summary_ws.set_column('A:A', 28)
+
+        reg_rows = []
+        for fname, data in region_results.items():
+            for r in data['named']:
+                reg_rows.append({
+                    'ファイル名': fname,
+                    '図面': r['frame'] + 1,
+                    '領域名': r['name'],
+                    '面積率[%]': round(r['area_pct'], 1),
+                    '領域内ラベル数': r['label_count'],
+                })
+        if reg_rows:
+            reg_df = pd.DataFrame(reg_rows)
+            reg_df.to_excel(writer, sheet_name='領域一覧', index=False)
+            reg_ws = writer.sheets['領域一覧']
+            for col_num, value in enumerate(reg_df.columns.values):
+                reg_ws.write(0, col_num, value, header_format)
+            reg_ws.set_column('A:A', 28)
+            reg_ws.set_column('C:C', 22)
+
+        for fname, data in region_results.items():
+            sheet_name = os.path.splitext(fname)[0][:31]
+            df = pd.DataFrame(data['rows'], columns=['ラベル', '個数', '領域'])
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            ws = writer.sheets[sheet_name]
+            for col_num, value in enumerate(['ラベル', '個数', '領域']):
+                ws.write(0, col_num, value, header_format)
+            ws.set_column('A:A', 25)
+            ws.set_column('B:B', 8)
+            ws.set_column('C:C', 40)
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_region_results(analyses, name_selections, sort_value, filter_circuit_only=False):
+    """解析結果とユーザーがチェックした名称から、ファイルごとの領域付きラベル集計を構築する。
+
+    name_selections: {(filename, region_id): [チェックされた名称, ...]}
+    filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
+    """
+    from collections import Counter, defaultdict
+    region_results = {}
+    for fname, analysis in analyses.items():
+        named = []
+        named_region_ids = set()
+        no_name_idx = 0
+        for reg in analysis.get('regions', []):
+            chosen_names = name_selections.get((fname, reg['id']), [])
+            if not chosen_names and not reg.get('name_candidates'):
+                no_name_idx += 1
+                chosen_names = [f"no name {no_name_idx}"]
+            for nm in chosen_names:
+                if not nm:
+                    continue
+                named.append({
+                    'polygon': reg['polygon'], 'name': nm,
+                    'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
+                })
+                named_region_ids.add(reg['id'])
+
+        all_labels = analysis.get('labels', [])
+
+        if filter_circuit_only:
+            texts = [l[0] for l in all_labels]
+            matched, _ = filter_non_circuit_symbols(texts)
+            matched_set = set(matched)
+            labels = [l for l in all_labels if l[0] in matched_set]
+            filtered_count = len(all_labels) - len(labels)
+        else:
+            labels = all_labels
+            filtered_count = 0
+
+        assigned = assign_region_labels(labels, named)
+
+        cnt = Counter()
+        region_of = defaultdict(set)
+        in_region_count = 0
+        label_count_per_region = defaultdict(int)
+        for (text, x, y, names) in assigned:
+            cnt[text] += 1
+            if names:
+                in_region_count += 1
+            for n in names:
+                region_of[text].add(n)
+                label_count_per_region[n] += 1
+
+        rows = [
+            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
+            for t in cnt
+        ]
+        if sort_value == 'asc':
+            rows.sort(key=lambda r: r['ラベル'])
+        elif sort_value == 'desc':
+            rows.sort(key=lambda r: r['ラベル'], reverse=True)
+
+        for r in named:
+            r['label_count'] = label_count_per_region.get(r['name'], 0)
+
+        region_results[fname] = {
+            'rows': rows,
+            'named': named,
+            'frames': len(analysis.get('frames', [])),
+            'regions_detected': len(analysis.get('regions', [])),
+            'regions_named': len(named_region_ids),
+            'total_in_frame': len(all_labels),
+            'filtered_count': filtered_count,
+            'final_count': len(labels),
+            'in_region_count': in_region_count,
+        }
+    return region_results
+
+
 def app():
     st.title('DXF Extract Labels')
     st.write('DXFファイルからテキストラベルを抽出し、Excel形式で出力します。')
 
-    # プログラム説明
     with st.expander("ℹ️ プログラム説明", expanded=False):
-        help_text = [
+        st.info("\n".join([
             "このツールは、DXFファイルからテキスト要素（ラベル）を抽出し、Excelファイルに出力します。",
             "",
             "**使用手順：**",
             "1. DXFファイルをアップロードしてください（複数可）",
-            "2. レイヤー選択（必要な場合のみ）",
-            "3. 必要に応じてオプション設定を調整します",
-            "4. 「ラベルを抽出」ボタンをクリックして処理を実行します",
+            "2. 必要に応じてオプションを設定します",
+            "3. 「領域を検出」で矩形領域を検出し、各領域の名称を確認・選択します",
+            "4. 「ラベルを抽出」ボタンで処理を実行します",
             "",
             "**Excelファイルの内容：**",
-            "- サマリーシート：全ファイルの抽出結果概要",
-            "- 各ファイルシート：個別ファイルの抽出ラベル一覧",
-            "- Invalidシート（妥当性チェック有効時）：適合しない機器符号のリスト",
-            "",
-            "**高度な機能：**",
-            "- 機器符号（回路記号）のみを抽出するフィルタリング",
-            "- 機器符号の妥当性チェック（標準フォーマットとの適合性）",
-            "- ラベルの並び替え（昇順、降順、並び替えなし）",
-            "- レイヤー選択による抽出範囲の制限",
-            "- 図面番号の自動抽出"
-        ]
+            "- Summaryシート：全ファイルの抽出結果概要",
+            "- 各ファイルシート：個別ファイルの抽出ラベル一覧（領域検出時は「領域」列付き）",
+            "- 領域一覧シート（領域検出時）：検出領域の一覧",
+            "- Invalidシート（機器符号妥当性チェック有効時）：適合しない機器符号のリスト",
+        ]))
 
-        st.info("\n".join(help_text))
-
+    # ============================================================
     # ファイルアップロード
+    # ============================================================
     st.subheader("DXFファイルのアップロード")
     uploaded_files = st.file_uploader(
         "DXFファイルを選択してください（複数可）",
@@ -171,114 +333,331 @@ def app():
         accept_multiple_files=True
     )
 
-    if uploaded_files:
-        st.success(f"{len(uploaded_files)}個のファイルが選択されました")
+    if not uploaded_files:
+        st.info("DXFファイルをアップロードしてください")
+        return
 
-        # レイヤー選択機能
-        st.subheader("レイヤー選択（オプション）")
+    st.success(f"{len(uploaded_files)}個のファイルが選択されました")
 
-        # 最初のファイルからレイヤー一覧を取得
-        temp_file_path = save_uploadedfile(uploaded_files[0])
-        available_layers = get_layers_from_dxf(temp_file_path)
-        os.unlink(temp_file_path)
+    # レイヤー一覧はキャッシュして再処理を防ぐ（ウィジェット操作ごとの遅延を解消）
+    available_layers = _get_layers_cached(bytes(uploaded_files[0].getbuffer()))
 
-        if available_layers:
-            layer_selection_enabled = st.checkbox(
-                "特定のレイヤーのみを処理する",
+    # ============================================================
+    # オプション
+    # ============================================================
+    st.subheader("オプション")
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        # a) レイヤー選択
+        layer_selection_enabled = st.checkbox(
+            "特定のレイヤーのみを処理する",
+            value=False,
+            help="チェックを入れると、選択したレイヤーのみを処理対象とします"
+        )
+        selected_layers = None
+        if layer_selection_enabled and available_layers:
+            selected_layers = st.multiselect(
+                "処理対象とするレイヤーを選択してください",
+                options=available_layers,
+                default=available_layers,
+                help="複数選択可能です。デフォルトでは全レイヤーが選択されています。"
+            )
+            if selected_layers:
+                st.info(f"{len(selected_layers)}個のレイヤーが選択されています")
+
+        # b) 機器符号以外も抽出（デフォルト OFF = 機器符号のみ）
+        also_extract_non_circuit = st.checkbox(
+            "機器符号（候補）以外も抽出",
+            value=False,
+            help="チェックなし（既定）：機器符号パターンに一致するラベルのみ抽出します。\n"
+                 "チェックあり：機器符号以外のラベルも含めてすべて抽出します。\n\n"
+                 "【機器符号パターン例】\n"
+                 "• 英文字のみ: CNCNT, FB\n"
+                 "• 英文字+数字: R10, CN3, PSW1\n"
+                 "• 英文字+数字+英文字: X14A, RMSS2A\n"
+                 "• 括弧付き: FB(), MSS(MOTOR), R10(2.2K)"
+        )
+        filter_non_parts = not also_extract_non_circuit
+
+        # c) 機器符号妥当性チェック（機器符号のみモードのときのみ表示）
+        validate_ref_designators = False
+        if not also_extract_non_circuit:
+            validate_ref_designators = st.checkbox(
+                "機器符号妥当性チェック",
                 value=False,
-                help="チェックを入れると、選択したレイヤーのみを処理対象とします"
+                help="抽出された機器符号がフォーマットに適合するかチェックします。\n"
+                     "適合しない機器符号のリストを別シートに出力します。\n"
+                     "（例：CBnnn, ELB(CB)nnn, R, Annn等の標準フォーマット）"
             )
 
-            selected_layers = None
-            if layer_selection_enabled:
-                selected_layers = st.multiselect(
-                    "処理対象とするレイヤーを選択してください",
-                    options=available_layers,
-                    default=available_layers,
-                    help="複数選択可能です。デフォルトでは全レイヤーが選択されています。"
-                )
+        # d) 図面番号・タイトル・サブタイトルを抽出（統合）
+        extract_all_option = st.checkbox(
+            "図面番号・タイトル・サブタイトルを抽出",
+            value=False,
+            help="図面番号（例：EE6868-500-01C）、タイトル、サブタイトルをサマリーシートに抽出します。"
+        )
+        extract_drawing_numbers_option = extract_all_option
+        extract_title_option = extract_all_option
 
-                if selected_layers:
-                    st.info(f"{len(selected_layers)}個のレイヤーが選択されています")
-        else:
-            selected_layers = None
+    with col_right:
+        sort_option = st.selectbox(
+            "並び替え",
+            options=[
+                ("昇順", "asc"),
+                ("降順", "desc"),
+                ("並び替えなし", "none")
+            ],
+            format_func=lambda x: x[0],
+            help="ラベルの並び替え順を指定します",
+            index=0
+        )
+        sort_value = sort_option[1]
 
-        # オプション設定
-        with st.expander("オプション設定", expanded=False):
-            col1, col2 = st.columns(2)
+        output_filename = st.text_input(
+            "出力Excelファイル名",
+            value="extracted_labels.xlsx",
+            help="出力するExcelファイルの名前を指定します"
+        )
+        if not output_filename.endswith('.xlsx'):
+            output_filename += '.xlsx'
 
-            with col1:
-                filter_option = st.checkbox(
-                    "機器符号（候補）のみ抽出",
-                    value=False,
-                    help="以下のパターンに一致するラベルのみを機器符号として抽出します："
-                         "\n\n【基本パターン】"
-                         "\n• 英文字のみ: CNCNT, FB"
-                         "\n• 英文字+数字: R10, CN3, PSW1"
-                         "\n• 英文字+数字+英文字: X14A, RMSS2A"
-                         "\n\n【括弧付きパターン】"
-                         "\n• 英文字(補足): FB(), MSS(MOTOR)"
-                         "\n• 英文字+数字(補足): R10(2.2K), MSSA(+)"
-                         "\n• 英文字+数字+英文字(補足): U23B(DAC)"
-                         "\n\n※英文字だけの場合は英文字2個以上、それ以外の場合は英文字1個以上、数字1個以上必要です"
-                )
+    # ============================================================
+    # 領域検出の詳細設定（フォーム形式 — 「設定完了」で確定）
+    # ============================================================
+    _cfg_defaults = dict(DEFAULT_REGION_CONFIG)
+    _cfg_defaults['name_max_dist'] = 10.0  # デフォルトを10に変更
+    saved_cfg = st.session_state.get('saved_region_cfg', _cfg_defaults)
+    region_cfg = dict(saved_cfg)  # 「設定完了」が押されるまではこの値を使用
 
-                # 機器符号妥当性チェックオプション
-                validate_ref_designators = False
-                if filter_option:
-                    validate_ref_designators = st.checkbox(
-                        "機器符号妥当性チェック",
-                        value=False,
-                        help="抽出された機器符号がフォーマットに適合するかチェックします。"
-                             "\n適合しない機器符号のリストを別シートに出力します。"
-                             "\n（例：CBnnn, ELB(CB) nnn, R, Annn等の標準フォーマット）"
+    with st.expander("領域検出の詳細設定", expanded=False):
+        st.caption("値を変更した後、「設定完了」ボタンを押すと確定されます（ボタンを押さずに変更した値は反映されません）。")
+        with st.form("region_cfg_form"):
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                frm_frame_lw = st.number_input(
+                    "図面枠の太さ",
+                    value=int(saved_cfg['frame_lineweight']),
+                    step=5,
+                    help="図面全体を囲む枠の線の太さ（lineweight）",
+                    key='frm_frame_lineweight')
+                frm_region_lw = st.number_input(
+                    "領域境界線の太さ",
+                    value=int(saved_cfg['region_lineweight']),
+                    step=5,
+                    help="矩形領域の境界線の太さ（lineweight）",
+                    key='frm_region_lineweight')
+                frm_region_color = st.number_input(
+                    "領域境界線の色(ACI)",
+                    value=int(saved_cfg['region_color']),
+                    min_value=1, max_value=256, step=1,
+                    help="矩形領域の境界線の ACI 色番号（2 = 黄色）",
+                    key='frm_region_color')
+                frm_cp_margin = st.number_input(
+                    "接続点判定マージン（座標）",
+                    value=float(saved_cfg['connection_point_margin']),
+                    min_value=0.0, step=0.01, format="%.2f",
+                    help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
+                         "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
+                    key='frm_connection_point_margin')
+            with rc2:
+                frm_area_pct = st.number_input(
+                    "最小面積（単独領域・図面枠面積比 %）",
+                    value=int(saved_cfg['area_ratio'] * 100),
+                    min_value=1, max_value=100, step=5,
+                    help="1つの閉領域が単独でこの面積比以上のとき抽出対象とします",
+                    key='frm_area_ratio_pct')
+                frm_group_pct = st.number_input(
+                    "最小面積（同名複数領域・図面枠面積比 %）",
+                    value=int(saved_cfg['group_area_ratio'] * 100),
+                    min_value=1, max_value=100, step=5,
+                    help="同じ名称の複数ピースを合算したとき、この面積比以上なら抽出対象とします。"
+                         "第1図面で成立した名称は他図面でも面積不問で抽出します。",
+                    key='frm_group_area_ratio_pct')
+                frm_name_max = st.number_input(
+                    "領域名称ラベルの境界線からの最大距離（座標）",
+                    value=int(saved_cfg.get('name_max_dist', 10.0)),
+                    min_value=0, step=1,
+                    help="下端境界線からこの座標距離以内のラベルを名称候補とします",
+                    key='frm_name_max_dist')
+                frm_name_min = st.number_input(
+                    "領域名称ラベルの境界線からの最小距離（座標）",
+                    value=int(saved_cfg['name_min_dist']),
+                    min_value=0, step=1,
+                    help="この距離未満（境界線分上）のラベルは名称候補から除外します",
+                    key='frm_name_min_dist')
+                frm_min_letters = st.number_input(
+                    "領域名称候補に必要な文字数",
+                    value=int(saved_cfg['name_min_letters']),
+                    min_value=1, step=1,
+                    help="英字がこの文字数以上のラベルのみ名称候補とします",
+                    key='frm_name_min_letters')
+                frm_terms = st.text_input(
+                    "領域名称候補から除外する単語（カンマ区切り）",
+                    value=','.join(saved_cfg['name_exclude_terms']),
+                    help="これらの語を含むラベルを名称候補から除外します",
+                    key='frm_name_exclude_terms')
+
+            submitted = st.form_submit_button("設定完了", type="primary")
+
+    # フォーム送信時に設定を確定・保存
+    if submitted:
+        region_cfg.update({
+            'frame_lineweight': frm_frame_lw,
+            'region_lineweight': frm_region_lw,
+            'region_color': frm_region_color,
+            'connection_point_margin': frm_cp_margin,
+            'area_ratio': frm_area_pct / 100.0,
+            'group_area_ratio': frm_group_pct / 100.0,
+            'name_max_dist': float(frm_name_max),
+            'name_min_dist': float(frm_name_min),
+            'name_min_letters': frm_min_letters,
+            'name_exclude_terms': tuple(
+                s.strip() for s in frm_terms.split(',') if s.strip()),
+        })
+        st.session_state['saved_region_cfg'] = dict(region_cfg)
+        st.session_state['region_cfg_is_saved'] = True
+        st.toast("設定を保存しました", icon="✅")
+
+    if st.session_state.get('region_cfg_is_saved'):
+        st.caption("✅ 詳細設定：保存済み")
+
+    # ============================================================
+    # 領域を検出
+    # ============================================================
+    if st.button("領域を検出", key="detect_regions_btn"):
+        try:
+            with st.spinner('図面枠と矩形領域を検出中...'):
+                analyses = {}
+                for uf in uploaded_files:
+                    tmp = save_uploadedfile(uf)
+                    try:
+                        analyses[uf.name] = analyze_dxf_regions(tmp, region_cfg)
+                    finally:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                st.session_state['region_analyses'] = analyses
+                for k in list(st.session_state.keys()):
+                    if isinstance(k, str) and k.startswith('rc_'):
+                        del st.session_state[k]
+                for k in ['excel_result', 'is_region_mode', 'region_results_summary']:
+                    if k in st.session_state:
+                        del st.session_state[k]
+        except Exception as e:
+            handle_error(e)
+
+    # ============================================================
+    # 領域の確認
+    # ============================================================
+    if 'region_analyses' in st.session_state:
+        analyses = st.session_state['region_analyses']
+        st.subheader("領域の確認")
+
+        for fname, analysis in analyses.items():
+            err = analysis.get('error')
+            n_frames = len(analysis.get('frames', []))
+            regions = analysis.get('regions', [])
+            st.caption(f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個")
+            if err:
+                st.warning(err)
+                continue
+            if not regions:
+                st.info("面積条件を満たす領域が検出されませんでした。詳細設定の調整をお試しください。")
+                continue
+
+            for reg_idx, reg in enumerate(regions):
+                if reg_idx > 0:
+                    st.divider()
+
+                corners = reg.get('corners', [])
+                # 「図面#/領域#（面積 xx%）」 と 📐 ボタンを同じ行に
+                col_header, col_btn = st.columns([8, 1])
+                with col_header:
+                    st.markdown(
+                        f"　**図面{reg['frame'] + 1} / 領域{reg['id'] + 1}**"
+                        f"　面積 {reg['area_pct']:.0f}%"
+                    )
+                with col_btn:
+                    with st.popover("📐"):
+                        st.markdown(f"**頂点の座標**（左下から / {len(corners)}点）")
+                        st.code(
+                            '\n'.join(
+                                f"{i + 1}: ({x:.2f}, {y:.2f})"
+                                for i, (x, y) in enumerate(corners)
+                            ) or '(なし)'
+                        )
+
+                cands = reg['name_candidates']
+                if not cands:
+                    st.caption("　　（名称候補なし）")
+                    continue
+
+                # 他の図面/領域で選択済みの名称を収集し、一致する候補をデフォルトにする
+                selected_elsewhere = set()
+                for fn2, an2 in analyses.items():
+                    for r2 in an2.get('regions', []):
+                        if fn2 == fname and r2['id'] == reg['id']:
+                            continue
+                        for j, (_d2, t2) in enumerate(r2['name_candidates']):
+                            if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
+                                selected_elsewhere.add(t2)
+                default_idx = 0
+                for i, (d, t) in enumerate(cands):
+                    if t in selected_elsewhere:
+                        default_idx = i
+                        break
+
+                for i, (d, t) in enumerate(cands):
+                    ck = f"rc_{fname}_{reg['id']}_{i}"
+                    if ck not in st.session_state:
+                        st.session_state[ck] = (i == default_idx)
+                    st.checkbox(
+                        f"　{t}　（境界線からの距離 {d:.0f}）",
+                        key=ck,
+                        on_change=_on_change_radio,
+                        args=(fname, reg['id'], i, len(cands))
                     )
 
-                # 図面番号抽出オプション
-                extract_drawing_numbers_option = st.checkbox(
-                    "図面番号を抽出",
-                    value=False,
-                    help="DXFファイルから図面番号（例：DE5313-008-02B）を抽出します。"
-                         "\n抽出された図面番号はサマリーシートに表示されます。"
-                )
+    # ============================================================
+    # ラベルを抽出
+    # ============================================================
+    if st.button("ラベルを抽出"):
+        try:
+            with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
+                if 'region_analyses' in st.session_state:
+                    # 領域付きモード
+                    analyses = st.session_state['region_analyses']
+                    name_selections = {}
+                    for fname, analysis in analyses.items():
+                        for reg in analysis.get('regions', []):
+                            chosen = []
+                            for i, (_d, t) in enumerate(reg['name_candidates']):
+                                if st.session_state.get(f"rc_{fname}_{reg['id']}_{i}"):
+                                    chosen.append(t)
+                            if chosen:
+                                name_selections[(fname, reg['id'])] = chosen
 
-                # タイトル抽出オプション
-                extract_title_option = st.checkbox(
-                    "タイトルとサブタイトルを抽出",
-                    value=False,
-                    help="DXFファイルからタイトルとサブタイトルを抽出します。"
-                         "\n「TITLE」ラベルの右側近辺、「REVISION」の下方向に配置されたテキストから抽出します。"
-                         "\n抽出されたタイトルとサブタイトルはサマリーシートに表示されます。"
-                )
+                    region_results = build_region_results(
+                        analyses, name_selections, sort_value,
+                        filter_circuit_only=filter_non_parts)
 
-            with col2:
-                sort_option = st.selectbox(
-                    "並び替え",
-                    options=[
-                        ("昇順", "asc"),
-                        ("降順", "desc"),
-                        ("並び替えなし", "none")
-                    ],
-                    format_func=lambda x: x[0],
-                    help="ラベルの並び替え順を指定します",
-                    index=0
-                )
-                sort_value = sort_option[1]
+                    st.session_state.excel_result = create_region_excel_output(region_results)
+                    st.session_state.output_filename = output_filename
+                    st.session_state['is_region_mode'] = True
+                    st.session_state['region_results_summary'] = {
+                        f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
+                        for f, d in region_results.items()
+                    }
+                    st.session_state.processing_settings = {
+                        'filter_option': filter_non_parts,
+                        'extract_drawing_numbers': extract_drawing_numbers_option,
+                        'extract_title': extract_title_option,
+                    }
 
-                # 出力ファイル名設定
-                output_filename = st.text_input(
-                    "出力Excelファイル名",
-                    value="extracted_labels.xlsx",
-                    help="出力するExcelファイルの名前を指定します"
-                )
-                if not output_filename.endswith('.xlsx'):
-                    output_filename += '.xlsx'
-
-        # 処理実行ボタン
-        if st.button("ラベルを抽出"):
-            try:
-                with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
-                    # 一時ファイルに保存
+                else:
+                    # 通常モード
                     temp_files = []
                     original_filenames = []
                     for uploaded_file in uploaded_files:
@@ -286,10 +665,9 @@ def app():
                         temp_files.append(temp_file)
                         original_filenames.append(uploaded_file.name)
 
-                    # ラベル抽出
                     results_temp = process_multiple_dxf_files(
                         temp_files,
-                        filter_non_parts=filter_option,
+                        filter_non_parts=filter_non_parts,
                         sort_order=sort_value,
                         debug=False,
                         selected_layers=selected_layers,
@@ -299,64 +677,80 @@ def app():
                         original_filenames=original_filenames
                     )
 
-                    # 結果のキーを一時ファイルパスから元のファイル名に置き換え
                     results = {}
                     for temp_file, original_name in zip(temp_files, original_filenames):
                         if temp_file in results_temp:
                             labels, info = results_temp[temp_file]
-                            # 元のファイル名で情報を更新
                             info['filename'] = original_name
                             results[original_name] = (labels, info)
 
-                    # Excel出力を生成
-                    excel_data = create_excel_output(
-                        results,
-                        filter_option,
-                        sort_value,
-                        validate_ref_designators
-                    )
-
-                    # セッション状態に保存
-                    st.session_state.excel_result = excel_data
+                    st.session_state.excel_result = create_excel_output(
+                        results, filter_non_parts, sort_value, validate_ref_designators)
                     st.session_state.output_filename = output_filename
+                    st.session_state['is_region_mode'] = False
+                    st.session_state.results = results
                     st.session_state.processing_settings = {
-                        'filter_option': filter_option,
+                        'filter_option': filter_non_parts,
                         'validate_ref_designators': validate_ref_designators,
                         'sort_order': sort_value,
                         'extract_drawing_numbers': extract_drawing_numbers_option,
                         'extract_title': extract_title_option
                     }
-                    st.session_state.results = results
 
-                    # 一時ファイルの削除
                     for temp_file in temp_files:
                         try:
                             os.unlink(temp_file)
-                        except:
+                        except Exception:
                             pass
 
-            except Exception as e:
-                handle_error(e)
+        except Exception as e:
+            handle_error(e)
 
-        # セッション状態に保存された結果を表示
-        if 'excel_result' in st.session_state and st.session_state.excel_result:
-            settings = st.session_state.get('processing_settings', {})
+    # ============================================================
+    # 抽出結果
+    # ============================================================
+    if st.session_state.get('excel_result'):
+        is_region_mode = st.session_state.get('is_region_mode', False)
+
+        if is_region_mode:
+            summ = st.session_state.get('region_results_summary', {})
+            st.success(f"{len(summ)}個のDXFファイルからラベル抽出が完了しました（領域付き）")
+        else:
             results = st.session_state.get('results', {})
-
-            # 結果サマリーの表示
             st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
 
-            # 統計情報の表示
-            with st.expander("📊 抽出結果統計", expanded=False):
-                stats_rows = []
+        with st.expander("📊 抽出結果統計", expanded=False):
+            if is_region_mode:
+                summ = st.session_state.get('region_results_summary', {})
+                if summ:
+                    rows = []
+                    for f, d in summ.items():
+                        rows.append({
+                            'ファイル名': f,
+                            '総抽出ラベル数': d.get('total_in_frame', 0),
+                            '除外ラベル数': d.get('filtered_count', 0),
+                            '最終ラベル数': d.get('final_count', 0),
+                            '図面枠数': d.get('frames', 0),
+                            '検出領域数': d.get('regions_detected', 0),
+                            '確定領域数': d.get('regions_named', 0),
+                            '領域内ラベル数': d.get('in_region_count', 0),
+                        })
+                    st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+            else:
+                settings = st.session_state.get('processing_settings', {})
+                results = st.session_state.get('results', {})
+                rows = []
                 for file_path, (labels, info) in results.items():
                     filename = info.get('filename', os.path.basename(file_path))
                     row = {
                         'ファイル名': filename,
-                        '総抽出数': info.get('total_extracted', 0),
-                        'フィルタリング除外数': info.get('filtered_count', 0),
+                        '総抽出ラベル数': info.get('total_extracted', 0),
+                        '除外ラベル数': info.get('filtered_count', 0),
                         '最終ラベル数': info.get('final_count', 0),
-                        'レイヤー数': f"{info.get('processed_layers', 0)}/{info.get('total_layers', 0)}",
+                        'レイヤー数': (
+                            f"{info.get('processed_layers', 0)}"
+                            f"/{info.get('total_layers', 0)}"
+                        ),
                     }
                     if settings.get('extract_drawing_numbers'):
                         row['図番'] = info.get('main_drawing_number', '')
@@ -364,33 +758,29 @@ def app():
                     if settings.get('extract_title'):
                         row['タイトル'] = info.get('title', '')
                         row['サブタイトル'] = info.get('subtitle', '')
-                    stats_rows.append(row)
-                st.dataframe(pd.DataFrame(stats_rows), width='stretch', hide_index=True)
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
-            # ダウンロードボタンの表示
-            st.subheader("結果のダウンロード")
-            col1, col2 = st.columns([3, 1])
+        st.write(f"出力ファイル：**{st.session_state.output_filename}**")
+        st.download_button(
+            label="Excelをダウンロード",
+            data=st.session_state.excel_result,
+            file_name=st.session_state.output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width='stretch',
+        )
 
-            with col1:
-                st.write(f"**出力ファイル**: {st.session_state.output_filename}")
+        if st.button("🔄 新しい抽出を開始", key="restart_button"):
+            for key in ['excel_result', 'output_filename', 'processing_settings',
+                        'results', 'is_region_mode', 'region_analyses',
+                        'region_results_summary']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            for k in list(st.session_state.keys()):
+                if isinstance(k, str) and k.startswith('rc_'):
+                    del st.session_state[k]
+            st.rerun()
 
-            with col2:
-                st.download_button(
-                    label="Excelをダウンロード",
-                    data=st.session_state.excel_result,
-                    file_name=st.session_state.output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-            # 新しい抽出を開始するボタン
-            if st.button("🔄 新しい抽出を開始", key="restart_button"):
-                # セッション状態をクリアして新しい抽出を開始
-                for key in ['excel_result', 'output_filename', 'processing_settings', 'results']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.rerun()
-    else:
-        st.info("DXFファイルをアップロードしてください")
 
 if __name__ == "__main__":
     app()

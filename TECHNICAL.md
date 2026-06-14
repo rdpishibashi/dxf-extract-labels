@@ -11,15 +11,28 @@
 
 ```
 DXF-extract-labels/
-├── app.py                  # Streamlit エントリポイント
+├── app.py                      # Streamlit UI（ファイルアップロード・オプション・結果表示）
 ├── requirements.txt
 ├── utils/
-│   ├── extract_labels.py   # DXF ラベル抽出コア（共有モジュール）
-│   └── common_utils.py     # 共通ユーティリティ（共有モジュール）
+│   ├── extract_labels.py       # DXF ラベル抽出コア（共有モジュール）
+│   ├── region_detector.py      # 矩形領域検出アルゴリズム（DXF-extract-labels 専用）
+│   ├── excel_output.py         # Excel 出力生成（通常モード・領域モード両対応）
+│   └── common_utils.py         # 共通ユーティリティ（共有モジュール）
 ```
 
-> `utils/` の 2 ファイルは DXF-label-diff / DXF-diff-processor / DXF-tools 等と同一ロジックを持つ。
-> 修正時は関連プロジェクトへの伝播が必要。
+> `extract_labels.py` / `common_utils.py` は DXF-label-diff / DXF-diff-processor / DXF-tools 等と
+> 同一ロジックを持つ共有モジュール。修正時は関連プロジェクトへの伝播が必要。
+> `region_detector.py` / `excel_output.py` は DXF-extract-labels 専用で共有対象外。
+
+### モジュール責務
+
+| ファイル | 責務 |
+|---------|------|
+| `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示） |
+| `extract_labels.py` | DXF エンティティからのテキスト抽出・図番判別・タイトル抽出 |
+| `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出 |
+| `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_region_excel_output` / `build_region_results`）|
+| `common_utils.py` | 機器符号フィルタリング・妥当性チェック・ファイル保存・エラー処理 |
 
 ---
 
@@ -353,6 +366,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.0 | コードベース モジュール分割リファクタリング: `utils/extract_labels.py`（1327行）を `extract_labels.py`（621行）＋ `region_detector.py`（707行）に分割。`app.py` から Excel 出力ロジックを `utils/excel_output.py`（264行）に分離。ロジック変更なし・回帰テスト全14件 PASS。|
 | v1.4.0 | UI 全面再構築: オプション統合（機器符号のみがデフォルト ON・機器符号妥当性チェック連動・図面番号/タイトル統合チェック）、詳細設定フォーム（`st.form` + 「設定完了」ボタン + `st.toast` フィードバック）、「領域を検出」常時表示、「ラベルを抽出」が領域/通常モード共用、レイヤー取得の `@st.cache_data` 化（再処理遅延解消）。UI 改善: 「領域の確認」名称チェックボックスのラジオ動作・他領域選択名をデフォルト優先・`st.popover` 角座標表示・領域間 divider。領域なし領域の Excel 出力を「no name #」（連番）で自動命名。`region_name_candidates` に全横エッジフォールバック（上端近傍ラベルの取得）を追加。|
 | v1.3.0 | 矩形領域抽出（領域選択オプション）追加。図面枠(lw100)内の直交ポリゴン閉領域を検出（コーナー相手判定による縦ギャップ橋渡し・端点接続ベース面探索・面積20%絞り込み）。領域名候補（下端横線分近傍・機器符号/小文字/NOTE/☆除外・RACK例外）をチェックボックスで確定。各領域の角座標表示。領域付き Excel（領域列・領域一覧シート）出力。回帰テスト `tests/regression/test_region_extraction.py`。※本機能は DXF-extract-labels のみ。他プロジェクトへは未伝播（動作確認後に検討）|
 | v1.2.0 | Total シート追加（全ファイルのラベル合計集計）。Summary のファイル名に各シートへの内部ハイパーリンクを設定。Invalid シートを機器符号ごとの集計形式（機器符号・個数・ファイル名）に変更。「抽出結果統計」をテーブル表示に変更しデフォルト折りたたみ化。処理後の「処理オプション」表示ブロックを削除 |
@@ -367,4 +381,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-14
+最終更新: 2026-06-15

@@ -303,6 +303,7 @@ def app():
         st.subheader("領域の確認")
 
         for fname, analysis in analyses.items():
+            st.markdown(f"**{fname}**")
             err = analysis.get('error')
             n_frames = len(analysis.get('frames', []))
             regions = analysis.get('regions', [])

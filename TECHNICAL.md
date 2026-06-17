@@ -366,6 +366,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.2 | `region_detector.py` の図面枠検出・LWPOLYLINE 境界対応を修正。`detect_drawing_frames` に `_merge_collinear(bridge=False)` を追加し、枠の縦辺が同一 x 上で複数線分に分断されていても正しく統合・高さ判定できるよう修正（EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されていた問題を解消）。`_collect_region_geometry` に `handle_lwpolyline_lp` を追加し LWPOLYLINE (lw=25/color=2) の辺を `region_lines_lp` として別収集。`analyze_dxf_regions` に `_run_detection` ヘルパーと LINE 優先 2 パス検出を導入（LINE のみで閾値超え候補ゼロかつ LWPOLYLINE 境界線がある場合に LINE+LWPOLYLINE で再検出）。DXF-viewer のアルゴリズムを移植。|
 | v1.5.1 | MTEXT 整形（`clean_mtext_format_codes`）を手書き正規表現から ezdxf の `plain_mtext()` ベースへ移行。関数シグネチャ・呼び出し側は不変。実データ 12,145 件の MTEXT で旧実装と出力完全一致を確認、実ファイル E2E 抽出結果も同一ハッシュ（`cb112d6d…`）。加えて旧実装が未対応だった `\S` 分数・`%%c`/`%%d`/`%%p`（Ø/°/±）・`^I`/`^J`/`^M` キャレットシーケンスを正しく処理。回帰テスト `tests/regression/test_mtext_cleaning.py`（14件）追加。|
 | v1.5.0 | コードベース モジュール分割リファクタリング: `utils/extract_labels.py`（1327行）を `extract_labels.py`（621行）＋ `region_detector.py`（707行）に分割。`app.py` から Excel 出力ロジックを `utils/excel_output.py`（264行）に分離。ロジック変更なし・回帰テスト全14件 PASS。|
 | v1.4.0 | UI 全面再構築: オプション統合（機器符号のみがデフォルト ON・機器符号妥当性チェック連動・図面番号/タイトル統合チェック）、詳細設定フォーム（`st.form` + 「設定完了」ボタン + `st.toast` フィードバック）、「領域を検出」常時表示、「ラベルを抽出」が領域/通常モード共用、レイヤー取得の `@st.cache_data` 化（再処理遅延解消）。UI 改善: 「領域の確認」名称チェックボックスのラジオ動作・他領域選択名をデフォルト優先・`st.popover` 角座標表示・領域間 divider。領域なし領域の Excel 出力を「no name #」（連番）で自動命名。`region_name_candidates` に全横エッジフォールバック（上端近傍ラベルの取得）を追加。|
@@ -382,4 +383,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-15
+最終更新: 2026-06-17

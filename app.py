@@ -342,12 +342,18 @@ def app():
                     continue
 
                 # 他の図面/領域で選択済みの名称を収集し、一致する候補をデフォルトにする
+                # ただし候補が1件のみ（選択肢なし・自動確定）の領域は除外する。
+                # 候補1件の領域は「ユーザーが能動的に選んだわけではない確定」のため、
+                # 同じラベルが隣接領域の候補にも上がる場合に誤って引き継がれるのを防ぐ。
                 selected_elsewhere = set()
                 for fn2, an2 in analyses.items():
                     for r2 in an2.get('regions', []):
                         if fn2 == fname and r2['id'] == reg['id']:
                             continue
-                        for j, (_d2, t2) in enumerate(r2['name_candidates']):
+                        cands2 = r2.get('name_candidates', [])
+                        if len(cands2) <= 1:
+                            continue  # 選択肢なし（自動確定）の領域はスキップ
+                        for j, (_d2, t2) in enumerate(cands2):
                             if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
                                 selected_elsewhere.add(t2)
                 default_idx = 0

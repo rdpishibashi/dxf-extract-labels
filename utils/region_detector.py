@@ -79,10 +79,34 @@ def _collect_region_geometry(msp, cfg):
         elif lw == rlw and getattr(e.dxf, 'color', None) == rcol:
             region_lines.append((e.dxf.start, e.dxf.end))
 
+    region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
+
+    def handle_lwpolyline_lp(e):
+        """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
+        lw = getattr(e.dxf, 'lineweight', None)
+        if lw != rlw or getattr(e.dxf, 'color', None) != rcol:
+            return
+        try:
+            pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)
+        except Exception:
+            return
+        n = len(pts)
+        if n < 2:
+            return
+        close_range = n if e.closed else n - 1
+        for i in range(close_range):
+            p0 = pts[i]
+            p1 = pts[(i + 1) % n]
+            if abs(p0[2]) > 1e-6:
+                continue
+            region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1])))
+
     for e in msp:
         t = e.dxftype()
         if t == 'LINE':
             handle_line(e)
+        elif t == 'LWPOLYLINE':
+            handle_lwpolyline_lp(e)
         elif t in ('TEXT', 'MTEXT'):
             label_entities.append(e)
         elif t == 'INSERT':
@@ -94,11 +118,13 @@ def _collect_region_geometry(msp, cfg):
                     vt = v.dxftype()
                     if vt == 'LINE':
                         handle_line(v)
+                    elif vt == 'LWPOLYLINE':
+                        handle_lwpolyline_lp(v)
                     elif vt in ('TEXT', 'MTEXT'):
                         label_entities.append(v)
             except Exception:
                 pass
-    return frame_lines, region_lines, label_entities, connection_points
+    return frame_lines, region_lines, region_lines_lp, label_entities, connection_points
 
 
 def _count_connection_points_on_boundary(polygon, points, margin):
@@ -209,9 +235,17 @@ def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.
 
 def detect_drawing_frames(frame_lines, eps=2.0, min_side=400.0):
     """lineweight=100 の線分から図面枠（複数可）を検出する。
-    枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]"""
+    枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
+
+    注: 枠の縦辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
+    いるケース）でも正しく検出できるよう、分類後に共線セグメントを結合してから
+    高さ判定を行う。
+    """
     _, V = _split_axis_aligned(frame_lines, eps)
-    tall = [v for v in V if (v[2] - v[1]) >= min_side]
+    # 接触/重複する同一 x 上の線分を 1 本に統合してから高さ判定
+    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されているケース）
+    Vm = _merge_collinear(V, eps, bridge=False)
+    tall = [v for v in Vm if (v[2] - v[1]) >= min_side]
     if len(tall) < 2:
         return []
     xedges = _cluster_1d([v[0] for v in tall], eps)
@@ -585,7 +619,7 @@ def analyze_dxf_regions(dxf_file, config=None):
     try:
         doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
-        frame_lines, region_lines, label_entities, connection_points = \
+        frame_lines, region_lines, region_lines_lp, label_entities, connection_points = \
             _collect_region_geometry(msp, cfg)
 
         frames = detect_drawing_frames(frame_lines, cfg['snap'])
@@ -615,37 +649,54 @@ def analyze_dxf_regions(dxf_file, config=None):
             frame_labels.append((clean_text, x, y))
         result['labels'] = frame_labels
 
-        RH, RV = _split_axis_aligned(region_lines, cfg['snap'])
         single_thr = frame_area * cfg['area_ratio']            # 単独領域の閾値(20%)
         group_thr = frame_area * cfg.get('group_area_ratio', 0.10)  # 同名複数ピース合算の閾値(10%)
 
-        # 1) 各図面（フレーム）の候補面を検出（除外適用・名称候補付与）
-        frame_cands = []
-        for fi, frame in enumerate(frames):
-            cands_list = []
-            for reg in _detect_regions(RH, RV, frame, frame_area, cfg, frame_labels,
-                                       connection_points):
-                if cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):
-                    continue
-                if cfg['exclude_connection_point_regions']:
-                    cp = _count_connection_points_on_boundary(
-                        reg['polygon'], connection_points, cfg['connection_point_margin'])
-                    if cp >= cfg['connection_point_threshold']:
+        def _run_detection(lines):
+            """lines から H/V 分類 → 候補面リストを返す内部ヘルパー。"""
+            RH, RV = _split_axis_aligned(lines, cfg['snap'])
+            fc = []
+            for fi, frame in enumerate(frames):
+                cands_list = []
+                for reg in _detect_regions(RH, RV, frame, frame_area, cfg, frame_labels,
+                                           connection_points):
+                    if cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):
                         continue
-                ncands = region_name_candidates(
-                    reg['polygon'], frame_labels,
-                    max_dist=cfg['name_max_dist'], min_dist=cfg['name_min_dist'],
-                    min_letters=cfg['name_min_letters'],
-                    exclude_circuit_symbols=cfg['exclude_circuit_symbols'],
-                    exclude_terms=cfg['name_exclude_terms'],
-                    exclude_lowercase=cfg['name_exclude_lowercase'],
-                    circuit_keep_terms=cfg.get('circuit_symbol_keep_terms', ('RACK',)))
-                cands_list.append({
-                    'polygon': reg['polygon'], 'area': reg['area'],
-                    'name_candidates': ncands,
-                    'default_name': ncands[0][1] if ncands else '',
-                })
-            frame_cands.append(cands_list)
+                    if cfg['exclude_connection_point_regions']:
+                        cp = _count_connection_points_on_boundary(
+                            reg['polygon'], connection_points, cfg['connection_point_margin'])
+                        if cp >= cfg['connection_point_threshold']:
+                            continue
+                    ncands = region_name_candidates(
+                        reg['polygon'], frame_labels,
+                        max_dist=cfg['name_max_dist'], min_dist=cfg['name_min_dist'],
+                        min_letters=cfg['name_min_letters'],
+                        exclude_circuit_symbols=cfg['exclude_circuit_symbols'],
+                        exclude_terms=cfg['name_exclude_terms'],
+                        exclude_lowercase=cfg['name_exclude_lowercase'],
+                        circuit_keep_terms=cfg.get('circuit_symbol_keep_terms', ('RACK',)))
+                    cands_list.append({
+                        'polygon': reg['polygon'], 'area': reg['area'],
+                        'name_candidates': ncands,
+                        'default_name': ncands[0][1] if ncands else '',
+                    })
+                fc.append(cands_list)
+            return fc
+
+        # 1) LINE のみで領域検出を試みる
+        frame_cands = _run_detection(region_lines)
+
+        # LINE だけで閾値超え候補がゼロで LWPOLYLINE 境界線もある場合、
+        # LWPOLYLINE を追加して再検出する（例: EE6888-631-01A.dxf など境界が
+        # LWPOLYLINE で描かれた図面への対応）。
+        # LINE でも十分な候補がある図面では LWPOLYLINE を追加しない
+        # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせる）。
+        line_only_hits = sum(
+            1 for fc in frame_cands for cf in fc
+            if cf['area'] >= single_thr
+        )
+        if line_only_hits == 0 and region_lines_lp:
+            frame_cands = _run_detection(region_lines + region_lines_lp)
 
         # 2) 第1図面（最左フレーム）で「同名複数ピース合算>=group_thr」となる名称を
         #    ターゲットとする（MPD RACK2 のように2矩形で合算が閾値超のケース）。

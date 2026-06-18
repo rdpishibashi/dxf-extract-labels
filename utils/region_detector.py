@@ -442,9 +442,13 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None):
     if not Hf or not Vf:
         return []
     # 共線セグメントの結合はレベル座標を厳密一致(merge_level_tol)で行い、別レベルの
-    # 線（=別矩形）を誤って繋がない。ギャップ橋渡しは縦線分のみ（部品ラベルは縦線分を
-    # 途切れさせる）。横線分のギャップは橋渡ししない。接続点(交点)判定は face_snap。
-    # 縦線分のギャップが CIRCLE で繋がっている場合は橋渡ししない（配線ループ除外）。
+    # 線（=別矩形）を誤って繋がない。ギャップ橋渡しは既定で縦線分のみ（部品ラベルは
+    # 縦線分を途切れさせる）。横線分のギャップは既定では橋渡ししない。接続点(交点)判定
+    # は face_snap。ギャップが CIRCLE で繋がっている場合は橋渡ししない（配線ループ除外）。
+    # 図面全体が90°回転しているファイルでは部品が横線分を途切れさせるため、
+    # bridge_horizontal_gaps=True 指定時は縦線分の端点をコーナー相手として
+    # （x/y を入れ替えて）同じ安全条件で橋渡しする（_detect_regions を呼ぶ側が
+    # 候補ゼロ時のフォールバックとして有効化する）。
     mtol = cfg.get('merge_level_tol', 0.5)
     fsnap = cfg.get('face_snap', 0.1)
     bridge_v = cfg.get('bridge_vertical_gaps', True)
@@ -457,7 +461,15 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None):
     for (hy, hx0, hx1) in Hf:
         h_endpoints.append((hx0, hy))
         h_endpoints.append((hx1, hy))
-    Hm = _merge_collinear(Hf, mtol, bridge=bridge_h)
+    # 縦線分の端点（横ギャップのコーナー相手判定用。x/y を入れ替えて _has_corner_partner
+    # ／_gap_has_circle の (level, 位置) 引数順に合わせる）
+    v_endpoints_swapped = []
+    for (vx, vy0, vy1) in Vf:
+        v_endpoints_swapped.append((vy0, vx))
+        v_endpoints_swapped.append((vy1, vx))
+    circles_swapped = [(cy, cx) for (cx, cy) in fcircles]
+    Hm = _merge_collinear(Hf, mtol, bridge=bridge_h, circles=circles_swapped, circle_band=cband,
+                          h_endpoints=v_endpoints_swapped, corner_tol=ctol)
     Vm = _merge_collinear(Vf, mtol, bridge=bridge_v, circles=fcircles, circle_band=cband,
                           h_endpoints=h_endpoints, corner_tol=ctol)
     # 端点接続ベースの面探索（中ほど交差では繋がない）ため、部品矩形の縦線は領域辺の
@@ -523,14 +535,53 @@ def _dist_to_bottom_edge(pt, bottom_segs):
     return best
 
 
+def _all_vertical_edges(polygon):
+    """ポリゴンの全縦エッジ [(y0,y1,x), ...] を返す（左右両辺含む）。
+
+    図面全体が90°回転している場合、名称ラベルは（通常時の下端/上端横エッジ
+    ではなく）左右いずれかの縦エッジ脇に書かれる。"""
+    segs = []
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        if abs(x1 - x2) < 0.5:
+            segs.append((min(y1, y2), max(y1, y2), x1))
+    return segs
+
+
+def _dist_to_vertical_edge(pt, vertical_segs):
+    """点から縦エッジ群までの最短距離（_dist_to_bottom_edge の縦版）。"""
+    import math as _m
+    x, y = pt
+    best = float('inf')
+    for (y0, y1, ex) in vertical_segs:
+        if y0 <= y <= y1:
+            d = abs(x - ex)
+        else:
+            d = _m.hypot(x - ex, y - (y0 if y < y0 else y1))
+        best = min(best, d)
+    return best
+
+
 def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_letters=3,
                            limit=8, exclude_circuit_symbols=True, exclude_terms=('NOTE', '☆'),
-                           exclude_lowercase=True, circuit_keep_terms=('RACK',)):
-    """領域名候補ラベルを横エッジへの距離順に返す（テキスト重複除去）。
+                           exclude_lowercase=True, circuit_keep_terms=('RACK',),
+                           also_scan_vertical=False):
+    """領域名候補ラベルを境界エッジへの距離順に返す（テキスト重複除去）。
 
     通常は下端エッジからの距離 [min_dist, max_dist] で評価する。
-    候補がゼロの場合は全横エッジ（上端・中段含む）+ min_dist=0 でフォールバック再探索する。
-    これにより上端内側に名称が置かれたボックスにも対応する。
+    候補がゼロの場合は全横エッジ（上端・中段含む）も同じ [min_dist, max_dist] で
+    フォールバック再探索する。これにより上端内側に名称が置かれたボックスにも対応する
+    （例: `HEATER CTRL B.D-5A(HCBD)` が上端から3単位内側）。
+    それでも候補がゼロの場合は全縦エッジ（左右）も同じ [min_dist, max_dist] でさらに
+    フォールバックする。いずれのフォールバックも `min_dist` 未満（境界線分上＝コネクタ
+    符号等が偶然線上に乗っただけの無関係なラベル）は候補に含めない。
+    also_scan_vertical=True のときは、横エッジ側で候補が見つかった場合でも常に縦エッジ
+    （左右）の候補を追加で合算する（候補ゼロのときだけのフォールバックでは不十分）。
+    図面全体が90°回転しているファイルでは名称ラベルが横エッジでなく縦エッジ脇に
+    配置されることが多いが、境界線上(d<min_dist)に偶然乗った無関係なラベルが横エッジ側
+    で先に1件見つかってしまうと、本来の縦エッジ側の名称候補が完全に隠れてしまうため。
     条件:
       - 英字 min_letters 字以上
       - exclude_terms のいずれかを含むラベル（例 NOTE, ☆）は除外
@@ -538,11 +589,8 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
       - exclude_circuit_symbols=True のとき機器符号（候補）パターン一致は除外
     """
     terms = [s for s in (exclude_terms or ())]
-    bottom = _bottom_edges(polygon)
-    if not bottom:
-        return []
 
-    def _scan(edge_segs, md_lo):
+    def _scan(edge_segs, md_lo, dist_fn):
         cand = []
         for (t, x, y) in labels:
             if _count_letters(t) < min_letters:
@@ -556,17 +604,24 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
                 matched, _ = filter_non_circuit_symbols([t])
                 if matched:
                     continue
-            d = _dist_to_bottom_edge((x, y), edge_segs)
+            d = dist_fn((x, y), edge_segs)
             if md_lo <= d <= max_dist:
                 cand.append((d, t))
         return cand
 
-    cand = _scan(bottom, min_dist)
+    bottom = _bottom_edges(polygon)
+    cand = _scan(bottom, min_dist, _dist_to_bottom_edge) if bottom else []
 
-    # 候補なし → 全横エッジ（上端含む）+ min_dist=0 でフォールバック
+    # 候補なし → 全横エッジ（上端含む）でフォールバック（min_dist は変えない）
     if not cand:
-        all_edges = _all_horizontal_edges(polygon)
-        cand = _scan(all_edges, 0.0)
+        all_h_edges = _all_horizontal_edges(polygon)
+        cand = _scan(all_h_edges, min_dist, _dist_to_bottom_edge)
+
+    # 候補なし、または also_scan_vertical=True（回転図面で常時併用）の場合、
+    # 全縦エッジ（左右）の候補を追加する（90°回転対応・min_dist は変えない）
+    if not cand or also_scan_vertical:
+        all_v_edges = _all_vertical_edges(polygon)
+        cand = cand + _scan(all_v_edges, min_dist, _dist_to_vertical_edge)
 
     cand.sort(key=lambda c: c[0])
     seen = set()
@@ -579,6 +634,46 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
         if len(out) >= limit:
             break
     return out
+
+
+def _label_rotation_angle(entity):
+    """ラベルエンティティの実効回転角(度, 0-180で正規化前)を返す。
+    MTEXT は rotation 属性ではなく text_direction ベクトルで回転が表現される
+    ことがあるため、そちらを優先する。"""
+    import math as _m
+    if entity.dxftype() == 'MTEXT':
+        try:
+            if entity.dxf.hasattr('text_direction'):
+                td = entity.dxf.get('text_direction')
+                return _m.degrees(_m.atan2(td[1], td[0]))
+        except Exception:
+            pass
+    return getattr(entity.dxf, 'rotation', 0) or 0
+
+
+def _is_globally_rotated(label_entities, threshold=0.5):
+    """ラベル(TEXT/MTEXT)の過半数が90°(または270°)回転しているか判定する。
+
+    図面全体が90°回転して描かれたファイルでは、部品が横線分（本来の縦線分に
+    相当）を途切れさせるため、横線分ギャップ橋渡しが必要になる。しかし通常向き
+    の図面で「単純に検出ゼロ件だったから」を条件に橋渡しを許可すると、無関係な
+    隣接矩形を誤って結合する副作用の恐れがある。そこでラベルの回転状況から
+    図面全体の回転を明示的に判定し、回転図面のときのみ橋渡しを許可する。
+    通常図面ではラベル回転はほぼ0%（実データで0〜0.2%程度）、回転図面では
+    大半（実データで60〜97%）が90°回転していることを確認済み。
+    """
+    total = 0
+    rotated = 0
+    for e in label_entities:
+        if e.dxftype() not in ('TEXT', 'MTEXT'):
+            continue
+        total += 1
+        ang = _label_rotation_angle(e) % 180.0
+        if 80.0 <= ang <= 100.0:
+            rotated += 1
+    if total == 0:
+        return False
+    return (rotated / total) >= threshold
 
 
 def _is_titleblock_region(polygon, labels):
@@ -651,30 +746,32 @@ def analyze_dxf_regions(dxf_file, config=None):
 
         single_thr = frame_area * cfg['area_ratio']            # 単独領域の閾値(20%)
         group_thr = frame_area * cfg.get('group_area_ratio', 0.10)  # 同名複数ピース合算の閾値(10%)
+        rotated = _is_globally_rotated(label_entities)
 
-        def _run_detection(lines):
+        def _run_detection(lines, det_cfg):
             """lines から H/V 分類 → 候補面リストを返す内部ヘルパー。"""
-            RH, RV = _split_axis_aligned(lines, cfg['snap'])
+            RH, RV = _split_axis_aligned(lines, det_cfg['snap'])
             fc = []
             for fi, frame in enumerate(frames):
                 cands_list = []
-                for reg in _detect_regions(RH, RV, frame, frame_area, cfg, frame_labels,
+                for reg in _detect_regions(RH, RV, frame, frame_area, det_cfg, frame_labels,
                                            connection_points):
-                    if cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):
+                    if det_cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):
                         continue
-                    if cfg['exclude_connection_point_regions']:
+                    if det_cfg['exclude_connection_point_regions']:
                         cp = _count_connection_points_on_boundary(
-                            reg['polygon'], connection_points, cfg['connection_point_margin'])
-                        if cp >= cfg['connection_point_threshold']:
+                            reg['polygon'], connection_points, det_cfg['connection_point_margin'])
+                        if cp >= det_cfg['connection_point_threshold']:
                             continue
                     ncands = region_name_candidates(
                         reg['polygon'], frame_labels,
-                        max_dist=cfg['name_max_dist'], min_dist=cfg['name_min_dist'],
-                        min_letters=cfg['name_min_letters'],
-                        exclude_circuit_symbols=cfg['exclude_circuit_symbols'],
-                        exclude_terms=cfg['name_exclude_terms'],
-                        exclude_lowercase=cfg['name_exclude_lowercase'],
-                        circuit_keep_terms=cfg.get('circuit_symbol_keep_terms', ('RACK',)))
+                        max_dist=det_cfg['name_max_dist'], min_dist=det_cfg['name_min_dist'],
+                        min_letters=det_cfg['name_min_letters'],
+                        also_scan_vertical=rotated,
+                        exclude_circuit_symbols=det_cfg['exclude_circuit_symbols'],
+                        exclude_terms=det_cfg['name_exclude_terms'],
+                        exclude_lowercase=det_cfg['name_exclude_lowercase'],
+                        circuit_keep_terms=det_cfg.get('circuit_symbol_keep_terms', ('RACK',)))
                     cands_list.append({
                         'polygon': reg['polygon'], 'area': reg['area'],
                         'name_candidates': ncands,
@@ -683,20 +780,32 @@ def analyze_dxf_regions(dxf_file, config=None):
                 fc.append(cands_list)
             return fc
 
+        def _hits(fc):
+            return sum(1 for cl in fc for cf in cl if cf['area'] >= single_thr)
+
         # 1) LINE のみで領域検出を試みる
-        frame_cands = _run_detection(region_lines)
+        lines_for_detection = region_lines
+        frame_cands = _run_detection(lines_for_detection, cfg)
 
         # LINE だけで閾値超え候補がゼロで LWPOLYLINE 境界線もある場合、
         # LWPOLYLINE を追加して再検出する（例: EE6888-631-01A.dxf など境界が
         # LWPOLYLINE で描かれた図面への対応）。
         # LINE でも十分な候補がある図面では LWPOLYLINE を追加しない
         # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせる）。
-        line_only_hits = sum(
-            1 for fc in frame_cands for cf in fc
-            if cf['area'] >= single_thr
-        )
-        if line_only_hits == 0 and region_lines_lp:
-            frame_cands = _run_detection(region_lines + region_lines_lp)
+        if _hits(frame_cands) == 0 and region_lines_lp:
+            lines_for_detection = region_lines + region_lines_lp
+            frame_cands = _run_detection(lines_for_detection, cfg)
+
+        # それでも閾値超え候補がゼロ、かつラベルの過半数が90°回転している（=図面全体が
+        # 90°回転して描かれている）場合のみ、横線分のギャップ橋渡しを有効にして再検出する
+        # （安全条件＝縦線分の端点とのコーナー一致無し・CIRCLE無し、は橋渡し縦線分と同じ）。
+        # 回転判定を条件に加えるのは、通常向きの図面で「単に検出ゼロ件だったから」を
+        # トリガーに横線分も橋渡ししてしまうと、無関係な隣接矩形を誤って結合する副作用が
+        # あるため（`_is_globally_rotated` 参照）。
+        if _hits(frame_cands) == 0 and rotated:
+            cfg_h_bridge = dict(cfg)
+            cfg_h_bridge['bridge_horizontal_gaps'] = True
+            frame_cands = _run_detection(lines_for_detection, cfg_h_bridge)
 
         # 2) 第1図面（最左フレーム）で「同名複数ピース合算>=group_thr」となる名称を
         #    ターゲットとする（MPD RACK2 のように2矩形で合算が閾値超のケース）。

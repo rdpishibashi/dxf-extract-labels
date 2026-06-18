@@ -39,14 +39,34 @@ def _get_layers_cached(file_bytes: bytes) -> list:
             pass
 
 
-def _on_change_radio(fname, reg_id, clicked_idx, n_cands):
+def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
     """領域名チェックボックスをラジオボタン的に動作させるコールバック。
-    チェックが ON になったとき、同一領域の他チェックボックスを OFF にする。"""
+
+    チェックが ON になったとき、(1) 同一領域の他チェックボックスを OFF にし、
+    (2) 同じ名称候補を持つ他領域（候補が2件以上＝選択肢ありの領域のみ）にも
+    同じ名称を選択状態として伝播する。チェックボックスは初回生成時にしか
+    デフォルト値を設定できない（st.session_state 既存キーは上書きされない）ため、
+    生成後にユーザーが選択を変更したときの伝播はこのコールバックで明示的に行う。
+    """
     ck = f"rc_{fname}_{reg_id}_{clicked_idx}"
-    if st.session_state.get(ck, False):
-        for j in range(n_cands):
-            if j != clicked_idx:
-                st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
+    if not st.session_state.get(ck, False):
+        return
+    for j in range(n_cands):
+        if j != clicked_idx:
+            st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
+
+    analyses = st.session_state.get('region_analyses', {})
+    for fn2, an2 in analyses.items():
+        for r2 in an2.get('regions', []):
+            if fn2 == fname and r2['id'] == reg_id:
+                continue
+            cands2 = r2.get('name_candidates', [])
+            if len(cands2) <= 1:
+                continue  # 選択肢なし（自動確定）の領域は対象外
+            if not any(t2 == clicked_text for _d2, t2 in cands2):
+                continue  # この名称を候補に持たない領域には影響しない
+            for j2, (_d2, t2) in enumerate(cands2):
+                st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
 
 
 def app():
@@ -373,7 +393,7 @@ def app():
                         f"　{t}　（境界線からの距離 {d:.0f}）",
                         key=ck,
                         on_change=_on_change_radio,
-                        args=(fname, reg['id'], i, len(cands))
+                        args=(fname, reg['id'], i, len(cands), t)
                     )
 
     # ============================================================

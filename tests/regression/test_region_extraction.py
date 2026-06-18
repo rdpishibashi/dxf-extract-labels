@@ -24,6 +24,7 @@ from utils.region_detector import (  # noqa: E402
 
 MULTI = os.path.join(PROJECT_ROOT, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
 SINGLE = os.path.join(PROJECT_ROOT, 'EE6888-602-01A.dxf')  # 単一図面
+ROTATED = os.path.join(PROJECT_ROOT, 'DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
@@ -76,7 +77,7 @@ def test_connection_point_region_excluded():
     assert a['error'] is None
     assert len(a['regions']) >= 1
     doc = ezdxf.readfile(SINGLE)
-    _, _, _, cps = _collect_region_geometry(doc.modelspace(), DEFAULT_REGION_CONFIG)
+    _, _, _, _, cps = _collect_region_geometry(doc.modelspace(), DEFAULT_REGION_CONFIG)
     thr = DEFAULT_REGION_CONFIG['connection_point_threshold']
     margin = DEFAULT_REGION_CONFIG['connection_point_margin']
     for r in a['regions']:
@@ -114,3 +115,64 @@ def test_point_in_polygon_basic():
     assert _point_in_polygon((5, 5), sq)
     assert not _point_in_polygon((15, 5), sq)
     assert abs(_polygon_area(sq) - 100.0) < 1e-6
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_name_candidates_via_vertical_edge():
+    """図面全体が90°回転しているファイルでも名称候補が見つかる（縦エッジフォールバック）。
+
+    ROTATED は図面枠・領域境界線自体は通常向き（lineweight=100/25,color=2 のまま）だが、
+    ラベル(MTEXT)の大半が90°回転して描かれており、領域の名称ラベルは下端/上端横エッジ
+    ではなく左右いずれかの縦エッジ脇に置かれる。横エッジのみを見る実装ではここで
+    name_candidates が常に空になっていた（要修正前のリグレッション確認用）。
+    """
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    assert len(a['regions']) >= 1
+    assert any(r['name_candidates'] for r in a['regions'])
+    names = {r['default_name'] for r in a['regions']}
+    assert 'LA CHAMBER' in names
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_horizontal_gap_bridging_closes_large_box():
+    """90°回転図面では部品が横線分（本来の縦線分に相当）を途切れさせるため、
+    横線分ギャップ橋渡しのフォールバックが無いと大きな矩形（CONTROL BOX CORE FX
+    を囲む領域、handle 1EAF/1EB0/1E59/2748/1EA3/1EAE で構成）が閉領域として
+    検出できなかった（ユーザー確認による既知の正解ラベル）。"""
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    all_candidate_texts = {
+        t for r in a['regions'] for _d, t in r['name_candidates']
+    }
+    assert 'CONTROL BOX CORE FX' in all_candidate_texts
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_on_line_label_excluded_and_does_not_hide_real_name():
+    """境界線上(d=0、min_dist=1.0未満)に偶然乗った無関係なラベル（コネクタ符号
+    CN24POW04/05）はフォールバックでも候補に含めない（min_dist はフォールバックでも
+    変えない）。かつてはこの無関係なラベルが横エッジ側で1件見つかっただけで、本来の
+    縦エッジ側の名称候補（CONTROL BOX CORE FX/RX）が完全に隠れてしまっていた
+    （ユーザー確認による既知の正解ラベル）。"""
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    all_texts_by_distance = [(d, t) for r in a['regions'] for d, t in r['name_candidates']]
+    assert not any(t in ('CN24POW04', 'CN24POW05') for _d, t in all_texts_by_distance)
+    assert all(d >= 1.0 for d, _t in all_texts_by_distance)
+    names = {r['default_name'] for r in a['regions']}
+    assert 'CONTROL BOX CORE RX' in names
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_multiline_mtext_kept_as_single_candidate():
+    """1つのMTEXTエンティティ内の複数行（\\P 区切り、例:
+    "CN I/F B.D TYPE3\\P(CN-IF3-1A)"）は同じハンドル(handle 1C55)を持つため、
+    分割せず1つの結合済み文字列（"CN I/F B.D TYPE3 (CN-IF3-1A)"）として
+    名称候補にする（ユーザー確認による既知の正解ラベル）。"""
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    all_candidate_texts = {t for r in a['regions'] for _d, t in r['name_candidates']}
+    assert 'CN I/F B.D TYPE3 (CN-IF3-1A)' in all_candidate_texts
+    assert 'CN I/F B.D TYPE3' not in all_candidate_texts
+    assert '(CN-IF3-1A)' not in all_candidate_texts

@@ -61,6 +61,20 @@ DXF ファイル複数アップロード
 7. 図面番号抽出（`XX0000-000-00X` パターン）
 8. タイトル・サブタイトル抽出（`TITLE` ラベル周辺のテキスト）
 
+### INSERT展開のスキップ最適化（`_block_has_text_content()`、2026-06 追加）
+
+INSERT エンティティの展開（手順2）は `e.virtual_entities()`（変換・複製を伴う重い処理）
+で行うが、手描き回路図ではテキストを持たないブロック（コネクタ等の記号）の INSERT が
+非常に多い。`_block_has_text_content(doc, block_name, cache)` で「ブロックが
+TEXT/MTEXT を含むか（ネストINSERTを再帰的にたどった先も含む）」をブロック名単位で
+メモ化し、含まない INSERT は `virtual_entities()` を呼ぶ前にスキップする。判定不能時
+（ブロックが見つからない等）は安全側（展開する）に倒すため、出力結果は変わらない。
+
+サンプル161ファイル（DXF-diff-manager の回帰テストデータ）で最適化前後の `extract_labels()`
+出力が完全一致することを確認済み（処理時間は計測環境で合計約10%短縮）。`DXF-diff-manager`
+へ伝播済み（バイト一致、2026-06）。`DXF-visual-diff` も byte-identical な copy を持つため
+将来伝播の検討対象（今回は未実施）。
+
 ### 図番・流用元図番の判別（`determine_drawing_number_types()`）
 
 図番（比較先）と流用元図番（比較元）はラベル位置と座標から判別する。
@@ -400,6 +414,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.6 | `extract_labels.py` に INSERT展開のスキップ最適化（`_block_has_text_content()`）を追加。テキストを持たないブロックの INSERT は `virtual_entities()` を呼ぶ前にスキップし、手描き回路図（記号INSERTが多い）の抽出処理を高速化（サンプル161ファイルで処理時間約10%短縮、出力結果は完全一致を確認）。DXF-diff-manager の Step 2「ファイルを読み込む」高速化要望が発端。`DXF-diff-manager/utils/extract_labels.py` へ伝播済み（バイト一致）。|
 | v1.5.5 | `app.py` の `_on_change_radio` に他領域への選択伝播を追加。従来は「他の図面/領域で選択済みの名称をデフォルトにする」（`selected_elsewhere`）が**チェックボックスの初回生成時のみ**有効で、生成後にユーザーが選択を変更しても他領域には反映されなかった（`st.session_state` の既存キーは初期値設定をスキップするため）。コールバックに選択した名称テキスト (`clicked_text`) を渡すよう変更し、同じ名称候補を持つ他領域（候補2件以上＝選択肢ありの領域に限る）の選択状態を即時に揃えるようにした（ユーザー指摘により追加）。回帰テストはStreamlitの`session_state`を要するためpytestでは追加せず、`st.session_state`をフェイク辞書に置き換えた手動シミュレーションで動作確認済み。コードレビュー時に `region_detector.py` 内 `analyze_dxf_regions` で `_is_globally_rotated()` を2回呼んでいた冗長呼び出しを1回（`rotated` 変数の再利用）に修正、また `tests/regression/test_region_extraction.py::test_connection_point_region_excluded` の `_collect_region_geometry()` 戻り値アンパック数が v1.5.2 の `region_lines_lp` 追加以降4個のままズレていた（無関係な既存バグ）のを5個に修正し、全テスト green 化。|
 | v1.5.4 | 図面全体が90°回転して描かれているファイルへの対応を4点追加。(1) `region_name_candidates` に縦エッジフォールバック（`_all_vertical_edges`/`_dist_to_vertical_edge`）を追加。領域名が（通常の下端/上端横エッジでなく）左右いずれかの縦エッジ脇に置かれるファイルで名称候補が常にゼロになっていた問題を解消。(2) `_detect_regions`／`analyze_dxf_regions` に横線分ギャップ橋渡しのフォールバック（`bridge_horizontal_gaps=True`、縦線分ギャップ橋渡しと同じコーナー相手・CIRCLE安全条件を x/y 入れ替えて適用）を追加。回転図面では部品が横線分（本来の縦線分に相当）を途切れさせるため、既定のギャップ橋渡し方針（縦線分のみ）では大きな矩形が閉じずに検出漏れしていた問題を解消（実例: `CONTROL BOX CORE FX` を囲む矩形、handle 1EAF/1EB0/1E59/2748/1EA3/1EAE で構成）。(2)は「検出ゼロ件」だけでなく `_is_globally_rotated()`（ラベルの過半数が90°回転＝図面全体が回転していると判定）も条件に加え、通常向き図面で誤って隣接矩形を結合する副作用を防止（ユーザー指摘により追加）。(3) `region_name_candidates` に `also_scan_vertical` パラメータを追加し、回転図面では横エッジ側で候補が見つかった場合でも縦エッジ候補を常に追加合算するよう変更（候補ゼロのときだけのフォールバックでは、横エッジ側に1件でも候補があると縦エッジ側が完全に隠れてしまうため）。(4) フォールバック1/2の `min_dist=0`（線分上のラベルも含む）をユーザー指摘により撤回し、常に `name_min_dist`（既定1.0）を適用するよう変更。境界線分上(d=0)に偶然乗った無関係なラベル（コネクタ符号 `CN24POW04`/`CN24POW05`）が誤って名称候補・デフォルト名に選ばれ、(3)の対策後も本来の名称（`CONTROL BOX CORE FX`/`RX`）より優先されてしまう問題を解消。いずれも既存の正常向きファイル（EE6868/EE6888）の検出結果は変化なし（`also_scan_vertical` は回転判定が真のときのみ True、(4)の変更は元々 d=0 候補が存在しなかったため無影響）。回帰テスト `test_rotated_drawing_name_candidates_via_vertical_edge` / `test_rotated_drawing_horizontal_gap_bridging_closes_large_box` / `test_rotated_drawing_on_line_label_excluded_and_does_not_hide_real_name` を追加（サンプル DXF はサイズの都合で git 管理対象外）。|
 | v1.5.3 | `app.py` の領域確認 UI を修正。(1) `selected_elsewhere` 収集で候補 1 件のみ（選択肢なし・自動確定）の領域をスキップするよう変更し、隣接領域が同じラベルを誤ってデフォルト選択する問題を解消。(2) 複数ファイル処理時に各ファイルの先頭へ h3 見出し（`### fname`）を追加し、2 ファイル目以降の前には `st.divider()` を挿入することで、ファイル境界を視覚的に明示。|
@@ -420,4 +435,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-18 (v1.5.5)
+最終更新: 2026-06-18 (v1.5.6)

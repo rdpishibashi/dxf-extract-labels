@@ -67,6 +67,43 @@ def clean_mtext_format_codes(text: str) -> str:
     return re.sub(r'\s+', ' ', cleaned).strip()
 
 
+def _block_has_text_content(doc, block_name, cache, _visiting=None):
+    """ブロック（再帰的にネストINSERTをたどった先も含む）が TEXT/MTEXT を
+    1つでも含むかを判定する。virtual_entities() は変換・複製を伴う重い処理だが、
+    手描き回路図ではテキストを持たない記号（コネクタ等）のINSERTが非常に多いため、
+    この判定で無関係なINSERTの展開をスキップして高速化する（出力結果は変えない）。
+
+    block_name 単位でメモ化する（cache は呼び出し元が1ファイル処理につき1つ用意する）。
+    """
+    if block_name in cache:
+        return cache[block_name]
+    if _visiting is None:
+        _visiting = set()
+    if block_name in _visiting:
+        return False  # 循環参照ガード（ブロックが自身を間接的に参照するケース）
+    _visiting.add(block_name)
+
+    has = True  # 判定不能時は安全側（展開する）に倒し、挙動を変えない
+    try:
+        blk = doc.blocks.get(block_name)
+        if blk is not None:
+            has = False
+            for x in blk:
+                xt = x.dxftype()
+                if xt in ('TEXT', 'MTEXT'):
+                    has = True
+                    break
+                if xt == 'INSERT' and _block_has_text_content(doc, x.dxf.name, cache, _visiting):
+                    has = True
+                    break
+    except Exception:
+        has = True
+
+    _visiting.discard(block_name)
+    cache[block_name] = has
+    return has
+
+
 def extract_text_from_entity(entity) -> Tuple[str, str, Tuple[float, float]]:
     """TEXT / MTEXT エンティティからテキストと座標を抽出する"""
     try:
@@ -462,9 +499,14 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
 
         # INSERT エンティティを virtual_entities() で展開（座標変換を含む）
         # 展開後の仮想エンティティには親 INSERT の handle をグループキーとして付与する。
+        # テキストを含まないブロック（手描き回路図のコネクタ等の記号で多い）は
+        # virtual_entities() を呼ぶ前にスキップし、無駄な展開コストを避ける。
+        block_text_cache = {}
         try:
             for e in msp:
                 if e.dxftype() == 'INSERT' and e.dxf.layer in selected_layers:
+                    if not _block_has_text_content(doc, e.dxf.name, block_text_cache):
+                        continue
                     insert_group = _entity_handle(e)
                     try:
                         for virtual_entity in e.virtual_entities():
@@ -477,6 +519,8 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 if layout.name != 'Model':
                     for e in layout:
                         if e.dxftype() == 'INSERT' and e.dxf.layer in selected_layers:
+                            if not _block_has_text_content(doc, e.dxf.name, block_text_cache):
+                                continue
                             insert_group = _entity_handle(e)
                             try:
                                 for virtual_entity in e.virtual_entities():

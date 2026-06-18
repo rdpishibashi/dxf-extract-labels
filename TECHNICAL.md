@@ -138,7 +138,10 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 ```
 「領域を検出」ボタン  → analyze_dxf_regions() を各ファイルに実行（session_state 保持）
 「領域の確認」セクション → 各領域の名称候補をチェックボックス（ラジオ動作）で確定。
-                           他の図面/領域で選択済みの名称があればそれをデフォルト選択。
+                           他の図面/領域で選択済みの名称があればそれをデフォルト選択
+                           （初回描画時のみ）。チェック後にユーザーが選択を変更した
+                           場合も、同じ名称候補を持つ他領域（候補2件以上の領域に限る）
+                           には `_on_change_radio`（v1.5.5）が即時に選択を伝播する。
                            名称候補なし → Excel 出力時に「no name #」（連番）で自動命名。
 「ラベルを抽出」ボタン → build_region_results() → create_region_excel_output()
                         （領域検出なし時は process_multiple_dxf_files() + create_excel_output()）
@@ -154,12 +157,21 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 2. **領域境界線**: `lineweight=25` かつ `color=2`(ACI黄) の線分。
 3. **共線セグメント結合**（`_merge_collinear`）:
    - レベル座標一致は厳密（`merge_level_tol=0.5`）。別レベルの線（別矩形）を結合しない。
-   - **ギャップ橋渡しは縦線分のみ**（`bridge_vertical_gaps=True` /
+   - **ギャップ橋渡しは既定で縦線分のみ**（`bridge_vertical_gaps=True` /
      `bridge_horizontal_gaps=False`）。部品は縦線分だけを途切れさせるため。
    - **コーナー相手判定**: 縦ギャップの両端のどちらかに横線分の端点が一致する場合
      （＝境界が折れるステップ）は橋渡ししない（`corner_tol=0.5`）。部品の切れ目は
      コーナー相手が無いので橋渡しする。これにより閾値バンド無しで段差と部品切れ目を区別。
    - 縦ギャップが `CIRCLE`（接続点）で繋がる場合は橋渡ししない（配線ループ）。
+   - **横線分ギャップ橋渡し（v1.5.4・フォールバックのみ）**: `_detect_regions` は
+     `bridge_horizontal_gaps=True` 指定時、縦線分の端点を（x/y を入れ替えて）コーナー
+     相手として用い、縦ギャップ橋渡しと全く同じ安全条件（コーナー相手無し・CIRCLE無し）
+     で横線分のギャップも橋渡しする。既定では無効。`analyze_dxf_regions` は、通常の
+     検出（縦線分のみ橋渡し）で閾値超え候補がゼロ **かつ** `_is_globally_rotated()` が
+     真（ラベルの過半数が90°回転＝図面全体が90°回転して描かれている）の場合のみ、
+     このフォールバックを有効化する。「検出ゼロ件」だけを条件にすると、通常向きの
+     図面で偶然ゼロ件になったときに無関係な隣接矩形を誤って結合する副作用があるため、
+     回転判定を明示的な条件として併用する（ユーザー指摘により条件を追加）。
 4. **閉領域検出**（`_find_rectilinear_faces`）: 接続は**線分の端点が相手の線分に乗る
    箇所（角・T字）のみ**で作る（中ほど同士の交差では繋がない／`face_snap=0.1`）。
    平面グラフの面探索（half-edge）で閉路を列挙。
@@ -171,9 +183,31 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
    `name_min_dist`(1.0)〜`name_max_dist`(10.0) のラベル。英字3字以上・英小文字を
    含まない・`NOTE`/`☆` を含まない・機器符号（候補）でない（ただし `RACK` を含む語は
    名称として残す）。距離順に提示し、UI のチェックボックスでユーザーが確定。
-   **フォールバック**: 上記で候補がゼロの場合、全横エッジ（上端・中段含む）を対象に
-   `min_dist=0`（線分上のラベルも含む）で再探索する。上端内側に名称が置かれたボックスに対応
+   **フォールバック1**: 上記で候補がゼロの場合、全横エッジ（上端・中段含む）を対象に
+   同じ `[name_min_dist, name_max_dist]` で再探索する。上端内側に名称が置かれたボックスに対応
    （例: `HEATER CTRL B.D-5A(HCBD)` が上端から3単位内側）。
+   **フォールバック2（v1.5.4）**: フォールバック1でも候補がゼロの場合、全縦エッジ（左右）を
+   対象に同じ `[name_min_dist, name_max_dist]` で再探索する（`_all_vertical_edges` /
+   `_dist_to_vertical_edge`）。図面全体が90°回転して描かれているファイル（ラベルの大半が
+   `text_direction`/`rotation` で90°回転）では、領域名が下端/上端の横エッジでなく左右
+   いずれかの縦エッジ脇に置かれるため。図面枠・領域境界線自体の検出（lineweight/color）は
+   回転の影響を受けない。
+   いずれのフォールバックも `min_dist` 未満（境界線分上＝コネクタ符号等が偶然線上に乗った
+   だけの無関係なラベル。例 `CN24POW04`/`CN24POW05`）は候補に含めない（フォールバック専用に
+   `min_dist=0` を許容していた旧実装はユーザー指摘により撤回。「領域名称ラベルの境界線から
+   の最小距離」設定が常に効くようにした）。
+   **常時併用（v1.5.4・`also_scan_vertical`）**: `analyze_dxf_regions` は
+   `_is_globally_rotated()` が真のファイルでは `also_scan_vertical=True` を渡し、
+   横エッジ側で候補が**見つかった場合でも**縦エッジ候補を常に追加で合算する
+   （候補ゼロのときだけのフォールバック2では不十分）。横エッジ側に min_dist 以上の
+   無関係なラベルが1件見つかっただけで、フォールバック2が「候補ゼロ」ではなくなり発動せず、
+   本来の縦エッジ側の名称候補（例: `CONTROL BOX CORE RX`）が隠れてしまう問題があったため。
+   **複数行MTEXTは分割しない**: MTEXT内の `\P`（段落区切り）で区切られた複数行
+   （例: `"CN I/F B.D TYPE3\P(CN-IF3-1A)"`）は同一エンティティ（同一 handle）に属する
+   ため、`clean_mtext_format_codes` の既定どおり改行をスペースに変換した1つの
+   結合済み文字列（`"CN I/F B.D TYPE3 (CN-IF3-1A)"`）のまま名称候補にする
+   （ユーザー確認済み。一時的に行ごとに分割する実装を試したが、同一エンティティ内の
+   行は分割しないという方針が正しいとの確認を得て撤回した）。
 7. **ラベル所属**（`assign_region_labels`）: 点-多角形内包判定。1ラベルが複数領域に
    所属可。出力の「領域」列に所属領域名（複数はカンマ区切り、領域外は空欄）。
 
@@ -366,6 +400,8 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.5 | `app.py` の `_on_change_radio` に他領域への選択伝播を追加。従来は「他の図面/領域で選択済みの名称をデフォルトにする」（`selected_elsewhere`）が**チェックボックスの初回生成時のみ**有効で、生成後にユーザーが選択を変更しても他領域には反映されなかった（`st.session_state` の既存キーは初期値設定をスキップするため）。コールバックに選択した名称テキスト (`clicked_text`) を渡すよう変更し、同じ名称候補を持つ他領域（候補2件以上＝選択肢ありの領域に限る）の選択状態を即時に揃えるようにした（ユーザー指摘により追加）。回帰テストはStreamlitの`session_state`を要するためpytestでは追加せず、`st.session_state`をフェイク辞書に置き換えた手動シミュレーションで動作確認済み。コードレビュー時に `region_detector.py` 内 `analyze_dxf_regions` で `_is_globally_rotated()` を2回呼んでいた冗長呼び出しを1回（`rotated` 変数の再利用）に修正、また `tests/regression/test_region_extraction.py::test_connection_point_region_excluded` の `_collect_region_geometry()` 戻り値アンパック数が v1.5.2 の `region_lines_lp` 追加以降4個のままズレていた（無関係な既存バグ）のを5個に修正し、全テスト green 化。|
+| v1.5.4 | 図面全体が90°回転して描かれているファイルへの対応を4点追加。(1) `region_name_candidates` に縦エッジフォールバック（`_all_vertical_edges`/`_dist_to_vertical_edge`）を追加。領域名が（通常の下端/上端横エッジでなく）左右いずれかの縦エッジ脇に置かれるファイルで名称候補が常にゼロになっていた問題を解消。(2) `_detect_regions`／`analyze_dxf_regions` に横線分ギャップ橋渡しのフォールバック（`bridge_horizontal_gaps=True`、縦線分ギャップ橋渡しと同じコーナー相手・CIRCLE安全条件を x/y 入れ替えて適用）を追加。回転図面では部品が横線分（本来の縦線分に相当）を途切れさせるため、既定のギャップ橋渡し方針（縦線分のみ）では大きな矩形が閉じずに検出漏れしていた問題を解消（実例: `CONTROL BOX CORE FX` を囲む矩形、handle 1EAF/1EB0/1E59/2748/1EA3/1EAE で構成）。(2)は「検出ゼロ件」だけでなく `_is_globally_rotated()`（ラベルの過半数が90°回転＝図面全体が回転していると判定）も条件に加え、通常向き図面で誤って隣接矩形を結合する副作用を防止（ユーザー指摘により追加）。(3) `region_name_candidates` に `also_scan_vertical` パラメータを追加し、回転図面では横エッジ側で候補が見つかった場合でも縦エッジ候補を常に追加合算するよう変更（候補ゼロのときだけのフォールバックでは、横エッジ側に1件でも候補があると縦エッジ側が完全に隠れてしまうため）。(4) フォールバック1/2の `min_dist=0`（線分上のラベルも含む）をユーザー指摘により撤回し、常に `name_min_dist`（既定1.0）を適用するよう変更。境界線分上(d=0)に偶然乗った無関係なラベル（コネクタ符号 `CN24POW04`/`CN24POW05`）が誤って名称候補・デフォルト名に選ばれ、(3)の対策後も本来の名称（`CONTROL BOX CORE FX`/`RX`）より優先されてしまう問題を解消。いずれも既存の正常向きファイル（EE6868/EE6888）の検出結果は変化なし（`also_scan_vertical` は回転判定が真のときのみ True、(4)の変更は元々 d=0 候補が存在しなかったため無影響）。回帰テスト `test_rotated_drawing_name_candidates_via_vertical_edge` / `test_rotated_drawing_horizontal_gap_bridging_closes_large_box` / `test_rotated_drawing_on_line_label_excluded_and_does_not_hide_real_name` を追加（サンプル DXF はサイズの都合で git 管理対象外）。|
 | v1.5.3 | `app.py` の領域確認 UI を修正。(1) `selected_elsewhere` 収集で候補 1 件のみ（選択肢なし・自動確定）の領域をスキップするよう変更し、隣接領域が同じラベルを誤ってデフォルト選択する問題を解消。(2) 複数ファイル処理時に各ファイルの先頭へ h3 見出し（`### fname`）を追加し、2 ファイル目以降の前には `st.divider()` を挿入することで、ファイル境界を視覚的に明示。|
 | v1.5.2 | `region_detector.py` の図面枠検出・LWPOLYLINE 境界対応を修正。`detect_drawing_frames` に `_merge_collinear(bridge=False)` を追加し、枠の縦辺が同一 x 上で複数線分に分断されていても正しく統合・高さ判定できるよう修正（EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されていた問題を解消）。`_collect_region_geometry` に `handle_lwpolyline_lp` を追加し LWPOLYLINE (lw=25/color=2) の辺を `region_lines_lp` として別収集。`analyze_dxf_regions` に `_run_detection` ヘルパーと LINE 優先 2 パス検出を導入（LINE のみで閾値超え候補ゼロかつ LWPOLYLINE 境界線がある場合に LINE+LWPOLYLINE で再検出）。DXF-viewer のアルゴリズムを移植。|
 | v1.5.1 | MTEXT 整形（`clean_mtext_format_codes`）を手書き正規表現から ezdxf の `plain_mtext()` ベースへ移行。関数シグネチャ・呼び出し側は不変。実データ 12,145 件の MTEXT で旧実装と出力完全一致を確認、実ファイル E2E 抽出結果も同一ハッシュ（`cb112d6d…`）。加えて旧実装が未対応だった `\S` 分数・`%%c`/`%%d`/`%%p`（Ø/°/±）・`^I`/`^J`/`^M` キャレットシーケンスを正しく処理。回帰テスト `tests/regression/test_mtext_cleaning.py`（14件）追加。|
@@ -384,4 +420,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-17 (v1.5.3)
+最終更新: 2026-06-18 (v1.5.5)

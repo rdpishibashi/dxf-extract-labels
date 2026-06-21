@@ -206,18 +206,48 @@ def test_no_region_has_consecutive_duplicate_corners():
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
 def test_dangling_edges_reported_with_handles():
     """行き止まり枝(handle 214F: (660.53,129.56)-(807.24,129.56)、
-    handle 2199: (812.24,235.81)-(812.24,129.56))が dangling_edges に
-    handle・座標付きで報告されること（ユーザー報告: 頂点座標リストに
-    (660.53, 129.56) が2回連続して現れる不具合の原因）。"""
+    handle 2199: (812.24,235.81)-(812.24,129.56))が、その取り付け点を境界に持つ
+    領域（図面1/領域1＝id 0）の `dangling_edges` に handle・座標付きで報告される
+    こと（ユーザー報告: 頂点座標リストに (660.53, 129.56) が2回連続して現れる
+    不具合の原因）。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
+    region0 = next(r for r in a['regions'] if r['id'] == 0)
     all_handles = {
         ent['handle']
-        for d in a['dangling_edges']
-        for ent in d['entities']
+        for br in region0['dangling_edges']
+        for ent in br['entities']
     }
     assert '214F' in all_handles
     assert '2199' in all_handles
+
+
+def test_dangling_edges_scoped_to_owning_region_only():
+    """行き止まり枝は、その取り付け点(attachment)が境界に乗る領域だけに紐づき、
+    無関係な部品・他領域のものは混在しない（ユーザー指摘: ファイル全体の158件
+    ではなく、図面1/領域1に関係する2枝のみであるべき）。
+
+    図面1/領域1(id 0)は #214F の単独枝と、#2199-#21AD-#219B-#21AA-#219F-#21A7
+    が1本の枝（連結成分）にまとまった計2枝を持つ。#21A7 は領域0の上端境界の
+    一部（(150.22,567.94)-(660.53,567.94)）としても使われている1本のLINEで、
+    その延長（(660.53,567.94)-(812.24,567.94)）が行き止まりになっているため、
+    同じ枝の構成エンティティとして含まれる。"""
+    a = analyze_dxf_regions(DANGLING)
+    assert a['error'] is None
+    region0 = next(r for r in a['regions'] if r['id'] == 0)
+    assert len(region0['dangling_edges']) == 2
+
+    branch_handle_sets = [
+        frozenset(ent['handle'] for ent in br['entities'])
+        for br in region0['dangling_edges']
+    ]
+    assert frozenset(['214F']) in branch_handle_sets
+    assert frozenset(['2199', '21AD', '219B', '21AA', '219F', '21A7']) in branch_handle_sets
+
+    # 他の領域には(この図面では)行き止まり枝は無い。
+    for r in a['regions']:
+        if r['id'] != 0:
+            assert r['dangling_edges'] == []
 
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')

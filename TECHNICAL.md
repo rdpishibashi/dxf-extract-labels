@@ -189,6 +189,27 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 4. **閉領域検出**（`_find_rectilinear_faces`）: 接続は**線分の端点が相手の線分に乗る
    箇所（角・T字）のみ**で作る（中ほど同士の交差では繋がない／`face_snap=0.1`）。
    平面グラフの面探索（half-edge）で閉路を列挙。
+
+   **行き止まり枝（dangling edge）の除去（v1.5.7）**: 境界線と同じ線種
+   （lineweight=25/color=2）を持ちながら、どこにも閉じていない線分（次数1の
+   ノードに繋がる枝）があると、半面探索はその枝を折り返すしかなく（次数1の
+   ノードでは戻る辺が1本しかないため）、生のポリゴンに「同じ頂点が2回連続する」
+   アーティファクトを生む（実例: `EE6313-546-01E.dxf` の `頂点の座標` リストに
+   `(660.53, 129.56)` が2回連続して現れる不具合として報告。原因は handle
+   `214F`/`2199` の2本の短い枝線が、本来繋がるべき相手まで約5単位届かず行き止まり
+   になっていたこと）。面探索前に次数1のノードとその辺を再帰的に除去する2-core
+   抽出を追加（戻り値が `faces` 単独から `(faces, dangling_edges)` に変更）。
+   除去した枝は handle・start/end 座標を解決して `analyze_dxf_regions()` の
+   `dangling_edges` キーに記録し、`app.py` の「領域の確認」に
+   「⚠️ 行き止まり枝」として表示する（手描きの作画ミス発見用）。
+
+   **副次効果（同一領域の重複検出バグも解消）**: 行き止まり枝の往復は面積には
+   正味ゼロしか寄与しないため、同一の物理境界が「綺麗な内側面」と「枝の往復で
+   座標が汚れ bounding box が変わった外側面」の2つの別領域として重複検出される
+   ケースがあった（座標の汚れにより既存の bbox 重複除外をすり抜けていた）。除去後は
+   両者が同一 bbox になり正しく1領域に統合される（`EE6313-546-01E.dxf`:
+   regions 6→5。汚れた版は迂回経路上の無関係なラベルまで誤って名称候補に
+   取り込んでいたため、名称候補も正しくなった）。
 5. **絞り込み**: 単独の閉領域は面積 ≥ 図面枠面積 × `area_ratio`(0.20)。**同名の複数
    ピース（≥2）の合算**が ≥ 図面枠面積 × `group_area_ratio`(0.10) なら、その名称を
    第1図面で「ターゲット名称」とし、他図面では面積不問で採用（例 MPD RACK2＝内側+外側）。
@@ -414,6 +435,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.7 | `region_detector.py` の閉領域検出（`_find_rectilinear_faces`）に行き止まり枝（dangling edge）の除去（2-core抽出）を追加。境界線と同じ線種を持つがどこにも閉じていない線分があると、半面探索がその枝を折り返すため頂点座標に「同じ点が2回連続する」アーティファクトが生じていた（`EE6313-546-01E.dxf` で報告）。副次効果として、同一物理境界が「綺麗な内側面」と「枝の往復で座標が汚れた外側面」の2領域として重複検出されるバグも解消（`EE6313-546-01E.dxf`: regions 6→5）。除去した枝は handle・座標を解決し `analyze_dxf_regions()` の `dangling_edges` キーに記録、`app.py` の「領域の確認」に「⚠️ 行き止まり枝」セクションとして表示するようにした。DXF-viewer にもアルゴリズム部分（handle解決・UI表示は除く）を移植済み。|
 | v1.5.6 | `extract_labels.py` に INSERT展開のスキップ最適化（`_block_has_text_content()`）を追加。テキストを持たないブロックの INSERT は `virtual_entities()` を呼ぶ前にスキップし、手描き回路図（記号INSERTが多い）の抽出処理を高速化（サンプル161ファイルで処理時間約10%短縮、出力結果は完全一致を確認）。DXF-diff-manager の Step 2「ファイルを読み込む」高速化要望が発端。`DXF-diff-manager/utils/extract_labels.py` へ伝播済み（バイト一致）。|
 | v1.5.5 | `app.py` の `_on_change_radio` に他領域への選択伝播を追加。従来は「他の図面/領域で選択済みの名称をデフォルトにする」（`selected_elsewhere`）が**チェックボックスの初回生成時のみ**有効で、生成後にユーザーが選択を変更しても他領域には反映されなかった（`st.session_state` の既存キーは初期値設定をスキップするため）。コールバックに選択した名称テキスト (`clicked_text`) を渡すよう変更し、同じ名称候補を持つ他領域（候補2件以上＝選択肢ありの領域に限る）の選択状態を即時に揃えるようにした（ユーザー指摘により追加）。回帰テストはStreamlitの`session_state`を要するためpytestでは追加せず、`st.session_state`をフェイク辞書に置き換えた手動シミュレーションで動作確認済み。コードレビュー時に `region_detector.py` 内 `analyze_dxf_regions` で `_is_globally_rotated()` を2回呼んでいた冗長呼び出しを1回（`rotated` 変数の再利用）に修正、また `tests/regression/test_region_extraction.py::test_connection_point_region_excluded` の `_collect_region_geometry()` 戻り値アンパック数が v1.5.2 の `region_lines_lp` 追加以降4個のままズレていた（無関係な既存バグ）のを5個に修正し、全テスト green 化。|
 | v1.5.4 | 図面全体が90°回転して描かれているファイルへの対応を4点追加。(1) `region_name_candidates` に縦エッジフォールバック（`_all_vertical_edges`/`_dist_to_vertical_edge`）を追加。領域名が（通常の下端/上端横エッジでなく）左右いずれかの縦エッジ脇に置かれるファイルで名称候補が常にゼロになっていた問題を解消。(2) `_detect_regions`／`analyze_dxf_regions` に横線分ギャップ橋渡しのフォールバック（`bridge_horizontal_gaps=True`、縦線分ギャップ橋渡しと同じコーナー相手・CIRCLE安全条件を x/y 入れ替えて適用）を追加。回転図面では部品が横線分（本来の縦線分に相当）を途切れさせるため、既定のギャップ橋渡し方針（縦線分のみ）では大きな矩形が閉じずに検出漏れしていた問題を解消（実例: `CONTROL BOX CORE FX` を囲む矩形、handle 1EAF/1EB0/1E59/2748/1EA3/1EAE で構成）。(2)は「検出ゼロ件」だけでなく `_is_globally_rotated()`（ラベルの過半数が90°回転＝図面全体が回転していると判定）も条件に加え、通常向き図面で誤って隣接矩形を結合する副作用を防止（ユーザー指摘により追加）。(3) `region_name_candidates` に `also_scan_vertical` パラメータを追加し、回転図面では横エッジ側で候補が見つかった場合でも縦エッジ候補を常に追加合算するよう変更（候補ゼロのときだけのフォールバックでは、横エッジ側に1件でも候補があると縦エッジ側が完全に隠れてしまうため）。(4) フォールバック1/2の `min_dist=0`（線分上のラベルも含む）をユーザー指摘により撤回し、常に `name_min_dist`（既定1.0）を適用するよう変更。境界線分上(d=0)に偶然乗った無関係なラベル（コネクタ符号 `CN24POW04`/`CN24POW05`）が誤って名称候補・デフォルト名に選ばれ、(3)の対策後も本来の名称（`CONTROL BOX CORE FX`/`RX`）より優先されてしまう問題を解消。いずれも既存の正常向きファイル（EE6868/EE6888）の検出結果は変化なし（`also_scan_vertical` は回転判定が真のときのみ True、(4)の変更は元々 d=0 候補が存在しなかったため無影響）。回帰テスト `test_rotated_drawing_name_candidates_via_vertical_edge` / `test_rotated_drawing_horizontal_gap_bridging_closes_large_box` / `test_rotated_drawing_on_line_label_excluded_and_does_not_hide_real_name` を追加（サンプル DXF はサイズの都合で git 管理対象外）。|
@@ -435,4 +457,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-18 (v1.5.6)
+最終更新: 2026-06-21 (v1.5.7)

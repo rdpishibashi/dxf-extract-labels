@@ -72,16 +72,18 @@ def _collect_region_geometry(msp, cfg):
             _circle_block[name] = has
         return _circle_block[name]
 
-    def handle_line(e):
+    def handle_line(e, owner_handle=None):
         lw = getattr(e.dxf, 'lineweight', None)
         if lw == flw:
             frame_lines.append((e.dxf.start, e.dxf.end))
         elif lw == rlw and getattr(e.dxf, 'color', None) == rcol:
-            region_lines.append((e.dxf.start, e.dxf.end))
+            # 領域境界線のみ handle を保持する（行き止まり枝の報告用。virtual_entities()
+            # 由来（INSERT 展開）は handle が None になるため、所属 INSERT の handle で代替）。
+            region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
 
     region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
 
-    def handle_lwpolyline_lp(e):
+    def handle_lwpolyline_lp(e, owner_handle=None):
         """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
         lw = getattr(e.dxf, 'lineweight', None)
         if lw != rlw or getattr(e.dxf, 'color', None) != rcol:
@@ -93,13 +95,14 @@ def _collect_region_geometry(msp, cfg):
         n = len(pts)
         if n < 2:
             return
+        handle = e.dxf.handle or owner_handle
         close_range = n if e.closed else n - 1
         for i in range(close_range):
             p0 = pts[i]
             p1 = pts[(i + 1) % n]
             if abs(p0[2]) > 1e-6:
                 continue
-            region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1])))
+            region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1]), handle))
 
     for e in msp:
         t = e.dxftype()
@@ -117,9 +120,9 @@ def _collect_region_geometry(msp, cfg):
                 for v in e.virtual_entities():
                     vt = v.dxftype()
                     if vt == 'LINE':
-                        handle_line(v)
+                        handle_line(v, owner_handle=e.dxf.handle)
                     elif vt == 'LWPOLYLINE':
-                        handle_lwpolyline_lp(v)
+                        handle_lwpolyline_lp(v, owner_handle=e.dxf.handle)
                     elif vt in ('TEXT', 'MTEXT'):
                         label_entities.append(v)
             except Exception:
@@ -142,10 +145,15 @@ def _count_connection_points_on_boundary(polygon, points, margin):
 
 
 def _split_axis_aligned(pairs, eps):
-    """線分(start,end)を水平 H[(y,x0,x1)] と垂直 V[(x,y0,y1)] に分類する。"""
+    """線分(start,end[,handle])を水平 H[(y,x0,x1)] と垂直 V[(x,y0,y1)] に分類する。
+
+    末尾の handle 要素（行き止まり枝の報告用に region_lines/region_lines_lp が
+    持つ）は無視する。2要素(frame_lines)・3要素(region_lines系)のいずれも扱える。
+    """
     H = []
     V = []
-    for s, en in pairs:
+    for item in pairs:
+        s, en = item[0], item[1]
         x1, y1, x2, y2 = s[0], s[1], en[0], en[1]
         if abs(y1 - y2) <= eps and abs(x1 - x2) > eps:
             H.append(((y1 + y2) / 2.0, min(x1, x2), max(x1, x2)))
@@ -341,7 +349,32 @@ def _find_rectilinear_faces(Hm, Vm, eps):
                 adj.setdefault(ka, set()).add(kb)
                 adj.setdefault(kb, set()).add(ka)
     if not adj:
-        return []
+        return [], []
+
+    # --- 行き止まり枝（dangling edge）の除去 ---
+    # 半面探索は次数1のノードに到達すると、戻る辺が1本しかないため必ず同じ辺を
+    # 折り返す。この往復が生のポリゴンに「同じ座標が2回連続する」アーティファクトを
+    # 生む（面積には寄与しないが、頂点座標の表示を汚す）。真の境界閉路は必ず次数2
+    # 以上のノードのみで構成されるため、次数1のノードとその辺を再帰的に除去
+    # （2-core抽出）してから面探索する。
+    dangling_edges = []
+    changed = True
+    while changed:
+        changed = False
+        leaves = [n for n, nbrs in adj.items() if len(nbrs) == 1]
+        for leaf in leaves:
+            nbrs = adj.get(leaf)
+            if not nbrs:
+                continue
+            other = next(iter(nbrs))
+            dangling_edges.append((node_xy[leaf], node_xy[other]))
+            adj[other].discard(leaf)
+            if not adj[other]:
+                del adj[other]
+            del adj[leaf]
+            changed = True
+    if not adj:
+        return [], dangling_edges
 
     def ang(a, b):
         ax, ay = node_xy[a]
@@ -371,7 +404,7 @@ def _find_rectilinear_faces(Hm, Vm, eps):
                     break
             if ok and len(face) >= 4:
                 faces.append(face)
-    return faces
+    return faces, dangling_edges
 
 
 def _polygon_area(poly):
@@ -434,13 +467,66 @@ def _dist_point_to_polygon(pt, poly):
     return best
 
 
-def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None):
-    """1つの図面枠内で、面積>=枠面積×area_ratio の閉領域を検出する。"""
+def _resolve_dangling_handles(dangling_edges, raw_lines, tol=0.5):
+    """行き止まり枝（端点ペアのリスト）について、その経路上にある元のLINE/
+    LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。
+
+    raw_lines は (start, end, handle) の3要素タプルのリスト
+    （`_collect_region_geometry` の region_lines / region_lines_lp）。
+    1本の行き止まり枝が複数の生エンティティで構成される場合（短い線分が
+    連なって1本の枝になっている場合）も、その枝の延長線上にあり区間が
+    重なる全エンティティを対象に含める。
+    """
+    results = []
+    for (p1, p2) in dangling_edges:
+        x1, y1 = p1
+        x2, y2 = p2
+        vertical = abs(x1 - x2) <= tol
+        level = (x1 + x2) / 2.0 if vertical else (y1 + y2) / 2.0
+        lo, hi = (min(y1, y2), max(y1, y2)) if vertical else (min(x1, x2), max(x1, x2))
+        entities = []
+        seen = set()
+        for (s, en, handle) in raw_lines:
+            sx, sy = s[0], s[1]
+            ex, ey = en[0], en[1]
+            if vertical:
+                if abs(sx - level) > tol or abs(ex - level) > tol:
+                    continue
+                seg_lo, seg_hi = min(sy, ey), max(sy, ey)
+            else:
+                if abs(sy - level) > tol or abs(ey - level) > tol:
+                    continue
+                seg_lo, seg_hi = min(sx, ex), max(sx, ex)
+            if seg_hi < lo - tol or seg_lo > hi + tol:
+                continue
+            key = handle if handle else (round(sx, 3), round(sy, 3), round(ex, 3), round(ey, 3))
+            if key in seen:
+                continue
+            seen.add(key)
+            entities.append({
+                'handle': handle,
+                'start': (round(sx, 2), round(sy, 2)),
+                'end': (round(ex, 2), round(ey, 2)),
+            })
+        results.append({
+            'point1': (round(x1, 2), round(y1, 2)),
+            'point2': (round(x2, 2), round(y2, 2)),
+            'entities': entities,
+        })
+    return results
+
+
+def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, raw_lines=None):
+    """1つの図面枠内で、面積>=枠面積×area_ratio の閉領域を検出する。
+
+    戻り値: (regions, dangling) のタプル。dangling は `_resolve_dangling_handles`
+    の出力形式（行き止まり枝ごとの handle/座標）。
+    """
     xl, xr, y0, y1 = frame
     Hf = [h for h in RH if y0 - 5 <= h[0] <= y1 + 5 and h[2] >= xl - 5 and h[1] <= xr + 5]
     Vf = [v for v in RV if xl - 5 <= v[0] <= xr + 5 and v[2] >= y0 - 5 and v[1] <= y1 + 5]
     if not Hf or not Vf:
-        return []
+        return [], []
     # 共線セグメントの結合はレベル座標を厳密一致(merge_level_tol)で行い、別レベルの
     # 線（=別矩形）を誤って繋がない。ギャップ橋渡しは既定で縦線分のみ（部品ラベルは
     # 縦線分を途切れさせる）。横線分のギャップは既定では橋渡ししない。接続点(交点)判定
@@ -474,7 +560,7 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None):
                           h_endpoints=h_endpoints, corner_tol=ctol)
     # 端点接続ベースの面探索（中ほど交差では繋がない）ため、部品矩形の縦線は領域辺の
     # 途中を横切るだけで接続せず、回り込みは発生しない。
-    faces = _find_rectilinear_faces(Hm, Vm, fsnap)
+    faces, dangling = _find_rectilinear_faces(Hm, Vm, fsnap)
     thr = frame_area * cfg.get('min_face_ratio', 0.005)
     regions = []
     seen = set()
@@ -489,7 +575,8 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None):
             continue
         seen.add(bb)
         regions.append({'polygon': f, 'area': a})
-    return regions
+    dangling_resolved = _resolve_dangling_handles(dangling, raw_lines or [])
+    return regions, dangling_resolved
 
 
 def _count_letters(s):
@@ -703,6 +790,11 @@ def analyze_dxf_regions(dxf_file, config=None):
       frame_area: float
       labels: [(text, x, y), ...]  （図面枠内のみ）
       regions: [{id, frame, polygon, area, area_pct, name_candidates, default_name}]
+      dangling_edges: [{frame, point1, point2, entities: [{handle, start, end}, ...]}]
+        閉領域に寄与しない行き止まり枝（次数1のノードに繋がる境界線分）。半面探索が
+        この枝を折り返すために生じる「同じ頂点が2回連続する」アーティファクトの
+        原因になっていた箇所を、面探索前に除去している（v1.5.7）。除去した枝の
+        実体（handle・座標）をここに記録する。
       error: str | None
     """
     from collections import defaultdict as _dd
@@ -710,7 +802,8 @@ def analyze_dxf_regions(dxf_file, config=None):
     cfg = dict(DEFAULT_REGION_CONFIG)
     if config:
         cfg.update(config)
-    result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [], 'error': None}
+    result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [],
+              'dangling_edges': [], 'error': None}
     try:
         doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
@@ -749,13 +842,16 @@ def analyze_dxf_regions(dxf_file, config=None):
         rotated = _is_globally_rotated(label_entities)
 
         def _run_detection(lines, det_cfg):
-            """lines から H/V 分類 → 候補面リストを返す内部ヘルパー。"""
+            """lines から H/V 分類 → (候補面リスト, 行き止まり枝リスト) を返す内部ヘルパー。"""
             RH, RV = _split_axis_aligned(lines, det_cfg['snap'])
             fc = []
+            dangling_all = []
             for fi, frame in enumerate(frames):
                 cands_list = []
-                for reg in _detect_regions(RH, RV, frame, frame_area, det_cfg, frame_labels,
-                                           connection_points):
+                det_regions, det_dangling = _detect_regions(
+                    RH, RV, frame, frame_area, det_cfg, frame_labels,
+                    connection_points, raw_lines=lines)
+                for reg in det_regions:
                     if det_cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):
                         continue
                     if det_cfg['exclude_connection_point_regions']:
@@ -778,14 +874,16 @@ def analyze_dxf_regions(dxf_file, config=None):
                         'default_name': ncands[0][1] if ncands else '',
                     })
                 fc.append(cands_list)
-            return fc
+                for d in det_dangling:
+                    dangling_all.append(dict(d, frame=fi))
+            return fc, dangling_all
 
         def _hits(fc):
             return sum(1 for cl in fc for cf in cl if cf['area'] >= single_thr)
 
         # 1) LINE のみで領域検出を試みる
         lines_for_detection = region_lines
-        frame_cands = _run_detection(lines_for_detection, cfg)
+        frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg)
 
         # LINE だけで閾値超え候補がゼロで LWPOLYLINE 境界線もある場合、
         # LWPOLYLINE を追加して再検出する（例: EE6888-631-01A.dxf など境界が
@@ -794,7 +892,7 @@ def analyze_dxf_regions(dxf_file, config=None):
         # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせる）。
         if _hits(frame_cands) == 0 and region_lines_lp:
             lines_for_detection = region_lines + region_lines_lp
-            frame_cands = _run_detection(lines_for_detection, cfg)
+            frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg)
 
         # それでも閾値超え候補がゼロ、かつラベルの過半数が90°回転している（=図面全体が
         # 90°回転して描かれている）場合のみ、横線分のギャップ橋渡しを有効にして再検出する
@@ -805,7 +903,12 @@ def analyze_dxf_regions(dxf_file, config=None):
         if _hits(frame_cands) == 0 and rotated:
             cfg_h_bridge = dict(cfg)
             cfg_h_bridge['bridge_horizontal_gaps'] = True
-            frame_cands = _run_detection(lines_for_detection, cfg_h_bridge)
+            frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg_h_bridge)
+
+        # 採用された最終パスで見つかった行き止まり枝のみを報告する（最終的に使われな
+        # かった中間パスのものは報告しない）。実体を持たない枝（handle解決できなかった
+        # もの。座標クラスタリングの境界条件等で稀に発生し得る）は除外する。
+        result['dangling_edges'] = [d for d in dangling_edges if d['entities']]
 
         # 2) 第1図面（最左フレーム）で「同名複数ピース合算>=group_thr」となる名称を
         #    ターゲットとする（MPD RACK2 のように2矩形で合算が閾値超のケース）。

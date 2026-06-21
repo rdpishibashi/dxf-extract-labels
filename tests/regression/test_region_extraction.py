@@ -256,12 +256,37 @@ def test_dangling_edge_pruning_dedupes_inner_outer_region_pair():
     往復で座標が汚れた外側面」の2つの異なる bbox を持つ別領域として重複検出されて
     いた（座標の汚れが bbox を変えるため、既存の bbox 重複除外をすり抜けていた）。
     除去後は同一 bbox になり正しく1領域に統合される（修正前は frames=1,regions=6
-    で面積63.6%の領域が2件、修正後は5件で1件のみ）。"""
+    で面積63.6%の領域が2件、修正後は5件で1件のみ。さらに v1.5.10 でPHANTOM線種の
+    領域〈面積4.6%、後述 test_phantom_linetype_excluded_from_region_boundaries 参照〉
+    を境界探索から除外したため、現在は4件）。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
-    assert len(a['regions']) == 5
+    assert len(a['regions']) == 4
     area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
-    assert area_pcts == [1.8, 4.6, 9.8, 52.6, 63.6]
+    assert area_pcts == [1.8, 9.8, 52.6, 63.6]
+
+
+@pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_phantom_linetype_excluded_from_region_boundaries():
+    """境界線条件（lineweight=25/color=2）を満たしていても、線種(linetype)が
+    PHANTOM（二点鎖線）の線は領域境界の探索対象から除外する（v1.5.10）。
+
+    `EE6313-546-01E.dxf` には、実体の小さな矩形（handle 21AB/21AC/219A/219E、
+    linetype=Continuous、面積1.8%、'MX CHAMBER'）の周囲に、別の handle
+    （21AE/21A1/21A9/2198等、linetype=PHANTOM）で描かれた二点鎖線の矩形が重なって
+    存在する。修正前はこのPHANTOM線も境界線として誤認識し、本来存在しない
+    「実体矩形をくり抜いた」10角形・面積4.6%の領域が誤検出されていた
+    （ユーザー報告: DXF-viewerで座標を確認したところ、抽出された境界の一部が
+    実体の直線ではなく二点鎖線〈#21AB等〉だった）。除去後は実体の矩形
+    （面積1.8%）のみが残り、PHANTOM由来の誤検出領域は消える。"""
+    a = analyze_dxf_regions(DANGLING)
+    assert a['error'] is None
+    area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
+    assert 4.6 not in area_pcts
+    small_box = next(r for r in a['regions'] if round(r['area_pct'], 1) == 1.8)
+    assert small_box['default_name'] == 'MX CHAMBER'
+    assert small_box['corners'] == [
+        (698.61, 238.2), (812.24, 238.2), (812.24, 309.1), (698.61, 309.1)]
 
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')

@@ -168,7 +168,16 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 
 1. **図面枠検出**: `lineweight=100` の線分で囲まれた枠を検出（`detect_drawing_frames`）。
    枠内のみ処理対象。複数図面は枠が横並び。枠面積は全図面同一。
-2. **領域境界線**: `lineweight=25` かつ `color=2`(ACI黄) の線分。
+2. **領域境界線**: `lineweight=25` かつ `color=2`(ACI黄) の線分。**かつ線種(linetype)が
+   実質的に Continuous（実線）であること（`_is_continuous_linetype`、v1.5.10）**。
+   `linetype='ByLayer'` の場合はレイヤーの既定線種まで解決する。PHANTOM（二点鎖線）等の
+   装飾的な線種は、lineweight/color が境界線条件に一致していても閉領域の壁を表すもの
+   ではないため除外する（`EE6313-546-01E.dxf` で、実体の小さな矩形`MX CHAMBER`
+   〈handle 21AB/21AC/219A/219E、Continuous〉の周囲に、別の handle
+   〈21AE/21A1/21A9/2198等、PHANTOM〉で描かれた二点鎖線の矩形が重なっており、これも
+   境界線として誤認識し、実体矩形を「くり抜いた」形状の存在しない領域が誤検出される
+   不具合をユーザーが報告。DXF-viewer で座標リストを確認した際、抽出された境界の一部が
+   実体の直線ではなく二点鎖線だったことから発覚）。
 3. **共線セグメント結合**（`_merge_collinear`）:
    - レベル座標一致は厳密（`merge_level_tol=0.5`）。別レベルの線（別矩形）を結合しない。
    - **ギャップ橋渡しは既定で縦線分のみ**（`bridge_vertical_gaps=True` /
@@ -478,6 +487,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 | バージョン | 変更内容 |
 |-----------|---------|
 | v1.5.9 | `region_name_candidates()` に優先順位（Tier）制を導入：Tier1=下端横エッジ最近傍（90°回転時は右端/左端のいずれか）、Tier2=上端横エッジ最近傍（回転時はもう一方）、Tier3=Tier1/2が空の場合のみポリゴン境界全体への最短距離でフォールバック。回転方向（+90°/-90°多数派）の判定は `_rotated_edge_roles()` を追加（`DE5434-553-10B.dxf` で確認した実例: +90°多数派→Tier1=右端,Tier2=左端）。各領域に `default_name_tier`（1/2/3）を追加し、`app.py` の他領域への選択同期（`selected_elsewhere`）がTier1/2（確信度の高い自前の候補）を上書きしないように変更。ユーザー報告: `EE6313-546-01E.dxf` の図面1/領域1,2（互いの候補リストに相手の名称を含む入れ子/隣接領域）が同じ選択に同期されてしまい、本来は領域1=`B CHAMBER`、領域2=`BAKE HEATER UNIT RX` で別々が正しい不具合を解消。|
+| v1.5.10 | 領域境界線の収集条件に線種(linetype)チェックを追加（`_is_continuous_linetype`）。`lineweight=25`/`color=2`を満たしても線種がPHANTOM（二点鎖線）等のCircuit以外の場合は除外する。`EE6313-546-01E.dxf`で、実体の小さな矩形`MX CHAMBER`（handle 21AB/21AC/219A/219E、Continuous、面積1.8%）の周囲に重なるPHANTOM線種の矩形（21AE/21A1/21A9/2198等）が誤って境界線として認識され、実体矩形を「くり抜いた」形状の存在しない領域（10角形、面積4.6%）が誤検出されていた不具合をユーザーが報告（DXF-viewerで座標リストを確認した際に発覚）。修正後はPHANTOM由来の誤検出領域が消え、実体の矩形のみが残る（regions 5→4）。|
 | v1.5.8 | 行き止まり枝の報告を「フレーム単位のフラットなリスト」から「枝（連結成分）単位、かつ各領域の `dangling_edges` に絞り込み」へ変更。`EE6313-546-01E.dxf` で「行き止まり枝158件」と表示され特定領域に無関係な部品の枝まで混在するとユーザーから指摘（v1.5.7時点では1本の枝が複数行に分かれ、かつファイル内の全枝が無差別に列挙されていた）。`_find_rectilinear_faces` の次数1ノード除去を Union-Find で連結成分化し、各枝の取り付け点（`attachment`）を求めるよう変更。`analyze_dxf_regions` は取り付け点が各領域のポリゴン境界上に乗るものだけをその領域の `dangling_edges` に割り付ける（トップレベルのフラットな `dangling_edges` キーは廃止）。結果、`EE6313-546-01E.dxf` の最大領域はちょうど2本の枝（handle `214F` の単独枝、`2199`→`21AD`→`219B`→`21AA`→`219F`→`21A7` の連結枝）に絞られた。DXF-viewer にもアルゴリズム部分（枝グルーピング。handle解決・領域絞り込み・UI表示は無し）を移植済み。|
 | v1.5.7 | `region_detector.py` の閉領域検出（`_find_rectilinear_faces`）に行き止まり枝（dangling edge）の除去（2-core抽出）を追加。境界線と同じ線種を持つがどこにも閉じていない線分があると、半面探索がその枝を折り返すため頂点座標に「同じ点が2回連続する」アーティファクトが生じていた（`EE6313-546-01E.dxf` で報告）。副次効果として、同一物理境界が「綺麗な内側面」と「枝の往復で座標が汚れた外側面」の2領域として重複検出されるバグも解消（`EE6313-546-01E.dxf`: regions 6→5）。除去した枝は handle・座標を解決し `analyze_dxf_regions()` の `dangling_edges` キーに記録、`app.py` の「領域の確認」に「⚠️ 行き止まり枝」セクションとして表示するようにした。DXF-viewer にもアルゴリズム部分（handle解決・UI表示は除く）を移植済み。|
 | v1.5.6 | `extract_labels.py` に INSERT展開のスキップ最適化（`_block_has_text_content()`）を追加。テキストを持たないブロックの INSERT は `virtual_entities()` を呼ぶ前にスキップし、手描き回路図（記号INSERTが多い）の抽出処理を高速化（サンプル161ファイルで処理時間約10%短縮、出力結果は完全一致を確認）。DXF-diff-manager の Step 2「ファイルを読み込む」高速化要望が発端。`DXF-diff-manager/utils/extract_labels.py` へ伝播済み（バイト一致）。|
@@ -501,4 +511,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-21 (v1.5.9)
+最終更新: 2026-06-21 (v1.5.10)

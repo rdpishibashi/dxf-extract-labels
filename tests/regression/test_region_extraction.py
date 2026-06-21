@@ -262,3 +262,43 @@ def test_dangling_edge_pruning_dedupes_inner_outer_region_pair():
     assert len(a['regions']) == 5
     area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
     assert area_pcts == [1.8, 4.6, 9.8, 52.6, 63.6]
+
+
+@pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_nested_regions_each_get_own_confident_default_name():
+    """入れ子/隣接する2領域が互いの候補リストに相手の名称を含む場合でも、
+    各領域は自分自身の下端最近傍（Tier1）候補をデフォルト名称にする
+    （ユーザー報告: 図面1/領域1,2 が同じ選択に同期され、ラベルはそれぞれ別の
+    はずなのに一致してしまう不具合）。
+
+    `EE6313-546-01E.dxf` の図面1/領域1(id 0, 面積63.6%)と領域2(id 1, 面積52.6%)
+    は同名の2候補（B CHAMBER, BAKE HEATER UNIT RX）を共有するが、互いに
+    下端最近傍の側が異なる（領域1→B CHAMBER、領域2→BAKE HEATER UNIT RX）。
+    `default_name_tier` が両領域とも1（Tier1=下端最近傍）であることを確認し、
+    `app.py` の他領域への選択同期がこのケースでは発動しない（=確信度の高い
+    自前の候補を上書きしない）前提条件を保証する。"""
+    a = analyze_dxf_regions(DANGLING)
+    assert a['error'] is None
+    region0 = next(r for r in a['regions'] if r['id'] == 0)
+    region1 = next(r for r in a['regions'] if r['id'] == 1)
+    assert region0['default_name'] == 'B CHAMBER'
+    assert region0['default_name_tier'] == 1
+    assert region1['default_name'] == 'BAKE HEATER UNIT RX'
+    assert region1['default_name_tier'] == 1
+    # 互いの候補リストに相手の名称が(優先度の低い候補として)含まれている
+    # ことを確認する（同期バグが再発し得る前提条件そのものを保証する）。
+    assert 'BAKE HEATER UNIT RX' in [t for _d, t in region0['name_candidates']]
+    assert 'B CHAMBER' in [t for _d, t in region1['name_candidates']]
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_name_tier_uses_right_then_left_edge():
+    """90°回転図面（回転角+90°多数派、`DE5434-553-10B.dxf`）では、下端相当の
+    優先順位(Tier1)は右端の縦エッジ、上端相当(Tier2)は左端の縦エッジになる
+    （ユーザー確認による仕様）。少なくとも一部の領域で Tier1/Tier2 の両方が
+    実際に使われていることを確認する。"""
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    tiers = {r['default_name_tier'] for r in a['regions'] if r['name_candidates']}
+    assert 1 in tiers
+    assert 2 in tiers

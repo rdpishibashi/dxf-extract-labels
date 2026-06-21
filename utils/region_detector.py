@@ -636,15 +636,31 @@ def _bottom_edges(polygon, level_tol=2.0):
     return segs
 
 
-def _all_horizontal_edges(polygon):
-    """ポリゴンの全横エッジ [(x0,x1,y), ...] を返す（上端・中段含む）。"""
+def _top_edges(polygon, level_tol=2.0):
+    """ポリゴンの上端（最大y）にある横エッジ群 [(x0,x1,y), ...] を返す（`_bottom_edges`の上端版）。"""
+    max_y = max(p[1] for p in polygon)
     segs = []
     n = len(polygon)
     for i in range(n):
         x1, y1 = polygon[i]
         x2, y2 = polygon[(i + 1) % n]
-        if abs(y1 - y2) < 0.5:
+        if abs(y1 - y2) < 0.5 and abs(y1 - max_y) <= level_tol:
             segs.append((min(x1, x2), max(x1, x2), y1))
+    return segs
+
+
+def _vertical_edges_at_extreme(polygon, side, level_tol=2.0):
+    """ポリゴンの左端(side='left')または右端(side='right')にある縦エッジ群
+    [(y0,y1,x), ...] を返す（図面全体が90°回転している場合の下端/上端の代替）。"""
+    xs = [p[0] for p in polygon]
+    target_x = min(xs) if side == 'left' else max(xs)
+    segs = []
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        if abs(x1 - x2) < 0.5 and abs(x1 - target_x) <= level_tol:
+            segs.append((min(y1, y2), max(y1, y2), x1))
     return segs
 
 
@@ -660,21 +676,6 @@ def _dist_to_bottom_edge(pt, bottom_segs):
             d = _m.hypot(x - (x0 if x < x0 else x1), y - ey)
         best = min(best, d)
     return best
-
-
-def _all_vertical_edges(polygon):
-    """ポリゴンの全縦エッジ [(y0,y1,x), ...] を返す（左右両辺含む）。
-
-    図面全体が90°回転している場合、名称ラベルは（通常時の下端/上端横エッジ
-    ではなく）左右いずれかの縦エッジ脇に書かれる。"""
-    segs = []
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        if abs(x1 - x2) < 0.5:
-            segs.append((min(y1, y2), max(y1, y2), x1))
-    return segs
 
 
 def _dist_to_vertical_edge(pt, vertical_segs):
@@ -694,73 +695,100 @@ def _dist_to_vertical_edge(pt, vertical_segs):
 def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_letters=3,
                            limit=8, exclude_circuit_symbols=True, exclude_terms=('NOTE', '☆'),
                            exclude_lowercase=True, circuit_keep_terms=('RACK',),
-                           also_scan_vertical=False):
-    """領域名候補ラベルを境界エッジへの距離順に返す（テキスト重複除去）。
+                           rotated_edge_roles=None):
+    """領域名候補ラベルを優先順位（Tier）→距離順に返す（テキスト重複除去）。
 
-    通常は下端エッジからの距離 [min_dist, max_dist] で評価する。
-    候補がゼロの場合は全横エッジ（上端・中段含む）も同じ [min_dist, max_dist] で
-    フォールバック再探索する。これにより上端内側に名称が置かれたボックスにも対応する
-    （例: `HEATER CTRL B.D-5A(HCBD)` が上端から3単位内側）。
-    それでも候補がゼロの場合は全縦エッジ（左右）も同じ [min_dist, max_dist] でさらに
-    フォールバックする。いずれのフォールバックも `min_dist` 未満（境界線分上＝コネクタ
-    符号等が偶然線上に乗っただけの無関係なラベル）は候補に含めない。
-    also_scan_vertical=True のときは、横エッジ側で候補が見つかった場合でも常に縦エッジ
-    （左右）の候補を追加で合算する（候補ゼロのときだけのフォールバックでは不十分）。
-    図面全体が90°回転しているファイルでは名称ラベルが横エッジでなく縦エッジ脇に
-    配置されることが多いが、境界線上(d<min_dist)に偶然乗った無関係なラベルが横エッジ側
-    で先に1件見つかってしまうと、本来の縦エッジ側の名称候補が完全に隠れてしまうため。
+    優先順位（ユーザー確認による仕様、2026-06-21 v1.5.9）:
+      Tier 1: 下端横エッジの最近傍（`rotated_edge_roles` 指定時はその1番目の側の
+              縦エッジ＝図面回転時の下端相当。実例で確認済み: `DE5434-553-10B.dxf`
+              のような回転角+90°多数派の図面では右端）
+      Tier 2: 上端横エッジの最近傍（`rotated_edge_roles` 指定時は2番目の側の縦エッジ
+              ＝上端相当。回転角+90°多数派の図面では左端）
+      Tier 3: Tier 1/2 のいずれでも候補が見つからない場合のみ、ポリゴン全体の境界
+              （任意の辺）への最短距離でフォールバック評価する。
+    各 Tier 内は距離が近い順。Tier1/2 はいずれも `min_dist`未満（境界線分上＝
+    部品符号等が偶然乗っただけの無関係なラベル）を除外する。同じテキストが複数
+    Tier・複数距離で見つかった場合は、最も優先度の高い Tier・距離のものを残す。
+    `rotated_edge_roles=None`（通常図面、または回転方向が判定できない図面）の
+    場合、Tier1=下端横エッジ、Tier2=上端横エッジを使う。
     条件:
       - 英字 min_letters 字以上
       - exclude_terms のいずれかを含むラベル（例 NOTE, ☆）は除外
       - exclude_lowercase=True のとき英小文字を含むラベルは除外（領域名は大文字）
       - exclude_circuit_symbols=True のとき機器符号（候補）パターン一致は除外
+
+    戻り値: (candidates, tier_by_text) のタプル。
+      candidates: [(distance, text), ...]（従来通り。distance は採用された
+                  Tier での距離）
+      tier_by_text: {text: tier(1|2|3), ...}（`candidates` と同じ重複除去後の
+                    エントリに対応。呼び出し側が「この候補がどれだけ確信度が
+                    高いか」を判定するために使う）
     """
     terms = [s for s in (exclude_terms or ())]
 
-    def _scan(edge_segs, md_lo, dist_fn):
+    def _label_ok(t):
+        if _count_letters(t) < min_letters:
+            return False
+        if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
+            return False
+        up = t.upper()
+        if any(term.upper() in up for term in terms):
+            return False
+        if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
+            matched, _ = filter_non_circuit_symbols([t])
+            if matched:
+                return False
+        return True
+
+    def _scan(edge_segs, dist_fn):
         cand = []
         for (t, x, y) in labels:
-            if _count_letters(t) < min_letters:
+            if not _label_ok(t):
                 continue
-            if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
-                continue
-            up = t.upper()
-            if any(term.upper() in up for term in terms):
-                continue
-            if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
-                matched, _ = filter_non_circuit_symbols([t])
-                if matched:
-                    continue
             d = dist_fn((x, y), edge_segs)
-            if md_lo <= d <= max_dist:
+            if min_dist <= d <= max_dist:
                 cand.append((d, t))
         return cand
 
-    bottom = _bottom_edges(polygon)
-    cand = _scan(bottom, min_dist, _dist_to_bottom_edge) if bottom else []
+    if rotated_edge_roles:
+        tier1_side, tier2_side = rotated_edge_roles
+        tier1_edges = _vertical_edges_at_extreme(polygon, tier1_side)
+        tier2_edges = _vertical_edges_at_extreme(polygon, tier2_side)
+        dist_fn = _dist_to_vertical_edge
+    else:
+        tier1_edges = _bottom_edges(polygon)
+        tier2_edges = _top_edges(polygon)
+        dist_fn = _dist_to_bottom_edge
 
-    # 候補なし → 全横エッジ（上端含む）でフォールバック（min_dist は変えない）
-    if not cand:
-        all_h_edges = _all_horizontal_edges(polygon)
-        cand = _scan(all_h_edges, min_dist, _dist_to_bottom_edge)
+    tiered = []
+    for tier, edges in ((1, tier1_edges), (2, tier2_edges)):
+        if not edges:
+            continue
+        for d, t in _scan(edges, dist_fn):
+            tiered.append((tier, d, t))
 
-    # 候補なし、または also_scan_vertical=True（回転図面で常時併用）の場合、
-    # 全縦エッジ（左右）の候補を追加する（90°回転対応・min_dist は変えない）
-    if not cand or also_scan_vertical:
-        all_v_edges = _all_vertical_edges(polygon)
-        cand = cand + _scan(all_v_edges, min_dist, _dist_to_vertical_edge)
+    # Tier1/2 でも候補ゼロの場合のみ、ポリゴン全体の境界への最短距離でフォールバック
+    if not tiered:
+        for (t, x, y) in labels:
+            if not _label_ok(t):
+                continue
+            d = _dist_point_to_polygon((x, y), polygon)
+            if min_dist <= d <= max_dist:
+                tiered.append((3, d, t))
 
-    cand.sort(key=lambda c: c[0])
+    tiered.sort(key=lambda c: (c[0], c[1]))
     seen = set()
     out = []
-    for d, t in cand:
+    tier_by_text = {}
+    for tier, d, t in tiered:
         if t in seen:
             continue
         seen.add(t)
         out.append((round(d, 1), t))
+        tier_by_text[t] = tier
         if len(out) >= limit:
             break
-    return out
+    return out, tier_by_text
 
 
 def _label_rotation_angle(entity):
@@ -803,6 +831,43 @@ def _is_globally_rotated(label_entities, threshold=0.5):
     return (rotated / total) >= threshold
 
 
+def _rotated_edge_roles(label_entities, threshold=0.5):
+    """図面全体が90°回転している場合、下端相当/上端相当がどちら側の縦エッジに
+    対応するかを判定する。
+
+    `_is_globally_rotated` は回転の有無（角度が90°付近かどうか、符号を区別しない
+    `% 180`）しか見ないが、名称候補の優先順位（下端相当を優先1位、上端相当を
+    優先2位とする）には回転方向の符号（+90° か -90° か）が必要。
+
+    実例で確認済みの対応（`DE5434-553-10B.dxf`、回転角+90°が多数派）:
+      下端相当 = 右端の縦エッジ、上端相当 = 左端の縦エッジ
+    回転角-90°が多数派の場合は左右が反転する（下端相当=左端、上端相当=右端）。
+
+    戻り値: (tier1_side, tier2_side) のタプル（'left'/'right'）。回転していない、
+    または回転方向の多数派が判定できない場合は None。
+    """
+    total = 0
+    near_plus90 = 0
+    near_minus90 = 0
+    for e in label_entities:
+        if e.dxftype() not in ('TEXT', 'MTEXT'):
+            continue
+        total += 1
+        ang = _label_rotation_angle(e)
+        ang = ((ang + 180.0) % 360.0) - 180.0  # (-180, 180] に正規化
+        if 80.0 <= ang <= 100.0:
+            near_plus90 += 1
+        elif -100.0 <= ang <= -80.0:
+            near_minus90 += 1
+    if total == 0:
+        return None
+    if (near_plus90 / total) >= threshold:
+        return ('right', 'left')
+    if (near_minus90 / total) >= threshold:
+        return ('left', 'right')
+    return None
+
+
 def _is_titleblock_region(polygon, labels):
     """領域内に図番パターンとタイトル系語が同居していれば図番枠とみなす。"""
     has_dn = False
@@ -830,7 +895,12 @@ def analyze_dxf_regions(dxf_file, config=None):
       frame_area: float
       labels: [(text, x, y), ...]  （図面枠内のみ）
       regions: [{id, frame, polygon, area, area_pct, name_candidates, default_name,
-                 dangling_edges}]
+                 default_name_tier, dangling_edges}]
+        default_name_tier: default_name（name_candidates[0]）の優先順位（1/2/3、
+          候補が無い場合は None）。`region_name_candidates()` の Tier（下端/上端
+          最近傍=1/2、境界全体への距離フォールバック=3）と同義。`app.py` の
+          他領域への選択伝播（同期）が、確信度の高い自前の候補（Tier1/2）を
+          確信度の低い他領域の選択で上書きしないようにするために使う（v1.5.9）。
         dangling_edges（領域ごと）: [{attachment, entities: [{handle, start, end}, ...]}]
           この領域の境界探索から除外された行き止まり枝（次数1のノードに繋がり、
           どこにも閉じていない境界線分の連結成分）。半面探索がこの枝を折り返す
@@ -885,6 +955,7 @@ def analyze_dxf_regions(dxf_file, config=None):
         single_thr = frame_area * cfg['area_ratio']            # 単独領域の閾値(20%)
         group_thr = frame_area * cfg.get('group_area_ratio', 0.10)  # 同名複数ピース合算の閾値(10%)
         rotated = _is_globally_rotated(label_entities)
+        rotated_edge_roles = _rotated_edge_roles(label_entities) if rotated else None
 
         def _run_detection(lines, det_cfg):
             """lines から H/V 分類 → (候補面リスト, 図面枠ごとの行き止まり枝リスト)
@@ -905,11 +976,11 @@ def analyze_dxf_regions(dxf_file, config=None):
                             reg['polygon'], connection_points, det_cfg['connection_point_margin'])
                         if cp >= det_cfg['connection_point_threshold']:
                             continue
-                    ncands = region_name_candidates(
+                    ncands, ntiers = region_name_candidates(
                         reg['polygon'], frame_labels,
                         max_dist=det_cfg['name_max_dist'], min_dist=det_cfg['name_min_dist'],
                         min_letters=det_cfg['name_min_letters'],
-                        also_scan_vertical=rotated,
+                        rotated_edge_roles=rotated_edge_roles,
                         exclude_circuit_symbols=det_cfg['exclude_circuit_symbols'],
                         exclude_terms=det_cfg['name_exclude_terms'],
                         exclude_lowercase=det_cfg['name_exclude_lowercase'],
@@ -918,6 +989,7 @@ def analyze_dxf_regions(dxf_file, config=None):
                         'polygon': reg['polygon'], 'area': reg['area'],
                         'name_candidates': ncands,
                         'default_name': ncands[0][1] if ncands else '',
+                        'default_name_tier': ntiers.get(ncands[0][1]) if ncands else None,
                     })
                 fc.append(cands_list)
                 dangling_by_frame.append([d for d in det_dangling if d['entities']])
@@ -991,6 +1063,7 @@ def analyze_dxf_regions(dxf_file, config=None):
                     'area_pct': 100.0 * cf['area'] / frame_area,
                     'name_candidates': cf['name_candidates'],
                     'default_name': cf['default_name'],
+                    'default_name_tier': cf.get('default_name_tier'),
                     'dangling_edges': region_dangling,
                 })
                 rid += 1

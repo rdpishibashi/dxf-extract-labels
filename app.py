@@ -392,22 +392,33 @@ def app():
                 # ただし候補が1件のみ（選択肢なし・自動確定）の領域は除外する。
                 # 候補1件の領域は「ユーザーが能動的に選んだわけではない確定」のため、
                 # 同じラベルが隣接領域の候補にも上がる場合に誤って引き継がれるのを防ぐ。
-                selected_elsewhere = set()
-                for fn2, an2 in analyses.items():
-                    for r2 in an2.get('regions', []):
-                        if fn2 == fname and r2['id'] == reg['id']:
-                            continue
-                        cands2 = r2.get('name_candidates', [])
-                        if len(cands2) <= 1:
-                            continue  # 選択肢なし（自動確定）の領域はスキップ
-                        for j, (_d2, t2) in enumerate(cands2):
-                            if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
-                                selected_elsewhere.add(t2)
+                #
+                # この領域自身の最有力候補が Tier1/2（下端/上端最近傍。回転図面では
+                # 右端/左端）の確信度の高い候補である場合は、他領域からの同期で
+                # 上書きしない（v1.5.9）。同期は元々「この領域自身に強い候補が無く
+                # （Tier3）、他の領域で選ばれた同名候補を引き継ぐべき」ケース
+                # （例: MPD RACK2 のような複数ピース合算）のために設けたもので、
+                # 隣接・入れ子の領域がそれぞれ独自の Tier1/2 候補を持つ場合に
+                # 互いの選択を上書きしてしまう不具合があった（ユーザー報告:
+                # EE6313-546-01E.dxf の図面1/領域1,2 が同じ選択に同期されるが、
+                # 本来は領域1=B CHAMBER、領域2=BAKE HEATER UNIT RX で別々が正しい）。
                 default_idx = 0
-                for i, (d, t) in enumerate(cands):
-                    if t in selected_elsewhere:
-                        default_idx = i
-                        break
+                if reg.get('default_name_tier') not in (1, 2):
+                    selected_elsewhere = set()
+                    for fn2, an2 in analyses.items():
+                        for r2 in an2.get('regions', []):
+                            if fn2 == fname and r2['id'] == reg['id']:
+                                continue
+                            cands2 = r2.get('name_candidates', [])
+                            if len(cands2) <= 1:
+                                continue  # 選択肢なし（自動確定）の領域はスキップ
+                            for j, (_d2, t2) in enumerate(cands2):
+                                if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
+                                    selected_elsewhere.add(t2)
+                    for i, (d, t) in enumerate(cands):
+                        if t in selected_elsewhere:
+                            default_idx = i
+                            break
 
                 for i, (d, t) in enumerate(cands):
                     ck = f"rc_{fname}_{reg['id']}_{i}"

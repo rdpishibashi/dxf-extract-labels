@@ -841,18 +841,29 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
     """領域名候補ラベルを優先順位（Tier）→距離順に返す（テキスト重複除去）。
 
     優先順位（ユーザー確認による仕様、2026-06-21 v1.5.9）:
-      Tier 1: 下端横エッジの最近傍（`rotated_edge_roles` 指定時はその1番目の側の
-              縦エッジ＝図面回転時の下端相当。実例で確認済み: `DE5434-553-10B.dxf`
-              のような回転角+90°多数派の図面では右端）
-      Tier 2: 上端横エッジの最近傍（`rotated_edge_roles` 指定時は2番目の側の縦エッジ
-              ＝上端相当。回転角+90°多数派の図面では左端）
+      Tier 1: 矩形領域内にあり、下端横エッジの最近傍（`rotated_edge_roles` 指定時は
+              その1番目の側の縦エッジ＝図面回転時の下端相当。実例で確認済み:
+              `DE5434-553-10B.dxf` のような回転角+90°多数派の図面では右端）
+      Tier 2: 矩形領域内にあり、上端横エッジの最近傍（`rotated_edge_roles` 指定時は
+              2番目の側の縦エッジ＝上端相当。回転角+90°多数派の図面では左端）
       Tier 3: Tier 1/2 のいずれでも候補が見つからない場合のみ、ポリゴン全体の境界
-              （任意の辺）への最短距離でフォールバック評価する。
+              （任意の辺）への最短距離でフォールバック評価する（領域内外を問わない）。
     各 Tier 内は距離が近い順。Tier1/2 はいずれも `min_dist`未満（境界線分上＝
     部品符号等が偶然乗っただけの無関係なラベル）を除外する。同じテキストが複数
     Tier・複数距離で見つかった場合は、最も優先度の高い Tier・距離のものを残す。
     `rotated_edge_roles=None`（通常図面、または回転方向が判定できない図面）の
     場合、Tier1=下端横エッジ、Tier2=上端横エッジを使う。
+
+    Tier1/2 を**領域内側のラベルに限定する**理由（2026-06-21 追加）: 領域名は
+    通常その箱の内側に書かれるため、Tier1/2 が想定する「自分の箱の名前」は内側の
+    ラベルである。領域の外側にある別の箱・別の注記等のラベルが、たまたま
+    Tier1/2 のエッジ（下端/上端、回転時は右端/左端）に近いという理由だけで
+    内側の正しいラベルより優先されてしまう不具合があった（`DE5434-553-10B.dxf`
+    の回転領域で、領域外の `EFEM UPPER`〈距離3.9〉が領域内の正しい名称
+    `CONTROL BOX CORE FX`〈距離5.2〉より優先されていた。DXF-viewer の Search
+    Boundary を「最上位候補のみで照合」するよう変更した際にユーザーが発見）。
+    Tier3 のフォールバックは領域内外を問わない（Tier1/2 で候補が無い場合の
+    最後の手段のため、範囲を絞らない）。
     条件:
       - 英字 min_letters 字以上
       - exclude_terms のいずれかを含むラベル（例 NOTE, ☆）は除外
@@ -882,10 +893,12 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
                 return False
         return True
 
-    def _scan(edge_segs, dist_fn):
+    def _scan(edge_segs, dist_fn, require_inside):
         cand = []
         for (t, x, y) in labels:
             if not _label_ok(t):
+                continue
+            if require_inside and not _point_in_polygon((x, y), polygon):
                 continue
             d = dist_fn((x, y), edge_segs)
             if min_dist <= d <= max_dist:
@@ -906,7 +919,7 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
     for tier, edges in ((1, tier1_edges), (2, tier2_edges)):
         if not edges:
             continue
-        for d, t in _scan(edges, dist_fn):
+        for d, t in _scan(edges, dist_fn, True):
             tiered.append((tier, d, t))
 
     # Tier1/2 でも候補ゼロの場合のみ、ポリゴン全体の境界への最短距離でフォールバック

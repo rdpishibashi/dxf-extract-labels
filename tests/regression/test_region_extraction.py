@@ -321,11 +321,18 @@ def test_nested_regions_each_get_own_confident_default_name():
     はずなのに一致してしまう不具合）。
 
     `EE6313-546-01E.dxf` の図面1/領域1(id 0, 面積63.6%)と領域2(id 1, 面積52.6%)
-    は同名の2候補（B CHAMBER, BAKE HEATER UNIT RX）を共有するが、互いに
-    下端最近傍の側が異なる（領域1→B CHAMBER、領域2→BAKE HEATER UNIT RX）。
+    は互いに下端最近傍の側が異なる（領域1→B CHAMBER、領域2→BAKE HEATER UNIT RX）。
     `default_name_tier` が両領域とも1（Tier1=下端最近傍）であることを確認し、
     `app.py` の他領域への選択同期がこのケースでは発動しない（=確信度の高い
-    自前の候補を上書きしない）前提条件を保証する。"""
+    自前の候補を上書きしない）前提条件を保証する。
+
+    領域2(id 1, 内側)は領域1(id 0, 外側)の名称 `B CHAMBER` を候補に持たない
+    （`B CHAMBER` のラベルは領域2の境界外にあり、Tier1/2 は領域内側のラベルに
+    限定されるため、2026-06-21 修正）。一方、領域1は領域2の名称
+    `BAKE HEATER UNIT RX` を依然候補に持つ（そのラベルは入れ子の構造上、領域1の
+    内側でもあるため）。この非対称な残存ケースが、`app.py` の `regions_overlap`
+    ベースの同期防止（領域1で同期した場合に領域2へ伝播しない安全策）が依然
+    必要である理由。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
     region0 = next(r for r in a['regions'] if r['id'] == 0)
@@ -334,10 +341,11 @@ def test_nested_regions_each_get_own_confident_default_name():
     assert region0['default_name_tier'] == 1
     assert region1['default_name'] == 'BAKE HEATER UNIT RX'
     assert region1['default_name_tier'] == 1
-    # 互いの候補リストに相手の名称が(優先度の低い候補として)含まれている
-    # ことを確認する（同期バグが再発し得る前提条件そのものを保証する）。
+    # 領域1(外側)は領域2(内側)の名称を依然候補に持つ（入れ子構造上、領域2の
+    # ラベルは領域1の内側でもあるため）が、領域2は領域1の名称を候補に持たない
+    # （そのラベルは領域2の外側にあるため、Tier1/2 から除外される）。
     assert 'BAKE HEATER UNIT RX' in [t for _d, t in region0['name_candidates']]
-    assert 'B CHAMBER' in [t for _d, t in region1['name_candidates']]
+    assert 'B CHAMBER' not in [t for _d, t in region1['name_candidates']]
 
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
@@ -380,3 +388,22 @@ def test_rotated_drawing_name_tier_uses_right_then_left_edge():
     tiers = {r['default_name_tier'] for r in a['regions'] if r['name_candidates']}
     assert 1 in tiers
     assert 2 in tiers
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_tier1_candidate_must_be_inside_the_region():
+    """Tier1/2 候補は領域の内側にあるラベルに限定する（ユーザー報告: DXF-viewer の
+    Search Boundary で最上位候補のみ照合するよう変更した際に発覚）。
+
+    `DE5434-553-10B.dxf` の領域（id 3、回転図面で下端相当=右端の縦エッジ近傍）は、
+    領域の外側にあるラベル `EFEM UPPER`（右端から距離3.9）と、領域の内側にある
+    ラベル `CONTROL BOX CORE FX`（右端から距離5.2）の両方を右端エッジ近傍に持つ。
+    領域外のラベルは別の箱・別の注記等を指している可能性が高く、単純な距離比較
+    だけでは領域内側の正しいラベルより誤って優先されてしまっていた。"""
+    a = analyze_dxf_regions(ROTATED)
+    assert a['error'] is None
+    region = next(r for r in a['regions'] if r['id'] == 3)
+    assert region['default_name'] == 'CONTROL BOX CORE FX'
+    assert region['default_name_tier'] == 1
+    # 領域外のラベルは Tier1/2 から除外され、候補に現れない。
+    assert 'EFEM UPPER' not in [t for _d, t in region['name_candidates']]

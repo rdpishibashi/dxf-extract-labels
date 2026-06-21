@@ -357,7 +357,7 @@ def _find_rectilinear_faces(Hm, Vm, eps):
     # 生む（面積には寄与しないが、頂点座標の表示を汚す）。真の境界閉路は必ず次数2
     # 以上のノードのみで構成されるため、次数1のノードとその辺を再帰的に除去
     # （2-core抽出）してから面探索する。
-    dangling_edges = []
+    peeled_pairs = []  # (leaf_key, other_key)、除去順
     changed = True
     while changed:
         changed = False
@@ -367,14 +367,50 @@ def _find_rectilinear_faces(Hm, Vm, eps):
             if not nbrs:
                 continue
             other = next(iter(nbrs))
-            dangling_edges.append((node_xy[leaf], node_xy[other]))
+            peeled_pairs.append((leaf, other))
             adj[other].discard(leaf)
             if not adj[other]:
                 del adj[other]
             del adj[leaf]
             changed = True
+
+    # 除去した辺を「枝（連結成分）」単位にまとめる。1本の枝が複数の短い線分の
+    # 連なりで構成される場合（部品が複数回切れ目を入れている、あるいは1本の長い
+    # 線が途中まで領域境界として使われ残りが余剰になっている等）も、先端から
+    # 現存グラフへの取り付け点までを1つの枝として扱う（Union-Find で連結成分化）。
+    dangling_branches = []
+    if peeled_pairs:
+        parent = {}
+
+        def _uf_find(x):
+            while parent.get(x, x) != x:
+                x = parent[x]
+            return x
+
+        def _uf_union(a, b):
+            ra, rb = _uf_find(a), _uf_find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for a, b in peeled_pairs:
+            parent.setdefault(a, a)
+            parent.setdefault(b, b)
+            _uf_union(a, b)
+
+        groups = {}
+        for a, b in peeled_pairs:
+            groups.setdefault(_uf_find(a), []).append((a, b))
+
+        for edges in groups.values():
+            keys = {k for ab in edges for k in ab}
+            attach_keys = [k for k in keys if k in adj]
+            dangling_branches.append({
+                'edges': [(node_xy[a], node_xy[b]) for a, b in edges],
+                'attachment': node_xy[attach_keys[0]] if attach_keys else None,
+            })
+
     if not adj:
-        return [], dangling_edges
+        return [], dangling_branches
 
     def ang(a, b):
         ax, ay = node_xy[a]
@@ -404,7 +440,7 @@ def _find_rectilinear_faces(Hm, Vm, eps):
                     break
             if ok and len(face) >= 4:
                 faces.append(face)
-    return faces, dangling_edges
+    return faces, dangling_branches
 
 
 def _polygon_area(poly):
@@ -467,50 +503,52 @@ def _dist_point_to_polygon(pt, poly):
     return best
 
 
-def _resolve_dangling_handles(dangling_edges, raw_lines, tol=0.5):
-    """行き止まり枝（端点ペアのリスト）について、その経路上にある元のLINE/
-    LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。
+def _resolve_dangling_handles(dangling_branches, raw_lines, tol=0.5):
+    """行き止まり枝（枝ごとの端点ペアのリスト＋取り付け点）について、その経路上に
+    ある元のLINE/LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。
 
     raw_lines は (start, end, handle) の3要素タプルのリスト
     （`_collect_region_geometry` の region_lines / region_lines_lp）。
-    1本の行き止まり枝が複数の生エンティティで構成される場合（短い線分が
-    連なって1本の枝になっている場合）も、その枝の延長線上にあり区間が
-    重なる全エンティティを対象に含める。
+    1本の枝が複数の生エンティティ（複数の短い線分の連なり、または閉領域の境界
+    として一部だけ使われている1本の長い線の余剰部分）で構成される場合も、枝を
+    構成する全セグメントの延長線上にあり区間が重なる全エンティティを対象に含める
+    （セグメントをまたいで同じ handle が重複してもエンティティ単位で重複除去する）。
     """
     results = []
-    for (p1, p2) in dangling_edges:
-        x1, y1 = p1
-        x2, y2 = p2
-        vertical = abs(x1 - x2) <= tol
-        level = (x1 + x2) / 2.0 if vertical else (y1 + y2) / 2.0
-        lo, hi = (min(y1, y2), max(y1, y2)) if vertical else (min(x1, x2), max(x1, x2))
+    for branch in dangling_branches:
         entities = []
         seen = set()
-        for (s, en, handle) in raw_lines:
-            sx, sy = s[0], s[1]
-            ex, ey = en[0], en[1]
-            if vertical:
-                if abs(sx - level) > tol or abs(ex - level) > tol:
+        for (p1, p2) in branch['edges']:
+            x1, y1 = p1
+            x2, y2 = p2
+            vertical = abs(x1 - x2) <= tol
+            level = (x1 + x2) / 2.0 if vertical else (y1 + y2) / 2.0
+            lo, hi = (min(y1, y2), max(y1, y2)) if vertical else (min(x1, x2), max(x1, x2))
+            for (s, en, handle) in raw_lines:
+                sx, sy = s[0], s[1]
+                ex, ey = en[0], en[1]
+                if vertical:
+                    if abs(sx - level) > tol or abs(ex - level) > tol:
+                        continue
+                    seg_lo, seg_hi = min(sy, ey), max(sy, ey)
+                else:
+                    if abs(sy - level) > tol or abs(ey - level) > tol:
+                        continue
+                    seg_lo, seg_hi = min(sx, ex), max(sx, ex)
+                if seg_hi < lo - tol or seg_lo > hi + tol:
                     continue
-                seg_lo, seg_hi = min(sy, ey), max(sy, ey)
-            else:
-                if abs(sy - level) > tol or abs(ey - level) > tol:
+                key = handle if handle else (round(sx, 3), round(sy, 3), round(ex, 3), round(ey, 3))
+                if key in seen:
                     continue
-                seg_lo, seg_hi = min(sx, ex), max(sx, ex)
-            if seg_hi < lo - tol or seg_lo > hi + tol:
-                continue
-            key = handle if handle else (round(sx, 3), round(sy, 3), round(ex, 3), round(ey, 3))
-            if key in seen:
-                continue
-            seen.add(key)
-            entities.append({
-                'handle': handle,
-                'start': (round(sx, 2), round(sy, 2)),
-                'end': (round(ex, 2), round(ey, 2)),
-            })
+                seen.add(key)
+                entities.append({
+                    'handle': handle,
+                    'start': (round(sx, 2), round(sy, 2)),
+                    'end': (round(ex, 2), round(ey, 2)),
+                })
+        attachment = branch.get('attachment')
         results.append({
-            'point1': (round(x1, 2), round(y1, 2)),
-            'point2': (round(x2, 2), round(y2, 2)),
+            'attachment': (round(attachment[0], 2), round(attachment[1], 2)) if attachment else None,
             'entities': entities,
         })
     return results
@@ -520,7 +558,9 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, r
     """1つの図面枠内で、面積>=枠面積×area_ratio の閉領域を検出する。
 
     戻り値: (regions, dangling) のタプル。dangling は `_resolve_dangling_handles`
-    の出力形式（行き止まり枝ごとの handle/座標）。
+    の出力形式（枝＝連結成分ごとの attachment/handle/座標）。どの領域に関係する
+    枝かの絞り込みは呼び出し側（`analyze_dxf_regions`）が `attachment` 座標と
+    各領域の polygon で行う。
     """
     xl, xr, y0, y1 = frame
     Hf = [h for h in RH if y0 - 5 <= h[0] <= y1 + 5 and h[2] >= xl - 5 and h[1] <= xr + 5]
@@ -789,12 +829,18 @@ def analyze_dxf_regions(dxf_file, config=None):
       frames: [(xl,xr,y0,y1), ...]
       frame_area: float
       labels: [(text, x, y), ...]  （図面枠内のみ）
-      regions: [{id, frame, polygon, area, area_pct, name_candidates, default_name}]
-      dangling_edges: [{frame, point1, point2, entities: [{handle, start, end}, ...]}]
-        閉領域に寄与しない行き止まり枝（次数1のノードに繋がる境界線分）。半面探索が
-        この枝を折り返すために生じる「同じ頂点が2回連続する」アーティファクトの
-        原因になっていた箇所を、面探索前に除去している（v1.5.7）。除去した枝の
-        実体（handle・座標）をここに記録する。
+      regions: [{id, frame, polygon, area, area_pct, name_candidates, default_name,
+                 dangling_edges}]
+        dangling_edges（領域ごと）: [{attachment, entities: [{handle, start, end}, ...]}]
+          この領域の境界探索から除外された行き止まり枝（次数1のノードに繋がり、
+          どこにも閉じていない境界線分の連結成分）。半面探索がこの枝を折り返す
+          ために生じる「同じ頂点が2回連続する」アーティファクトの原因になっていた
+          箇所を、面探索前に除去している（v1.5.7）。`attachment` は枝が現存する
+          境界グラフに取り付く座標（この領域のポリゴン境界上に乗る）。1本の枝が
+          複数の生エンティティ（短い線分の連なり、または閉領域の境界として一部
+          だけ使われている長い線の余剰部分）で構成される場合は `entities` に
+          複数件入る。取り付け点がどの領域の境界にも乗らない枝（無関係な部品等）
+          は報告されない。
       error: str | None
     """
     from collections import defaultdict as _dd
@@ -802,8 +848,7 @@ def analyze_dxf_regions(dxf_file, config=None):
     cfg = dict(DEFAULT_REGION_CONFIG)
     if config:
         cfg.update(config)
-    result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [],
-              'dangling_edges': [], 'error': None}
+    result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [], 'error': None}
     try:
         doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
@@ -842,10 +887,11 @@ def analyze_dxf_regions(dxf_file, config=None):
         rotated = _is_globally_rotated(label_entities)
 
         def _run_detection(lines, det_cfg):
-            """lines から H/V 分類 → (候補面リスト, 行き止まり枝リスト) を返す内部ヘルパー。"""
+            """lines から H/V 分類 → (候補面リスト, 図面枠ごとの行き止まり枝リスト)
+            を返す内部ヘルパー。"""
             RH, RV = _split_axis_aligned(lines, det_cfg['snap'])
             fc = []
-            dangling_all = []
+            dangling_by_frame = []
             for fi, frame in enumerate(frames):
                 cands_list = []
                 det_regions, det_dangling = _detect_regions(
@@ -874,16 +920,15 @@ def analyze_dxf_regions(dxf_file, config=None):
                         'default_name': ncands[0][1] if ncands else '',
                     })
                 fc.append(cands_list)
-                for d in det_dangling:
-                    dangling_all.append(dict(d, frame=fi))
-            return fc, dangling_all
+                dangling_by_frame.append([d for d in det_dangling if d['entities']])
+            return fc, dangling_by_frame
 
         def _hits(fc):
             return sum(1 for cl in fc for cf in cl if cf['area'] >= single_thr)
 
         # 1) LINE のみで領域検出を試みる
         lines_for_detection = region_lines
-        frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg)
+        frame_cands, dangling_by_frame = _run_detection(lines_for_detection, cfg)
 
         # LINE だけで閾値超え候補がゼロで LWPOLYLINE 境界線もある場合、
         # LWPOLYLINE を追加して再検出する（例: EE6888-631-01A.dxf など境界が
@@ -892,7 +937,7 @@ def analyze_dxf_regions(dxf_file, config=None):
         # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせる）。
         if _hits(frame_cands) == 0 and region_lines_lp:
             lines_for_detection = region_lines + region_lines_lp
-            frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg)
+            frame_cands, dangling_by_frame = _run_detection(lines_for_detection, cfg)
 
         # それでも閾値超え候補がゼロ、かつラベルの過半数が90°回転している（=図面全体が
         # 90°回転して描かれている）場合のみ、横線分のギャップ橋渡しを有効にして再検出する
@@ -903,12 +948,7 @@ def analyze_dxf_regions(dxf_file, config=None):
         if _hits(frame_cands) == 0 and rotated:
             cfg_h_bridge = dict(cfg)
             cfg_h_bridge['bridge_horizontal_gaps'] = True
-            frame_cands, dangling_edges = _run_detection(lines_for_detection, cfg_h_bridge)
-
-        # 採用された最終パスで見つかった行き止まり枝のみを報告する（最終的に使われな
-        # かった中間パスのものは報告しない）。実体を持たない枝（handle解決できなかった
-        # もの。座標クラスタリングの境界条件等で稀に発生し得る）は除外する。
-        result['dangling_edges'] = [d for d in dangling_edges if d['entities']]
+            frame_cands, dangling_by_frame = _run_detection(lines_for_detection, cfg_h_bridge)
 
         # 2) 第1図面（最左フレーム）で「同名複数ピース合算>=group_thr」となる名称を
         #    ターゲットとする（MPD RACK2 のように2矩形で合算が閾値超のケース）。
@@ -925,13 +965,23 @@ def analyze_dxf_regions(dxf_file, config=None):
 
         # 3) 採用条件: 個別面積>=単独閾値(20%)、または 名称がターゲット（複数ピース合算で
         #    第1図面が閾値超）。ターゲット名称は他図面でも面積に関係なく採用。
+        #    行き止まり枝は、その取り付け点(attachment)が当該領域のポリゴン境界上に
+        #    乗るものだけを、その領域の `dangling_edges` として絞り込む（無関係な
+        #    部品・他領域の枝を混在させない）。
+        attach_tol = max(cfg.get('face_snap', 0.1), 0.5)
         regions = []
         rid = 0
         for fi, cands_list in enumerate(frame_cands):
+            frame_dangling = dangling_by_frame[fi] if fi < len(dangling_by_frame) else []
             for cf in cands_list:
                 if not (cf['area'] >= single_thr
                         or (cf['default_name'] and cf['default_name'] in target_names)):
                     continue
+                region_dangling = [
+                    br for br in frame_dangling
+                    if br['attachment'] is not None
+                    and _dist_point_to_polygon(br['attachment'], cf['polygon']) <= attach_tol
+                ]
                 regions.append({
                     'id': rid,
                     'frame': fi,
@@ -941,6 +991,7 @@ def analyze_dxf_regions(dxf_file, config=None):
                     'area_pct': 100.0 * cf['area'] / frame_area,
                     'name_candidates': cf['name_candidates'],
                     'default_name': cf['default_name'],
+                    'dangling_edges': region_dangling,
                 })
                 rid += 1
         result['regions'] = regions

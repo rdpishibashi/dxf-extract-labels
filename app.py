@@ -334,30 +334,6 @@ def app():
                 st.warning(err)
                 continue
 
-            dangling = analysis.get('dangling_edges', [])
-            if dangling:
-                with st.expander(f"⚠️ 行き止まり枝（{len(dangling)} 件）"):
-                    st.caption(
-                        "境界線と同じ線種（lineweight=25 / color=2）を持ちながら、"
-                        "どこにも閉じていない線分です。閉領域の検出からは除外して"
-                        "います（手描きの作画ミスの可能性があるため、該当する "
-                        "handle を確認してください）。"
-                    )
-                    lines = []
-                    for d in dangling:
-                        (x1, y1), (x2, y2) = d['point1'], d['point2']
-                        lines.append(
-                            f"図面{d['frame'] + 1}: "
-                            f"({x1:.2f}, {y1:.2f}) - ({x2:.2f}, {y2:.2f})"
-                        )
-                        for ent in d['entities']:
-                            h = ent['handle'] or '(handle不明)'
-                            (sx, sy), (ex, ey) = ent['start'], ent['end']
-                            lines.append(
-                                f"  handle {h}: "
-                                f"({sx:.2f}, {sy:.2f}) - ({ex:.2f}, {ey:.2f})"
-                            )
-                    st.code('\n'.join(lines))
             if not regions:
                 st.info("面積条件を満たす領域が検出されませんでした。詳細設定の調整をお試しください。")
                 continue
@@ -383,6 +359,29 @@ def app():
                                 for i, (x, y) in enumerate(corners)
                             ) or '(なし)'
                         )
+
+                region_dangling = reg.get('dangling_edges', [])
+                if region_dangling:
+                    with st.expander(f"⚠️ この領域の行き止まり枝（{len(region_dangling)} 件）"):
+                        st.caption(
+                            "この領域の境界探索から除外された、どこにも閉じていない"
+                            "線分（境界線と同じ線種 lineweight=25/color=2）です。"
+                            "手描きの作画ミスの可能性があるため、該当する handle を"
+                            "確認してください。"
+                        )
+                        lines = []
+                        for br in region_dangling:
+                            att = br.get('attachment')
+                            att_str = f"({att[0]:.2f}, {att[1]:.2f})" if att else "(不明)"
+                            lines.append(f"取り付け点 {att_str}:")
+                            for ent in br['entities']:
+                                h = ent['handle'] or '(handle不明)'
+                                (sx, sy), (ex, ey) = ent['start'], ent['end']
+                                lines.append(
+                                    f"  handle {h}: "
+                                    f"({sx:.2f}, {sy:.2f}) - ({ex:.2f}, {ey:.2f})"
+                                )
+                        st.code('\n'.join(lines))
 
                 cands = reg['name_candidates']
                 if not cands:

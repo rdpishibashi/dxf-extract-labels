@@ -46,6 +46,26 @@ DEFAULT_REGION_CONFIG = {
 }
 
 
+def _is_continuous_linetype(e, doc):
+    """エンティティの線種が実質的に Continuous（実線）かどうかを判定する。
+
+    PHANTOM（二点鎖線）等の装飾的な線種は、lineweight/color が境界線条件
+    （region_lineweight/region_color）に一致していても、実際の閉領域の壁を
+    表すものではない（手描き図面で「別位置案」やセンターライン的な意味で使われる）。
+    `EE6313-546-01E.dxf` で、本来は単一の小さな実体（handle 21AB/21AC/219A/219E、
+    Continuous）である "MX CHAMBER" の周囲に、別の handle（21AE/21A1/21A9/2198等、
+    PHANTOM）で描かれた二点鎖線の矩形が重なっており、これも境界線として誤認識し、
+    本来存在しない「くり抜き」形状の領域が検出される不具合が報告された
+    （ユーザー確認: linetype=PHANTOM の矩形は実体ではない）。`linetype='ByLayer'`
+    の場合はレイヤーの既定線種まで解決する。
+    """
+    lt = (getattr(e.dxf, 'linetype', None) or 'BYLAYER').upper()
+    if lt == 'BYLAYER':
+        layer = doc.layers.get(e.dxf.layer) if doc else None
+        lt = (layer.dxf.linetype if layer else 'CONTINUOUS').upper()
+    return lt == 'CONTINUOUS'
+
+
 def _collect_region_geometry(msp, cfg):
     """msp を1回走査し、INSERT も展開して、図面枠線・領域境界線・テキスト・
     接続点（CIRCLE を含むブロックの INSERT 位置）を収集する。"""
@@ -76,7 +96,8 @@ def _collect_region_geometry(msp, cfg):
         lw = getattr(e.dxf, 'lineweight', None)
         if lw == flw:
             frame_lines.append((e.dxf.start, e.dxf.end))
-        elif lw == rlw and getattr(e.dxf, 'color', None) == rcol:
+        elif (lw == rlw and getattr(e.dxf, 'color', None) == rcol
+              and _is_continuous_linetype(e, doc)):
             # 領域境界線のみ handle を保持する（行き止まり枝の報告用。virtual_entities()
             # 由来（INSERT 展開）は handle が None になるため、所属 INSERT の handle で代替）。
             region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
@@ -86,7 +107,8 @@ def _collect_region_geometry(msp, cfg):
     def handle_lwpolyline_lp(e, owner_handle=None):
         """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
         lw = getattr(e.dxf, 'lineweight', None)
-        if lw != rlw or getattr(e.dxf, 'color', None) != rcol:
+        if (lw != rlw or getattr(e.dxf, 'color', None) != rcol
+                or not _is_continuous_linetype(e, doc)):
             return
         try:
             pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)

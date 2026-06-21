@@ -503,6 +503,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.12 | コード品質レビュー（モジュール性・可読性向けリファクタ。ロジック変更なし、出力は不変）。`region_detector.py`（1161行）にセクション見出しコメントを追加し、設定／ジオメトリ収集／ポリゴン幾何ユーティリティ／線分結合／図面枠検出／閉領域検出／名称候補／回転判定／タイトルブロック除外／トップレベル解析の10ブロックに整理。最も複雑だった `_find_rectilinear_faces`（175行）を `_build_planar_graph`（平面グラフ構築）・`_peel_dangling_branches`（行き止まり枝の除去・連結成分化）・`_trace_faces`（半面探索）の3関数に分割し、`_find_rectilinear_faces` 自体は3段のオーケストレーションのみに簡素化。`analyze_dxf_regions` 内の入れ子クロージャ（`_run_detection`/`_hits`）を `_run_region_detection`/`_count_threshold_hits` としてモジュールレベルに抽出し、3パス検出ロジックの見通しを改善。`app.py` の「領域の確認」ループからも、座標ポップオーバー（`_render_corners_popover`）・行き止まり枝表示（`_render_dangling_edges_section`）・デフォルト候補インデックス計算（`_compute_default_candidate_index`）の3関数を抽出し、ファイル→領域の本流ループを見やすくした。DXF-viewer の `core/region_detector.py` にも同じ構造改善（DXF-viewer独自の `_filter_eligible_labels` キャッシュ・`_label_position_for_candidate` 等は保持）を移植済み。回帰テスト41件・DXF-viewer側の `test_region_search.py` 等は全て同じ結果で通過を確認。|
 | v1.5.9 | `region_name_candidates()` に優先順位（Tier）制を導入：Tier1=下端横エッジ最近傍（90°回転時は右端/左端のいずれか）、Tier2=上端横エッジ最近傍（回転時はもう一方）、Tier3=Tier1/2が空の場合のみポリゴン境界全体への最短距離でフォールバック。回転方向（+90°/-90°多数派）の判定は `_rotated_edge_roles()` を追加（`DE5434-553-10B.dxf` で確認した実例: +90°多数派→Tier1=右端,Tier2=左端）。各領域に `default_name_tier`（1/2/3）を追加し、`app.py` の他領域への選択同期（`selected_elsewhere`）がTier1/2（確信度の高い自前の候補）を上書きしないように変更。ユーザー報告: `EE6313-546-01E.dxf` の図面1/領域1,2（互いの候補リストに相手の名称を含む入れ子/隣接領域）が同じ選択に同期されてしまい、本来は領域1=`B CHAMBER`、領域2=`BAKE HEATER UNIT RX` で別々が正しい不具合を解消。|
 | v1.5.11 | `regions_overlap()` を追加し、`app.py` の名称選択同期（`_on_change_radio`の手動選択伝播・`selected_elsewhere`の初期デフォルト同期）が、同一ファイル内で重なりのある（完全な内包も部分的な重複も含む）領域同士を誤って同期しないように修正。`EE6313-546-01E.dxf` の領域1（`B CHAMBER`、外側）・領域2（`BAKE HEATER UNIT RX`、内側、完全内包）で、デフォルトでない候補を手動選択すると、もう片方も同じ名称に同期されてしまうとユーザーが報告（v1.5.9で対応したTierガードは自領域の確信度に依存するため、手動選択やTier3同士のケースでは依然発生し得た）。当初は完全な内包のみを対象とする実装で提案したが、部分的な重複も対象にすべきとの指摘により、両ポリゴンの頂点＋辺の中点をサンプルに用いる一般的な重なり判定に変更。MPD RACK2のような空間的に分離した複数ピース合算は重ならないため、同期は引き続き機能する。|
 | v1.5.10 | 領域境界線の収集条件に線種(linetype)チェックを追加（`_is_continuous_linetype`）。`lineweight=25`/`color=2`を満たしても線種がPHANTOM（二点鎖線）等のCircuit以外の場合は除外する。`EE6313-546-01E.dxf`で、実体の小さな矩形`MX CHAMBER`（handle 21AB/21AC/219A/219E、Continuous、面積1.8%）の周囲に重なるPHANTOM線種の矩形（21AE/21A1/21A9/2198等）が誤って境界線として認識され、実体矩形を「くり抜いた」形状の存在しない領域（10角形、面積4.6%）が誤検出されていた不具合をユーザーが報告（DXF-viewerで座標リストを確認した際に発覚）。修正後はPHANTOM由来の誤検出領域が消え、実体の矩形のみが残る（regions 5→4）。|
@@ -529,4 +530,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-21 (v1.5.11)
+最終更新: 2026-06-21 (v1.5.12)

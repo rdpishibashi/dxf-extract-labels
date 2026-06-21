@@ -85,6 +85,89 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
                 st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
 
 
+def _compute_default_candidate_index(fname, reg, cands, analyses):
+    """他の図面/領域で選択済みの名称があれば、それに一致する候補のインデックスを
+    デフォルトとして返す（無ければ0）。
+
+    候補が1件のみ（選択肢なし・自動確定）の領域は同期対象から除外する
+    （ユーザーが能動的に選んだわけではない確定のため、隣接領域の候補にも同じ
+    ラベルが上がる場合に誤って引き継ぐのを防ぐ）。
+
+    この領域自身の最有力候補が Tier1/2（下端/上端最近傍。回転図面では右端/左端）
+    の確信度の高い候補である場合は、他領域からの同期で上書きしない（v1.5.9）。
+    同期は元々「この領域自身に強い候補が無く（Tier3）、他の領域で選ばれた同名
+    候補を引き継ぐべき」ケース（例: MPD RACK2 のような複数ピース合算）のために
+    設けたもので、隣接・入れ子の領域がそれぞれ独自の Tier1/2 候補を持つ場合に
+    互いの選択を上書きしてしまう不具合があった（ユーザー報告: EE6313-546-01E.dxf
+    の図面1/領域1,2 が同じ選択に同期されるが、本来は領域1=B CHAMBER、
+    領域2=BAKE HEATER UNIT RX で別々が正しい）。
+
+    同一ファイル内で互いに重なり（完全な内包も部分的な重複も含む）がある領域
+    同士は、別個の領域として扱い同期しない（v1.5.11、ユーザー報告: デフォルト
+    でない候補を手動選択すると、重なりのある別領域も同じ名称に同期されてしまう。
+    当初は内包のみを対象としていたが、部分的な重複も対象にすべきとの指摘により
+    `regions_overlap()` に一般化）。
+    """
+    if reg.get('default_name_tier') in (1, 2):
+        return 0
+    selected_elsewhere = set()
+    for fn2, an2 in analyses.items():
+        for r2 in an2.get('regions', []):
+            if fn2 == fname and r2['id'] == reg['id']:
+                continue
+            cands2 = r2.get('name_candidates', [])
+            if len(cands2) <= 1:
+                continue  # 選択肢なし（自動確定）の領域はスキップ
+            if fn2 == fname and regions_overlap(reg['polygon'], r2['polygon']):
+                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
+            for j, (_d2, t2) in enumerate(cands2):
+                if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
+                    selected_elsewhere.add(t2)
+    for i, (_d, t) in enumerate(cands):
+        if t in selected_elsewhere:
+            return i
+    return 0
+
+
+def _render_corners_popover(corners):
+    """領域の頂点座標一覧を📐ポップオーバーで表示する。"""
+    with st.popover("📐"):
+        st.markdown(f"**頂点の座標**（左下から / {len(corners)}点）")
+        st.code(
+            '\n'.join(
+                f"{i + 1}: ({x:.2f}, {y:.2f})"
+                for i, (x, y) in enumerate(corners)
+            ) or '(なし)'
+        )
+
+
+def _render_dangling_edges_section(region_dangling):
+    """この領域の行き止まり枝（境界探索から除外された未閉路の線分群）を
+    ⚠️エクスパンダーで表示する。`region_dangling` が空なら何もしない。"""
+    if not region_dangling:
+        return
+    with st.expander(f"⚠️ この領域の行き止まり枝（{len(region_dangling)} 件）"):
+        st.caption(
+            "この領域の境界探索から除外された、どこにも閉じていない"
+            "線分（境界線と同じ線種 lineweight=25/color=2）です。"
+            "手描きの作画ミスの可能性があるため、該当する handle を"
+            "確認してください。"
+        )
+        lines = []
+        for br in region_dangling:
+            att = br.get('attachment')
+            att_str = f"({att[0]:.2f}, {att[1]:.2f})" if att else "(不明)"
+            lines.append(f"取り付け点 {att_str}:")
+            for ent in br['entities']:
+                h = ent['handle'] or '(handle不明)'
+                (sx, sy), (ex, ey) = ent['start'], ent['end']
+                lines.append(
+                    f"  handle {h}: "
+                    f"({sx:.2f}, {sy:.2f}) - ({ex:.2f}, {ey:.2f})"
+                )
+        st.code('\n'.join(lines))
+
+
 def app():
     st.title('DXF Extract Labels')
     st.write('DXFファイルからテキストラベルを抽出し、Excel形式で出力します。')
@@ -367,78 +450,16 @@ def app():
                         f"　面積 {reg['area_pct']:.0f}%"
                     )
                 with col_btn:
-                    with st.popover("📐"):
-                        st.markdown(f"**頂点の座標**（左下から / {len(corners)}点）")
-                        st.code(
-                            '\n'.join(
-                                f"{i + 1}: ({x:.2f}, {y:.2f})"
-                                for i, (x, y) in enumerate(corners)
-                            ) or '(なし)'
-                        )
+                    _render_corners_popover(corners)
 
-                region_dangling = reg.get('dangling_edges', [])
-                if region_dangling:
-                    with st.expander(f"⚠️ この領域の行き止まり枝（{len(region_dangling)} 件）"):
-                        st.caption(
-                            "この領域の境界探索から除外された、どこにも閉じていない"
-                            "線分（境界線と同じ線種 lineweight=25/color=2）です。"
-                            "手描きの作画ミスの可能性があるため、該当する handle を"
-                            "確認してください。"
-                        )
-                        lines = []
-                        for br in region_dangling:
-                            att = br.get('attachment')
-                            att_str = f"({att[0]:.2f}, {att[1]:.2f})" if att else "(不明)"
-                            lines.append(f"取り付け点 {att_str}:")
-                            for ent in br['entities']:
-                                h = ent['handle'] or '(handle不明)'
-                                (sx, sy), (ex, ey) = ent['start'], ent['end']
-                                lines.append(
-                                    f"  handle {h}: "
-                                    f"({sx:.2f}, {sy:.2f}) - ({ex:.2f}, {ey:.2f})"
-                                )
-                        st.code('\n'.join(lines))
+                _render_dangling_edges_section(reg.get('dangling_edges', []))
 
                 cands = reg['name_candidates']
                 if not cands:
                     st.caption("　　（名称候補なし）")
                     continue
 
-                # 他の図面/領域で選択済みの名称を収集し、一致する候補をデフォルトにする
-                # ただし候補が1件のみ（選択肢なし・自動確定）の領域は除外する。
-                # 候補1件の領域は「ユーザーが能動的に選んだわけではない確定」のため、
-                # 同じラベルが隣接領域の候補にも上がる場合に誤って引き継がれるのを防ぐ。
-                #
-                # この領域自身の最有力候補が Tier1/2（下端/上端最近傍。回転図面では
-                # 右端/左端）の確信度の高い候補である場合は、他領域からの同期で
-                # 上書きしない（v1.5.9）。同期は元々「この領域自身に強い候補が無く
-                # （Tier3）、他の領域で選ばれた同名候補を引き継ぐべき」ケース
-                # （例: MPD RACK2 のような複数ピース合算）のために設けたもので、
-                # 隣接・入れ子の領域がそれぞれ独自の Tier1/2 候補を持つ場合に
-                # 互いの選択を上書きしてしまう不具合があった（ユーザー報告:
-                # EE6313-546-01E.dxf の図面1/領域1,2 が同じ選択に同期されるが、
-                # 本来は領域1=B CHAMBER、領域2=BAKE HEATER UNIT RX で別々が正しい）。
-                default_idx = 0
-                if reg.get('default_name_tier') not in (1, 2):
-                    selected_elsewhere = set()
-                    for fn2, an2 in analyses.items():
-                        for r2 in an2.get('regions', []):
-                            if fn2 == fname and r2['id'] == reg['id']:
-                                continue
-                            cands2 = r2.get('name_candidates', [])
-                            if len(cands2) <= 1:
-                                continue  # 選択肢なし（自動確定）の領域はスキップ
-                            # 同一ファイル内で互いに重なり（内包/部分重複）がある
-                            # 領域は、別個の領域として扱い同期しない（v1.5.11）。
-                            if fn2 == fname and regions_overlap(reg['polygon'], r2['polygon']):
-                                continue
-                            for j, (_d2, t2) in enumerate(cands2):
-                                if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
-                                    selected_elsewhere.add(t2)
-                    for i, (d, t) in enumerate(cands):
-                        if t in selected_elsewhere:
-                            default_idx = i
-                            break
+                default_idx = _compute_default_candidate_index(fname, reg, cands, analyses)
 
                 for i, (d, t) in enumerate(cands):
                     ck = f"rc_{fname}_{reg['id']}_{i}"

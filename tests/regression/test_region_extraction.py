@@ -25,6 +25,7 @@ from utils.region_detector import (  # noqa: E402
 MULTI = os.path.join(PROJECT_ROOT, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
 SINGLE = os.path.join(PROJECT_ROOT, 'EE6888-602-01A.dxf')  # 単一図面
 ROTATED = os.path.join(PROJECT_ROOT, 'DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
+DANGLING = os.path.join(PROJECT_ROOT, 'EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
@@ -176,3 +177,58 @@ def test_rotated_drawing_multiline_mtext_kept_as_single_candidate():
     assert 'CN I/F B.D TYPE3 (CN-IF3-1A)' in all_candidate_texts
     assert 'CN I/F B.D TYPE3' not in all_candidate_texts
     assert '(CN-IF3-1A)' not in all_candidate_texts
+
+
+@pytest.mark.skipif(not os.path.exists(MULTI) and not os.path.exists(SINGLE)
+                     and not os.path.exists(ROTATED) and not os.path.exists(DANGLING),
+                     reason='サンプル DXF が無い')
+def test_no_region_has_consecutive_duplicate_corners():
+    """`corners` に同じ座標が2回連続するエントリが無いこと（全サンプル共通の不変条件）。
+
+    閉領域に寄与しない行き止まり枝（次数1のノードに繋がる境界線分）があると、
+    半面探索がその枝を折り返すために生のポリゴンに「同じ頂点が2回連続する」
+    アーティファクトを生んでいた（v1.5.7 で2-core抽出により修正）。"""
+    for path in (MULTI, SINGLE, ROTATED, DANGLING):
+        if not os.path.exists(path):
+            continue
+        a = analyze_dxf_regions(path)
+        assert a['error'] is None
+        for r in a['regions']:
+            corners = r['corners']
+            for i in range(len(corners)):
+                prev = corners[i - 1]
+                cur = corners[i]
+                assert prev != cur, (
+                    f"{os.path.basename(path)} region id={r['id']} has consecutive "
+                    f"duplicate corner {cur}")
+
+
+@pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_dangling_edges_reported_with_handles():
+    """行き止まり枝(handle 214F: (660.53,129.56)-(807.24,129.56)、
+    handle 2199: (812.24,235.81)-(812.24,129.56))が dangling_edges に
+    handle・座標付きで報告されること（ユーザー報告: 頂点座標リストに
+    (660.53, 129.56) が2回連続して現れる不具合の原因）。"""
+    a = analyze_dxf_regions(DANGLING)
+    assert a['error'] is None
+    all_handles = {
+        ent['handle']
+        for d in a['dangling_edges']
+        for ent in d['entities']
+    }
+    assert '214F' in all_handles
+    assert '2199' in all_handles
+
+
+@pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_dangling_edge_pruning_dedupes_inner_outer_region_pair():
+    """行き止まり枝の除去前は、同一の物理境界が「綺麗な内側面」と「行き止まり枝の
+    往復で座標が汚れた外側面」の2つの異なる bbox を持つ別領域として重複検出されて
+    いた（座標の汚れが bbox を変えるため、既存の bbox 重複除外をすり抜けていた）。
+    除去後は同一 bbox になり正しく1領域に統合される（修正前は frames=1,regions=6
+    で面積63.6%の領域が2件、修正後は5件で1件のみ）。"""
+    a = analyze_dxf_regions(DANGLING)
+    assert a['error'] is None
+    assert len(a['regions']) == 5
+    area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
+    assert area_pcts == [1.8, 4.6, 9.8, 52.6, 63.6]

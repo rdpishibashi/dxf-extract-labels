@@ -13,7 +13,7 @@ sys.path.insert(0, utils_path)
 from utils.extract_labels import (
     extract_labels, get_layers_from_dxf, process_multiple_dxf_files,
 )
-from utils.region_detector import analyze_dxf_regions, DEFAULT_REGION_CONFIG
+from utils.region_detector import analyze_dxf_regions, DEFAULT_REGION_CONFIG, regions_overlap
 from utils.excel_output import create_excel_output, create_region_excel_output, build_region_results
 from utils.common_utils import save_uploadedfile, handle_error
 
@@ -47,6 +47,15 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
     同じ名称を選択状態として伝播する。チェックボックスは初回生成時にしか
     デフォルト値を設定できない（st.session_state 既存キーは上書きされない）ため、
     生成後にユーザーが選択を変更したときの伝播はこのコールバックで明示的に行う。
+
+    ただし、同一ファイル内で互いに重なり（完全な内包も部分的な重複も含む）が
+    ある領域（例: `EE6313-546-01E.dxf` の `B CHAMBER`〈外側〉と
+    `BAKE HEATER UNIT RX`〈内側、完全内包〉）は、まったく別の物理位置を指す
+    別個の領域であり、同期してはならない（v1.5.11、ユーザー報告: デフォルトでない
+    候補を手動選択すると、重なりのある別領域も同じ名称に同期されてしまう。
+    当初は内包のみを対象としていたが、部分的な重複も対象にすべきとの指摘により
+    `regions_overlap()` に一般化）。同期は元々 MPD RACK2 のような、空間的に分離
+    した（重ならない）複数ピースが同じ名称を共有するケースを想定したもの。
     """
     ck = f"rc_{fname}_{reg_id}_{clicked_idx}"
     if not st.session_state.get(ck, False):
@@ -56,6 +65,10 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
             st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
 
     analyses = st.session_state.get('region_analyses', {})
+    clicked_region = next(
+        (r for r in analyses.get(fname, {}).get('regions', []) if r['id'] == reg_id), None)
+    clicked_polygon = clicked_region['polygon'] if clicked_region else None
+
     for fn2, an2 in analyses.items():
         for r2 in an2.get('regions', []):
             if fn2 == fname and r2['id'] == reg_id:
@@ -65,6 +78,9 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
                 continue  # 選択肢なし（自動確定）の領域は対象外
             if not any(t2 == clicked_text for _d2, t2 in cands2):
                 continue  # この名称を候補に持たない領域には影響しない
+            if (fn2 == fname and clicked_polygon
+                    and regions_overlap(clicked_polygon, r2['polygon'])):
+                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
             for j2, (_d2, t2) in enumerate(cands2):
                 st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
 
@@ -412,6 +428,10 @@ def app():
                             cands2 = r2.get('name_candidates', [])
                             if len(cands2) <= 1:
                                 continue  # 選択肢なし（自動確定）の領域はスキップ
+                            # 同一ファイル内で互いに重なり（内包/部分重複）がある
+                            # 領域は、別個の領域として扱い同期しない（v1.5.11）。
+                            if fn2 == fname and regions_overlap(reg['polygon'], r2['polygon']):
+                                continue
                             for j, (_d2, t2) in enumerate(cands2):
                                 if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
                                     selected_elsewhere.add(t2)

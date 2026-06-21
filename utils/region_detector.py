@@ -525,6 +525,51 @@ def _dist_point_to_polygon(pt, poly):
     return best
 
 
+def _polygon_sample_points(poly):
+    """ポリゴンの頂点＋各辺の中点を返す（重なり判定のサンプル点）。
+
+    辺の中点を含めるのは、両ポリゴンの頂点同士は互いの外側にあるが辺が交差して
+    重なっているケース（斜めにずれて一部だけ重複する等）を、頂点だけのサンプルでは
+    取り落とすため。"""
+    pts = list(poly)
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        pts.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0))
+    return pts
+
+
+def _polygon_has_point_strictly_inside(pts, poly, tol):
+    """pts のいずれかが poly の内部に（境界から `tol` より離れて）あるか。
+
+    単に境界に接しているだけ（隣接する領域が壁を共有する等）は重なりとみなさない。
+    """
+    for pt in pts:
+        if _point_in_polygon(pt, poly) and _dist_point_to_polygon(pt, poly) > tol:
+            return True
+    return False
+
+
+def regions_overlap(poly_a, poly_b, tol=1.0):
+    """2つの領域ポリゴンが重なっている（一方が他方に完全に内包される場合を含む、
+    部分的な重複も含む）かを判定する。
+
+    `EE6313-546-01E.dxf` の `B CHAMBER`（外側）と `BAKE HEATER UNIT RX`（内側、
+    完全内包）はもちろん検出されるが、完全な内包に限らず、面積の一部だけが
+    重なっているケースも対象に含める（ユーザー要望: 内包だけでなく重なって
+    いる部分があれば同期しないとすべき）。単に境界が接している（隣接して壁を
+    共有するだけ）場合は重なりとはみなさない。`app.py` の他領域への名称選択
+    同期（MPD RACK2 のような空間的に分離した複数ピース合算を想定）が、こうした
+    重なる領域同士を誤って同期してしまう不具合の対策として使う（v1.5.11、
+    ユーザー報告: 領域1/2 のどちらかでデフォルトでない候補を手動選択すると、
+    もう片方も同じ名称に同期されてしまう）。"""
+    pts_a = _polygon_sample_points(poly_a)
+    pts_b = _polygon_sample_points(poly_b)
+    return (_polygon_has_point_strictly_inside(pts_a, poly_b, tol)
+            or _polygon_has_point_strictly_inside(pts_b, poly_a, tol))
+
+
 def _resolve_dangling_handles(dangling_branches, raw_lines, tol=0.5):
     """行き止まり枝（枝ごとの端点ペアのリスト＋取り付け点）について、その経路上に
     ある元のLINE/LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。

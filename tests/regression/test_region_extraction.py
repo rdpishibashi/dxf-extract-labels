@@ -19,7 +19,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from utils.region_detector import (  # noqa: E402
     analyze_dxf_regions, assign_region_labels,
-    _point_in_polygon, _polygon_area,
+    _point_in_polygon, _polygon_area, regions_overlap,
 )
 
 MULTI = os.path.join(PROJECT_ROOT, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
@@ -116,6 +116,30 @@ def test_point_in_polygon_basic():
     assert _point_in_polygon((5, 5), sq)
     assert not _point_in_polygon((15, 5), sq)
     assert abs(_polygon_area(sq) - 100.0) < 1e-6
+
+
+def test_regions_overlap_basic_shapes():
+    """`regions_overlap()` の基本ケース（合成図形による単体テスト）:
+    完全内包・部分的な重複・隣接（境界が接するだけ）・完全分離の4パターンを
+    正しく区別できること。境界が接するだけ（壁を共有する隣接領域）は重なりと
+    みなさない（同期を妨げてはならない）。"""
+    sq = [(0, 0), (10, 0), (10, 10), (0, 10)]
+
+    # 完全内包
+    inner = [(2, 2), (8, 2), (8, 8), (2, 8)]
+    assert regions_overlap(sq, inner) is True
+
+    # 部分的な重複（斜めにずれて一部だけ重なる）
+    shifted = [(5, 5), (15, 5), (15, 15), (5, 15)]
+    assert regions_overlap(sq, shifted) is True
+
+    # 隣接（x=10 の壁を共有するだけで重ならない）
+    adjacent = [(10, 0), (20, 0), (20, 10), (10, 10)]
+    assert regions_overlap(sq, adjacent) is False
+
+    # 完全分離
+    far = [(100, 100), (110, 100), (110, 110), (100, 110)]
+    assert regions_overlap(sq, far) is False
 
 
 @pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
@@ -314,6 +338,35 @@ def test_nested_regions_each_get_own_confident_default_name():
     # ことを確認する（同期バグが再発し得る前提条件そのものを保証する）。
     assert 'BAKE HEATER UNIT RX' in [t for _d, t in region0['name_candidates']]
     assert 'B CHAMBER' in [t for _d, t in region1['name_candidates']]
+
+
+@pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_overlapping_regions_detected_via_regions_overlap():
+    """`regions_overlap()` が、重なりのある（完全な内包も部分的な重複も含む）
+    領域を正しく True、互いに分離した（同名候補を共有するだけの）領域を False
+    と判定する（v1.5.11）。
+
+    `app.py` の名称選択の手動切り替え（`_on_change_radio`）・初期デフォルト同期
+    （`selected_elsewhere`）の両方が、この判定を使って重なる領域同士を誤って
+    同期しないようにする（ユーザー報告: 領域1でデフォルトでない候補を手動選択
+    すると、重なりのある領域2も同じ名称に同期されてしまう。当初は完全な内包
+    のみを対象としていたが、部分的な重複も対象にすべきとの指摘により一般化）。
+
+    `EE6313-546-01E.dxf` の領域1(id 0, B CHAMBER, 外側)と領域2(id 1,
+    BAKE HEATER UNIT RX, 内側)は完全な内包関係にあるため True。一方、MPD RACK2
+    のような空間的に分離した複数ピース（`EE6868-500-01C.dxf`）は同期されるべき
+    正当なケースであり、互いに重なっていないため False（同期を妨げない）。"""
+    a = analyze_dxf_regions(DANGLING)
+    region0 = next(r for r in a['regions'] if r['id'] == 0)
+    region1 = next(r for r in a['regions'] if r['id'] == 1)
+    assert regions_overlap(region0['polygon'], region1['polygon']) is True
+
+    multi = analyze_dxf_regions(MULTI)
+    rack2_pieces = [r for r in multi['regions'] if r['default_name'] == 'MPD RACK2']
+    assert len(rack2_pieces) >= 2
+    for i, ra in enumerate(rack2_pieces):
+        for rb in rack2_pieces[i + 1:]:
+            assert regions_overlap(ra['polygon'], rb['polygon']) is False
 
 
 @pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')

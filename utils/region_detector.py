@@ -1089,6 +1089,7 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
                 'name_candidates': ncands,
                 'default_name': ncands[0][1] if ncands else '',
                 'default_name_tier': ntiers.get(ncands[0][1]) if ncands else None,
+                'tier_by_text': ntiers,
             })
         fc.append(cands_list)
         dangling_by_frame.append([d for d in det_dangling if d['entities']])
@@ -1101,6 +1102,57 @@ def _count_threshold_hits(frame_cands, single_thr):
     候補が見つかったか（＝次のフォールバックパスへ進む必要があるか）の判定に使う。
     """
     return sum(1 for cl in frame_cands for cf in cl if cf['area'] >= single_thr)
+
+
+def _remove_overlap_claimed_candidates(regions):
+    """重なる領域同士で、同じ名称候補テキストをより近い側（小さい距離）の領域
+    だけに残し、遠い側からは取り除く（`regions_overlap()` が True の領域間のみ）。
+
+    `region_name_candidates()` は領域ごとに独立して評価するため、入れ子/重なる
+    2領域（例 `EE6313-546-01E.dxf` の外側`B CHAMBER`・内側`BAKE HEATER UNIT RX`）
+    では、内側領域の名称ラベルが外側領域の境界からも Tier1/2 の許容距離内に
+    収まり、外側領域の候補リストにも内側領域の名称が残ることがある
+    （v1.5.13 までの既知の非対称ケース。`test_nested_regions_each_get_own_confident_default_name`
+    が文書化）。しかし重なる領域は定義上別の物理領域であり（`regions_overlap` を
+    名称同期防止に使っている理由そのもの）、内側領域がその名称をはるかに高い
+    確信度（小さい距離）で確定的に持っている以上、外側領域がそれを選択肢として
+    提示するのは利用者を誤解させる（ユーザー報告: 領域2が確定済みの名称が
+    領域1の候補にも出てくるのは矛盾）。同じテキストについて、重なる領域の中で
+    最小距離を持つ領域だけに候補を残し、他の重なる領域からは除去する。
+    `default_name`/`default_name_tier` も除去結果に応じて再計算する。
+    距離が等しい（明確な優劣がない）場合はどちらからも除去しない。
+    """
+    n = len(regions)
+    original = [r['name_candidates'] for r in regions]  # 比較は変更前のスナップショットで行う
+    overlap_cache = {}
+
+    def _overlap(i, j):
+        key = (i, j) if i < j else (j, i)
+        if key not in overlap_cache:
+            overlap_cache[key] = regions_overlap(regions[i]['polygon'], regions[j]['polygon'])
+        return overlap_cache[key]
+
+    for i in range(n):
+        tier_by_text = regions[i].pop('_tier_by_text', {})
+        cands = original[i]
+        if not cands:
+            continue
+        kept = []
+        for d, t in cands:
+            claimed_by_closer = False
+            for j in range(n):
+                if j == i or not _overlap(i, j):
+                    continue
+                if any(t2 == t and d2 < d for d2, t2 in original[j]):
+                    claimed_by_closer = True
+                    break
+            if not claimed_by_closer:
+                kept.append((d, t))
+        if len(kept) != len(cands):
+            regions[i]['name_candidates'] = kept
+            regions[i]['default_name'] = kept[0][1] if kept else ''
+            regions[i]['default_name_tier'] = (
+                tier_by_text.get(kept[0][1]) if kept else None)
 
 
 def analyze_dxf_regions(dxf_file, config=None):
@@ -1246,8 +1298,10 @@ def analyze_dxf_regions(dxf_file, config=None):
                     'default_name': cf['default_name'],
                     'default_name_tier': cf.get('default_name_tier'),
                     'dangling_edges': region_dangling,
+                    '_tier_by_text': cf.get('tier_by_text', {}),
                 })
                 rid += 1
+        _remove_overlap_claimed_candidates(regions)
         result['regions'] = regions
 
         del doc, msp

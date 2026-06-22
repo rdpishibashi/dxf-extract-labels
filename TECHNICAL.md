@@ -311,6 +311,19 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
    同一ファイル内で重なりのある領域同士は同期しないガードを追加した。MPD RACK2
    のような空間的に分離した（重ならない）複数ピース合算のケースは、互いに
    `regions_overlap()` が False になるため、同期は引き続き正しく機能する。
+
+   **重なる領域の確定名を候補から除去（`_remove_overlap_claimed_candidates`、
+   v1.5.14）**: v1.5.11 までの対策は「選択の同期」を防ぐのみで、`region_name_candidates`
+   が領域ごとに独立して評価する以上、重なる領域の確定名がもう片方の候補リストに
+   残ること自体は止めていなかった。`EE6313-546-01E.dxf` の領域1（`B CHAMBER`、外側）
+   の候補に、内包される領域2の確定名 `BAKE HEATER UNIT RX` が残っていたのは矛盾
+   （重なる領域同士は同期しない＝選んでも意味がないのに選択肢として見える）と
+   ユーザーが指摘。`analyze_dxf_regions` の最終段で、重なる(`regions_overlap`)
+   領域どうしの候補に同じテキストがある場合、距離がより小さい（その名称を確信度
+   高く保持している）側にのみ残し、距離が大きい側の候補からは除去する（距離が
+   等しい場合はどちらからも除去しない）。`default_name`/`default_name_tier` も
+   除去結果に応じて再計算する。MPD RACK2 のような重ならない複数ピース合算は
+   `regions_overlap()` が False のため対象外で、同名共有は引き続き機能する。
 7. **ラベル所属**（`assign_region_labels`）: 点-多角形内包判定。1ラベルが複数領域に
    所属可。出力の「領域」列に所属領域名（複数はカンマ区切り、領域外は空欄）。
 
@@ -503,6 +516,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.14 | `analyze_dxf_regions()` に `_remove_overlap_claimed_candidates()` を追加。重なる(`regions_overlap`)領域同士の名称候補に同じテキストがある場合、距離がより小さい（確信度の高い）側にのみ残し、もう片方の候補からは除去する。`EE6313-546-01E.dxf` の領域1（`B CHAMBER`、外側）の候補に、内包される領域2の確定名 `BAKE HEATER UNIT RX`（領域2への距離2.0、領域1への距離8.6）が残っていたのは、v1.5.11で同期は防止したものの選択肢として表示され続けるのは矛盾だとユーザーが指摘。修正後は領域1の候補が `B CHAMBER` のみになる。`default_name`/`default_name_tier` も除去結果に応じて再計算するよう変更（除去により1位の候補が変わる場合に対応）。MPD RACK2 のような重ならない複数ピース合算（`regions_overlap()` が False）は対象外で同名共有は引き続き機能。回帰テスト `test_overlapping_region_does_not_offer_other_regions_confirmed_name` を追加、`test_nested_regions_each_get_own_confident_default_name` を更新（領域1も領域2の名称を候補に持たなくなったことを反映）。|
 | v1.5.13 | `region_name_candidates()` の Tier1/2 を**領域内側のラベルに限定**するよう修正。`_scan()` に `require_inside` 引数を追加し、Tier1/2（下端/上端、回転時は右端/左端の最近傍）のスキャン時に `_point_in_polygon()` で領域内側かどうかを確認する（Tier3 フォールバックは内外を問わず従来通り）。`DE5434-553-10B.dxf` の回転領域(id 3,4)で、領域の**外側**にあるラベル`EFEM UPPER`（右端から距離3.9）が、領域の**内側**にある正しいラベル`CONTROL BOX CORE FX`（距離5.2）より単純な距離比較で優先されてしまうバグを解消（default_name が `EFEM UPPER`→`CONTROL BOX CORE FX` に変化）。DXF-viewer の Search Boundary で「最上位候補（default_name）のみで照合」するよう変更した際にユーザーが発見（"CONTROL BOX CORE FX" で検索しても領域がヒットしない不具合の調査中、"EFEM UPPER は領域の外側なので優先順位が低いはず" との指摘）。全テストファイルの既存 default_name を検証し、このケース以外は変化なし（=他の全領域の正しい default_name は元々すべて領域内側のラベルだった）。回帰テスト `test_tier1_candidate_must_be_inside_the_region` を追加、`test_nested_regions_each_get_own_confident_default_name` を更新（領域2は領域1の名称`B CHAMBER`を、そのラベルが領域2の外側にあるため、候補に持たなくなった）。DXF-viewer の `core/region_detector.py` にも同じ修正を移植済み。|
 | v1.5.12 | コード品質レビュー（モジュール性・可読性向けリファクタ。ロジック変更なし、出力は不変）。`region_detector.py`（1161行）にセクション見出しコメントを追加し、設定／ジオメトリ収集／ポリゴン幾何ユーティリティ／線分結合／図面枠検出／閉領域検出／名称候補／回転判定／タイトルブロック除外／トップレベル解析の10ブロックに整理。最も複雑だった `_find_rectilinear_faces`（175行）を `_build_planar_graph`（平面グラフ構築）・`_peel_dangling_branches`（行き止まり枝の除去・連結成分化）・`_trace_faces`（半面探索）の3関数に分割し、`_find_rectilinear_faces` 自体は3段のオーケストレーションのみに簡素化。`analyze_dxf_regions` 内の入れ子クロージャ（`_run_detection`/`_hits`）を `_run_region_detection`/`_count_threshold_hits` としてモジュールレベルに抽出し、3パス検出ロジックの見通しを改善。`app.py` の「領域の確認」ループからも、座標ポップオーバー（`_render_corners_popover`）・行き止まり枝表示（`_render_dangling_edges_section`）・デフォルト候補インデックス計算（`_compute_default_candidate_index`）の3関数を抽出し、ファイル→領域の本流ループを見やすくした。DXF-viewer の `core/region_detector.py` にも同じ構造改善（DXF-viewer独自の `_filter_eligible_labels` キャッシュ・`_label_position_for_candidate` 等は保持）を移植済み。回帰テスト41件・DXF-viewer側の `test_region_search.py` 等は全て同じ結果で通過を確認。|
 | v1.5.9 | `region_name_candidates()` に優先順位（Tier）制を導入：Tier1=下端横エッジ最近傍（90°回転時は右端/左端のいずれか）、Tier2=上端横エッジ最近傍（回転時はもう一方）、Tier3=Tier1/2が空の場合のみポリゴン境界全体への最短距離でフォールバック。回転方向（+90°/-90°多数派）の判定は `_rotated_edge_roles()` を追加（`DE5434-553-10B.dxf` で確認した実例: +90°多数派→Tier1=右端,Tier2=左端）。各領域に `default_name_tier`（1/2/3）を追加し、`app.py` の他領域への選択同期（`selected_elsewhere`）がTier1/2（確信度の高い自前の候補）を上書きしないように変更。ユーザー報告: `EE6313-546-01E.dxf` の図面1/領域1,2（互いの候補リストに相手の名称を含む入れ子/隣接領域）が同じ選択に同期されてしまい、本来は領域1=`B CHAMBER`、領域2=`BAKE HEATER UNIT RX` で別々が正しい不具合を解消。|
@@ -531,4 +545,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-21 (v1.5.13)
+最終更新: 2026-06-22 (v1.5.14)

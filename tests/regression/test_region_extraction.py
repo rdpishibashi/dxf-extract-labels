@@ -315,10 +315,9 @@ def test_phantom_linetype_excluded_from_region_boundaries():
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
 def test_nested_regions_each_get_own_confident_default_name():
-    """入れ子/隣接する2領域が互いの候補リストに相手の名称を含む場合でも、
-    各領域は自分自身の下端最近傍（Tier1）候補をデフォルト名称にする
-    （ユーザー報告: 図面1/領域1,2 が同じ選択に同期され、ラベルはそれぞれ別の
-    はずなのに一致してしまう不具合）。
+    """入れ子/隣接する2領域があっても、各領域は自分自身の下端最近傍（Tier1）
+    候補をデフォルト名称にする（ユーザー報告: 図面1/領域1,2 が同じ選択に同期
+    され、ラベルはそれぞれ別のはずなのに一致してしまう不具合）。
 
     `EE6313-546-01E.dxf` の図面1/領域1(id 0, 面積63.6%)と領域2(id 1, 面積52.6%)
     は互いに下端最近傍の側が異なる（領域1→B CHAMBER、領域2→BAKE HEATER UNIT RX）。
@@ -328,11 +327,14 @@ def test_nested_regions_each_get_own_confident_default_name():
 
     領域2(id 1, 内側)は領域1(id 0, 外側)の名称 `B CHAMBER` を候補に持たない
     （`B CHAMBER` のラベルは領域2の境界外にあり、Tier1/2 は領域内側のラベルに
-    限定されるため、2026-06-21 修正）。一方、領域1は領域2の名称
-    `BAKE HEATER UNIT RX` を依然候補に持つ（そのラベルは入れ子の構造上、領域1の
-    内側でもあるため）。この非対称な残存ケースが、`app.py` の `regions_overlap`
-    ベースの同期防止（領域1で同期した場合に領域2へ伝播しない安全策）が依然
-    必要である理由。"""
+    限定されるため、2026-06-21 修正）。領域1(外側)も領域2の名称
+    `BAKE HEATER UNIT RX` を候補に持たない（そのラベルは入れ子の構造上、領域1の
+    内側にもあるため Tier1/2 自体は候補として見つけるが、領域1・領域2は
+    `regions_overlap()` で重なると判定され、かつそのラベルは領域2のほうに
+    はるかに近い〈領域2への距離2.0 vs 領域1への距離8.6〉ため、
+    `_remove_overlap_claimed_candidates()` が領域1の候補から除去する。重なる
+    領域が互いの確定名を選択肢に持つのは利用者を誤解させるという報告を受けて
+    2026-06-22 に追加）。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
     region0 = next(r for r in a['regions'] if r['id'] == 0)
@@ -341,14 +343,44 @@ def test_nested_regions_each_get_own_confident_default_name():
     assert region0['default_name_tier'] == 1
     assert region1['default_name'] == 'BAKE HEATER UNIT RX'
     assert region1['default_name_tier'] == 1
-    # 領域1(外側)は領域2(内側)の名称を依然候補に持つ（入れ子構造上、領域2の
-    # ラベルは領域1の内側でもあるため）が、領域2は領域1の名称を候補に持たない
-    # （そのラベルは領域2の外側にあるため、Tier1/2 から除外される）。
-    assert 'BAKE HEATER UNIT RX' in [t for _d, t in region0['name_candidates']]
+    # 重なる領域同士は、互いの確定名（より近い側が確定的に持つ名称）を
+    # 候補として持たない（2026-06-22 修正）。
+    assert 'BAKE HEATER UNIT RX' not in [t for _d, t in region0['name_candidates']]
     assert 'B CHAMBER' not in [t for _d, t in region1['name_candidates']]
 
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
+def test_overlapping_region_does_not_offer_other_regions_confirmed_name():
+    """重なる領域の確定名（より近い側が確信度高く持つ名称）は、もう片方の
+    重なる領域の選択肢として提示しない（ユーザー報告: 領域2が`BAKE HEATER UNIT RX`
+    で確定しているのに、重なる領域1の候補にも同じ名称が表示されるのは矛盾。
+    `regions_overlap()` により名称の同期自体は既に防止されているため、選択しても
+    同期されない＝両領域が同じ名称になることはあり得ないのに選択肢として
+    見える状態は利用者を誤解させる）。
+
+    `EE6313-546-01E.dxf` の領域1(id 0, 外側, `B CHAMBER`)と領域2(id 1, 内側,
+    `BAKE HEATER UNIT RX`)は完全な内包関係（重なる）。領域2の名称ラベルは
+    領域1の内側でもあるため、修正前は単純な距離閾値だけで領域1の候補にも
+    含まれていたが、領域2への距離(2.0)が領域1への距離(8.6)よりはるかに近く、
+    領域2のほうがこの名称を確信度高く保持しているため、領域1の候補からは
+    除去されるべき。"""
+    a = analyze_dxf_regions(DANGLING)
+    region0 = next(r for r in a['regions'] if r['id'] == 0)
+    region1 = next(r for r in a['regions'] if r['id'] == 1)
+    assert [t for _d, t in region0['name_candidates']] == ['B CHAMBER']
+    assert [t for _d, t in region1['name_candidates']] == ['BAKE HEATER UNIT RX']
+
+
+@pytest.mark.skipif(not os.path.exists(MULTI), reason='サンプル DXF が無い')
+def test_non_overlapping_group_pieces_keep_shared_name_candidate():
+    """空間的に分離した（重ならない）複数ピース合算（MPD RACK2 等）は、
+    重なり判定が False のため、本修正（重なる領域間の名称除去）の対象外で
+    あることを確認する（既存の正当な同名共有ケースに影響しないことの保証）。"""
+    a = analyze_dxf_regions(MULTI)
+    rack2_pieces = [r for r in a['regions'] if r['default_name'] == 'MPD RACK2']
+    assert len(rack2_pieces) >= 2
+    for r in rack2_pieces:
+        assert 'MPD RACK2' in [t for _d, t in r['name_candidates']]
 def test_overlapping_regions_detected_via_regions_overlap():
     """`regions_overlap()` が、重なりのある（完全な内包も部分的な重複も含む）
     領域を正しく True、互いに分離した（同名候補を共有するだけの）領域を False

@@ -186,6 +186,9 @@ cython_debug/
 # Others
 log*.txt
 *.dxf
+# Symlink to the cross-project shared sample DXF pool (Tools/sample-dxf/) —
+# local-machine convenience, not portable across clones.
+/sample-dxf
 *.svg
 *.pdf
 *.png

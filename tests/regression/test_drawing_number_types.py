@@ -86,7 +86,7 @@ def test_integration_real_dxf_if_present():
     """実ファイルがローカルにあれば extract_labels 経由で検証（無ければスキップ）。"""
     dxf = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        'EE6888-602-01A.dxf',
+        'sample-dxf', 'EE6888-602-01A.dxf',
     )
     if not os.path.exists(dxf):
         print("  (skip: EE6888-602-01A.dxf がローカルに無い)")

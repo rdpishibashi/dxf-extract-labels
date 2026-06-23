@@ -22,10 +22,14 @@ from utils.region_detector import (  # noqa: E402
     _point_in_polygon, _polygon_area, regions_overlap,
 )
 
-MULTI = os.path.join(PROJECT_ROOT, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
-SINGLE = os.path.join(PROJECT_ROOT, 'EE6888-602-01A.dxf')  # 単一図面
-ROTATED = os.path.join(PROJECT_ROOT, 'DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
-DANGLING = os.path.join(PROJECT_ROOT, 'EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
+# サンプル DXF はプロジェクト間で共用するため Tools/sample-dxf/ に集約されている。
+# SAMPLE_DIR はプロジェクト直下の symlink（sample-dxf -> ../sample-dxf）経由で参照する。
+SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
+
+MULTI = os.path.join(SAMPLE_DIR, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
+SINGLE = os.path.join(SAMPLE_DIR, 'EE6888-602-01A.dxf')  # 単一図面
+ROTATED = os.path.join(SAMPLE_DIR, 'DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
+DANGLING = os.path.join(SAMPLE_DIR, 'EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')

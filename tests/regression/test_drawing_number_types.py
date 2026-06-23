@@ -82,12 +82,25 @@ def test_source_equals_main_becomes_none():
     assert result['source_drawing'] is None, result
 
 
+def _find_sample(name):
+    """sample-dxf/ 配下から指定ファイル名を再帰的に探す（サブフォルダへの
+    移動・新設フォルダの追加に追従するため、フラットパス固定にしない）。"""
+    sample_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'sample-dxf',
+    )
+    direct = os.path.join(sample_dir, name)
+    if os.path.exists(direct):
+        return direct
+    for dirpath, _dirnames, filenames in os.walk(sample_dir):
+        if name in filenames:
+            return os.path.join(dirpath, name)
+    return direct
+
+
 def test_integration_real_dxf_if_present():
     """実ファイルがローカルにあれば extract_labels 経由で検証（無ければスキップ）。"""
-    dxf = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        'sample-dxf', 'EE6888-602-01A.dxf',
-    )
+    dxf = _find_sample('EE6888-602-01A.dxf')
     if not os.path.exists(dxf):
         print("  (skip: EE6888-602-01A.dxf がローカルに無い)")
         return

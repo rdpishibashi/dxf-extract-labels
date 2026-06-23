@@ -26,10 +26,28 @@ from utils.region_detector import (  # noqa: E402
 # SAMPLE_DIR はプロジェクト直下の symlink（sample-dxf -> ../sample-dxf）経由で参照する。
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
 
-MULTI = os.path.join(SAMPLE_DIR, 'EE6868-500-01C.dxf')   # 複数図面（13枠）
-SINGLE = os.path.join(SAMPLE_DIR, 'EE6888-602-01A.dxf')  # 単一図面
-ROTATED = os.path.join(SAMPLE_DIR, 'DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
-DANGLING = os.path.join(SAMPLE_DIR, 'EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
+
+def _find_sample(name):
+    """指定ファイル名を sample-dxf/ 配下から再帰的に探す。
+
+    sample-dxf/ はトップレベルの単発ファイルに加え、まとまりが重要なセットは
+    サブフォルダ（例: problems/, viewer-error/）として保存される運用で、今後も
+    ファイル・フォルダどちらも増える前提。ここで名前を固定参照しているフィクス
+    チャは、後からどのサブフォルダに移動されても見つかるようにする。
+    """
+    direct = os.path.join(SAMPLE_DIR, name)
+    if os.path.exists(direct):
+        return direct
+    for dirpath, _dirnames, filenames in os.walk(SAMPLE_DIR):
+        if name in filenames:
+            return os.path.join(dirpath, name)
+    return direct  # 見つからない場合は呼び出し側の os.path.exists() でスキップされる
+
+
+MULTI = _find_sample('EE6868-500-01C.dxf')   # 複数図面（13枠）
+SINGLE = _find_sample('EE6888-602-01A.dxf')  # 単一図面
+ROTATED = _find_sample('DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
+DANGLING = _find_sample('EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')

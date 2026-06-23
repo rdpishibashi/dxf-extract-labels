@@ -4,7 +4,7 @@
 ラベルに領域名を付与する。
 
 識別キー:
-  - 図面枠      : lineweight=100 の線分
+  - 図面枠      : lineweight=100 かつ color=7(ACI白) の線分
   - 領域境界線  : lineweight=25 かつ color=2(ACI黄) かつ線種が実質的に Continuous
 
 モジュール内の構成（処理パイプラインの順）:
@@ -32,6 +32,9 @@ from .common_utils import filter_non_circuit_symbols
 
 DEFAULT_REGION_CONFIG = {
     'frame_lineweight': 100,    # 図面枠の線の太さ
+    'frame_color': 7,           # 図面枠の色(ACI)。lineweight=100だけでは図面枠以外の
+                                # 短い無関係な線分（実例: 色5の小さな線分群）も拾ってしまうため、
+                                # 色も合わせて判定する（2026-06-24、サンプル137件で検証）。
     'region_lineweight': 25,    # 領域境界線の太さ
     'region_color': 2,          # 領域境界線の色(ACI)
     'snap': 2.0,                # 軸平行判定・レベルクラスタの許容誤差
@@ -94,6 +97,7 @@ def _collect_region_geometry(msp, cfg):
     label_entities = []
     connection_points = []
     flw = cfg['frame_lineweight']
+    fcol = cfg['frame_color']
     rlw = cfg['region_lineweight']
     rcol = cfg['region_color']
 
@@ -114,9 +118,10 @@ def _collect_region_geometry(msp, cfg):
 
     def handle_line(e, owner_handle=None):
         lw = getattr(e.dxf, 'lineweight', None)
-        if lw == flw:
+        col = getattr(e.dxf, 'color', None)
+        if lw == flw and col == fcol:
             frame_lines.append((e.dxf.start, e.dxf.end))
-        elif (lw == rlw and getattr(e.dxf, 'color', None) == rcol
+        elif (lw == rlw and col == rcol
               and _is_continuous_linetype(e, doc)):
             # 領域境界線のみ handle を保持する（行き止まり枝の報告用。virtual_entities()
             # 由来（INSERT 展開）は handle が None になるため、所属 INSERT の handle で代替）。
@@ -400,13 +405,20 @@ def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.
 # 5. 図面枠検出
 # ============================================================
 
-def detect_drawing_frames(frame_lines, eps=2.0, min_side=400.0):
-    """lineweight=100 の線分から図面枠（複数可）を検出する。
+def detect_drawing_frames(frame_lines, eps=2.0, min_side=0.0):
+    """lineweight=100・color=7 の線分（呼び出し元の `_collect_region_geometry` で
+    既にこの2条件で絞り込まれている）から図面枠（複数可）を検出する。
     枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
 
     注: 枠の縦辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
     いるケース）でも正しく検出できるよう、分類後に共線セグメントを結合してから
     高さ判定を行う。
+
+    `min_side`（既定0=フィルタなし）: 2026-06-24以前は400.0固定で、縦辺の高さが
+    これ未満の枠（実例: EE6097-039-06C.dxf、高さ277）を取り落としていた。
+    color=7 条件を追加導入したことで、無関係な短い lineweight=100 線分（実例:
+    色5の小さな線分群、サンプル137件で確認）が混入しなくなったため、高さに
+    よる足切りは不要になった。
     """
     _, V = _split_axis_aligned(frame_lines, eps)
     # 接触/重複する同一 x 上の線分を 1 本に統合してから高さ判定

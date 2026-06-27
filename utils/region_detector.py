@@ -61,7 +61,7 @@ DEFAULT_REGION_CONFIG = {
     'circuit_symbol_keep_terms': ('RACK',),  # この語を含むラベルは機器符号扱いしない（例 RACK1）
     'exclude_connection_point_regions': True,  # 境界に接続点(円)を持つ領域(配線ループ)を除外
     'connection_point_threshold': 1,    # 境界上の接続点がこの数(個数)以上なら除外
-    'connection_point_margin': 0.1,    # 接続点が境界線上とみなす座標距離マージン
+    'connection_point_margin': 0.05,   # 接続点が境界線上とみなす座標距離マージン
 }
 
 

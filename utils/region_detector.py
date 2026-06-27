@@ -1167,6 +1167,143 @@ def _remove_overlap_claimed_candidates(regions):
                 tier_by_text.get(kept[0][1]) if kept else None)
 
 
+# ============================================================
+# 10. 補完面解消（_resolve_complement_faces）
+# ============================================================
+
+def _vertex_in_corner_set(vertex, corner_list, tol=1.0):
+    """vertex が corner_list の中に許容誤差 tol 以内で一致する点があるか。"""
+    vx, vy = vertex
+    return any(abs(vx - px) < tol and abs(vy - py) < tol for px, py in corner_list)
+
+
+def _detect_complement_pairs(regions, tol=1.0):
+    """補完面ペア (large_idx, small_idx) のリストを返す。
+
+    補完面とは: small の全コーナー頂点が large のコーナー頂点集合に含まれ、
+    large が small より多くのコーナー頂点を持ち、かつ 2 領域が重なる（overlap）
+    場合に、large は small の「補完面」と定義する。
+
+    平面グラフ半面探索で境界を共有する2面を生成するとき、共有辺を挟む一方の面が
+    「小さい正しい面」、他方が「外側に回り込んだ補完面」として現れる。補完面は
+    小さい面より必ず多くの頂点を持ち（追加頂点がある）、小さい面の全頂点を包含する。
+
+    戻り値: [(large_idx, small_idx), ...]
+    """
+    n = len(regions)
+    corners = [r['corners'] for r in regions]
+    results = []
+    for i in range(n):          # large 候補
+        for j in range(n):      # small 候補
+            if i == j:
+                continue
+            ci, cj = corners[i], corners[j]
+            if len(ci) <= len(cj):
+                continue        # large は small より多くの頂点が必要
+            if not all(_vertex_in_corner_set(v, ci, tol) for v in cj):
+                continue        # small の全頂点が large の頂点集合に含まれる必要あり
+            if not regions_overlap(regions[i]['polygon'], regions[j]['polygon']):
+                continue
+            results.append((i, j))
+    return results
+
+
+def _extract_complement_subpolygons(large_corners, small_corners, tol=1.0):
+    """補完面 large の境界を辿り、small に含まれない追加頂点の連続区間を切り出して
+    サブ領域ポリゴン（リスト of リスト[(x,y)]）を返す。
+
+    サブ領域の形状: [attachment_start, extra_v1, ..., extra_vN]
+    （attachment_start から extra 頂点列を辿り、attachment_start に直線で戻る閉多角形）
+    """
+    n = len(large_corners)
+
+    def is_shared(v):
+        return _vertex_in_corner_set(v, small_corners, tol)
+
+    flags = [is_shared(v) for v in large_corners]
+    subregions = []
+    visited_starts = set()
+    for i in range(n):
+        if flags[i] and not flags[(i + 1) % n]:
+            attachment_start = large_corners[i]
+            start_idx = (i + 1) % n
+            if start_idx in visited_starts:
+                continue
+            extra_seq = []
+            k = start_idx
+            while k < n + start_idx:
+                cur = large_corners[k % n]
+                if is_shared(cur):
+                    break
+                extra_seq.append(cur)
+                k += 1
+            if extra_seq:
+                visited_starts.add(start_idx)
+                subregions.append([attachment_start] + extra_seq)
+    return subregions
+
+
+def _resolve_complement_faces(regions, frame_area, next_id=None):
+    """補完面を検出してサブ領域に分割し、補完面を除去した新リストを返す。
+
+    `_remove_overlap_claimed_candidates` より前に呼ぶこと（'_tier_by_text' が
+    まだ存在するうちに処理する必要があるため）。
+
+    処理の流れ:
+      1. _detect_complement_pairs で大（補完面）・小（基準面）ペアを検出
+      2. 補完面の頂点から基準面の頂点を除いた「追加頂点列」でサブ領域ポリゴンを生成
+      3. 補完面の名称候補から基準面にクレームされた名称を除き、サブ領域に継承
+      4. サブ領域を regions に追加し、補完面を除去して返す
+    """
+    pairs = _detect_complement_pairs(regions)
+    if not pairs:
+        return regions
+
+    if next_id is None:
+        next_id = max((r['id'] for r in regions), default=-1) + 1
+
+    to_remove = {large_i for large_i, _ in pairs}
+    new_regions = [r for i, r in enumerate(regions) if i not in to_remove]
+
+    for large_i, small_i in pairs:
+        comp_face = regions[large_i]
+        base_face = regions[small_i]
+
+        claimed = {t for _, t in base_face.get('name_candidates', [])}
+        comp_tier = comp_face.get('_tier_by_text', {})
+
+        inherited_cands = [(d, t) for d, t in comp_face.get('name_candidates', [])
+                           if t not in claimed]
+        inherited_tier = {t: comp_tier[t] for _, t in inherited_cands if t in comp_tier}
+
+        default_name = inherited_cands[0][1] if inherited_cands else ''
+        default_name_tier = inherited_tier.get(default_name) if default_name else None
+
+        sub_polys = _extract_complement_subpolygons(comp_face['corners'], base_face['corners'])
+        for sub_poly in sub_polys:
+            sub_area = _polygon_area(sub_poly)
+            new_regions.append({
+                'id': next_id,
+                'frame': comp_face.get('frame', 0),
+                'polygon': sub_poly,
+                'corners': _polygon_corners(sub_poly),
+                'area': sub_area,
+                'area_pct': 100.0 * sub_area / frame_area if frame_area > 0 else 0.0,
+                'name_candidates': list(inherited_cands),
+                'default_name': default_name,
+                'default_name_tier': default_name_tier,
+                'dangling_edges': [],
+                '_tier_by_text': dict(inherited_tier),
+            })
+            next_id += 1
+
+    return new_regions
+
+
+# ============================================================
+# 11. トップレベル解析（公開API）
+# ============================================================
+
 def analyze_dxf_regions(dxf_file, config=None):
     """DXFファイルを解析し、図面枠・閉領域（名称候補つき）・図面枠内ラベルを返す。
 
@@ -1313,6 +1450,7 @@ def analyze_dxf_regions(dxf_file, config=None):
                     '_tier_by_text': cf.get('tier_by_text', {}),
                 })
                 rid += 1
+        regions = _resolve_complement_faces(regions, frame_area, next_id=rid)
         _remove_overlap_claimed_candidates(regions)
         result['regions'] = regions
 

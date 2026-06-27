@@ -48,6 +48,7 @@ MULTI = _find_sample('EE6868-500-01C.dxf')   # 複数図面（13枠）
 SINGLE = _find_sample('EE6888-602-01A.dxf')  # 単一図面
 ROTATED = _find_sample('DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
 DANGLING = _find_sample('EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
+SIBLING = _find_sample('EE6313-545-01D.dxf')   # 補完面（B CHAMBER / FX CHAMBER 兄弟）
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
@@ -461,3 +462,35 @@ def test_tier1_candidate_must_be_inside_the_region():
     assert region['default_name_tier'] == 1
     # 領域外のラベルは Tier1/2 から除外され、候補に現れない。
     assert 'EFEM UPPER' not in [t for _d, t in region['name_candidates']]
+
+
+@pytest.mark.skipif(not os.path.exists(SIBLING), reason='サンプル DXF が無い')
+def test_sibling_fx_chamber_extracted_from_complement_face():
+    """FX CHAMBER（B CHAMBER の右兄弟、面積14.6%）が補完面解消により正しく検出され、
+    B CHAMBER が重複しないこと（v1.5.11 / _resolve_complement_faces）。
+
+    `EE6313-545-01D.dxf` では B CHAMBER の右辺が FX CHAMBER の左辺と部分的に
+    共有されており（x=660.53、y=104.0〜567.94）、planar graph の半面探索が
+    「B CHAMBER + FX CHAMBER 全体を包む補完面（13頂点、78.2%）」を生成する。
+    FX CHAMBER 単体は面積14.6%で 20% 閾値を下回るため直接検出されず、
+    修正前は補完面と実際の B CHAMBER がともに 'B CHAMBER' を名称候補に持ち、
+    `_remove_overlap_claimed_candidates` が同距離の tie-break を解けずに
+    B CHAMBER が2件検出される DUPE になっていた。
+
+    修正後は `_resolve_complement_faces` が補完面を検出・除去し、
+    FX CHAMBER 相当のサブ領域を抽出して 'FX CHAMBER' を割り当てることで
+    3 領域（B CHAMBER、BAKE HEATER UNIT FX、FX CHAMBER）を正しく検出する。"""
+    a = analyze_dxf_regions(SIBLING)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    # B CHAMBER は1件のみ（補完面による重複がない）
+    assert names.count('B CHAMBER') == 1
+    # FX CHAMBER が補完面から抽出されて検出される
+    assert 'FX CHAMBER' in names
+    # 合計3領域: B CHAMBER + BAKE HEATER UNIT FX + FX CHAMBER
+    assert len(a['regions']) == 3
+    assert sorted(names) == ['B CHAMBER', 'BAKE HEATER UNIT FX', 'FX CHAMBER']
+    # FX CHAMBER は B CHAMBER の右側（x > 600）の小矩形（約14.6%）
+    fx = next(r for r in a['regions'] if r['default_name'] == 'FX CHAMBER')
+    assert round(fx['area_pct'], 0) == 15.0  # 14.6% → round=15
+    assert fx['corners'][0][0] > 600  # left-bottom x > 600

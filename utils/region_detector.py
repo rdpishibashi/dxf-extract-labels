@@ -1300,6 +1300,75 @@ def _resolve_complement_faces(regions, frame_area, next_id=None):
     return new_regions
 
 
+def _detect_union_parents(regions, tol=1.0, area_tol=1.0):
+    """結合親領域（union parent）のインデックスリストを返す。
+
+    横線分または縦線分で 2 分割された兄弟矩形の「合体親」が補完面として誤検出される
+    ケース（例: L CHAMBER / FX CHAMBER を横線分で分割した図面で、親矩形が別の領域
+    として残る）に対応する。_resolve_complement_faces は頂点数の差（large > small）
+    を前提とするため、全領域が 4 頂点の等頂点数ケースは検出できない。
+
+    検出条件（全て満たす）:
+      1. area(P) ≈ area(Q) + area(R)  ← P が Q と R の合体サイズ
+      2. P の全コーナーが Q.corners ∪ R.corners に含まれる
+      3. regions_overlap(P, Q) かつ regions_overlap(P, R)  ← P が Q/R を内包
+      4. NOT regions_overlap(Q, R)  ← Q と R は非重複な兄弟
+
+    戻り値: [parent_idx, ...]
+    """
+    n = len(regions)
+    corners = [r['corners'] for r in regions]
+    areas = [r['area'] for r in regions]
+    to_remove = set()
+
+    for i in range(n):
+        if i in to_remove:
+            continue
+        for j in range(n):
+            if j == i:
+                continue
+            for k in range(j + 1, n):
+                if k == i:
+                    continue
+                # 条件 1: 面積一致
+                if abs(areas[i] - areas[j] - areas[k]) > area_tol:
+                    continue
+                # 条件 2: P の全頂点が Q∪R の頂点集合に含まれる
+                if not all(
+                    _vertex_in_corner_set(v, corners[j], tol)
+                    or _vertex_in_corner_set(v, corners[k], tol)
+                    for v in corners[i]
+                ):
+                    continue
+                # 条件 3: P は Q/R を内包（重なる）
+                if not regions_overlap(regions[i]['polygon'], regions[j]['polygon']):
+                    continue
+                if not regions_overlap(regions[i]['polygon'], regions[k]['polygon']):
+                    continue
+                # 条件 4: Q と R は互いに重ならない
+                if regions_overlap(regions[j]['polygon'], regions[k]['polygon']):
+                    continue
+                to_remove.add(i)
+                break
+            if i in to_remove:
+                break
+
+    return list(to_remove)
+
+
+def _resolve_union_parents(regions):
+    """結合親領域（2兄弟矩形の合体）を検出して除去した新リストを返す。
+
+    `_resolve_complement_faces` では頂点数の差が必要なため検出できない、
+    全領域が等頂点数（4頂点矩形）の兄弟分割ケースを補完する。
+    `_resolve_complement_faces` の呼び出し後（補完面除去済みの状態）に呼ぶ。
+    """
+    to_remove = set(_detect_union_parents(regions))
+    if not to_remove:
+        return regions
+    return [r for i, r in enumerate(regions) if i not in to_remove]
+
+
 # ============================================================
 # 11. トップレベル解析（公開API）
 # ============================================================
@@ -1451,6 +1520,7 @@ def analyze_dxf_regions(dxf_file, config=None):
                 })
                 rid += 1
         regions = _resolve_complement_faces(regions, frame_area, next_id=rid)
+        regions = _resolve_union_parents(regions)
         _remove_overlap_claimed_candidates(regions)
         result['regions'] = regions
 

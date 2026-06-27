@@ -49,6 +49,7 @@ SINGLE = _find_sample('EE6888-602-01A.dxf')  # 単一図面
 ROTATED = _find_sample('DE5434-553-10B.dxf')  # 図面全体が90°回転（名称が縦エッジ脇）
 DANGLING = _find_sample('EE6313-546-01E.dxf')  # 行き止まり枝(handle 214F/2199)を含む
 SIBLING = _find_sample('EE6313-545-01D.dxf')   # 補完面（B CHAMBER / FX CHAMBER 兄弟）
+H_SIBLING = _find_sample('DE5401-405-21B.dxf')  # 横線分で上下分割（L CHAMBER / FX CHAMBER 兄弟）
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
@@ -494,3 +495,29 @@ def test_sibling_fx_chamber_extracted_from_complement_face():
     fx = next(r for r in a['regions'] if r['default_name'] == 'FX CHAMBER')
     assert round(fx['area_pct'], 0) == 15.0  # 14.6% → round=15
     assert fx['corners'][0][0] > 600  # left-bottom x > 600
+
+
+@pytest.mark.skipif(not os.path.exists(H_SIBLING), reason='サンプル DXF が無い')
+def test_horizontal_sibling_union_parent_removed():
+    """横線分で上下に分割された兄弟矩形の合体親が除去されること（v1.5.18 / _resolve_union_parents）。
+
+    `DE5401-405-21B.dxf` では水平線分 y=265 で親矩形（bbox=140〜390、52.7%）が
+    上部 L CHAMBER（26.3%）と下部 FX CHAMBER（26.3%）に分割される。
+    分割後も親矩形は planar graph の半面として残り、20%閾値を超えるため
+    regions に残留・誤検出されていた（L CHAMBER が id=0 親と id=2 子で2件検出）。
+
+    `_resolve_union_parents` が:
+      - 面積条件: area(親) = area(FX CHAMBER) + area(L CHAMBER)
+      - 頂点条件: 親の全頂点 ⊂ FX CHAMBER.corners ∪ L CHAMBER.corners
+      - 重複なし: FX CHAMBER と L CHAMBER は互いに重ならない
+    を満たす親を検出して除去する。修正後は2領域のみ残る。"""
+    a = analyze_dxf_regions(H_SIBLING)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    # 合体親が除去されて2領域のみ
+    assert len(a['regions']) == 2
+    assert sorted(names) == ['FX CHAMBER', 'L CHAMBER']
+    # L CHAMBER は上半分（y が高い側）
+    l_ch = next(r for r in a['regions'] if r['default_name'] == 'L CHAMBER')
+    fx_ch = next(r for r in a['regions'] if r['default_name'] == 'FX CHAMBER')
+    assert l_ch['corners'][0][1] > fx_ch['corners'][0][1]  # L CHAMBER の ymin > FX CHAMBER の ymin

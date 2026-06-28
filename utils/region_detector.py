@@ -8,19 +8,24 @@
   - 領域境界線  : lineweight=25 かつ color=2(ACI黄) かつ線種が実質的に Continuous
 
 モジュール内の構成（処理パイプラインの順）:
-  1. 設定（DEFAULT_REGION_CONFIG）
-  2. DXFジオメトリ収集（_collect_region_geometry 系）
-  3. ポリゴン・点の幾何ユーティリティ（汎用、複数セクションから使われる）
-  4. 線分処理の共通ユーティリティ（分類・クラスタリング・結合）
-  5. 図面枠検出（detect_drawing_frames）
-  6. 閉領域検出（半面探索・行き止まり枝、_detect_regions まで）
-  7. 領域名称候補（Tier付き優先順位、region_name_candidates）
-  8. 図面回転判定（90°回転対応）
-  9. タイトルブロック除外
-  10. トップレベル解析（公開API: analyze_dxf_regions, assign_region_labels）
+  1.  設定（DEFAULT_REGION_CONFIG）
+  2.  DXFジオメトリ収集（_collect_region_geometry 系）
+  3.  ポリゴン・点の幾何ユーティリティ（汎用、複数セクションから使われる）
+  4.  線分処理の共通ユーティリティ（分類・クラスタリング・結合）
+  5.  図面枠検出（detect_drawing_frames）
+  6.  閉領域検出（半面探索・行き止まり枝、_detect_regions まで）
+  7.  領域名称候補（Tier付き優先順位、region_name_candidates）
+  8.  図面回転判定（90°回転対応）
+  9.  タイトルブロック除外
+  10. 領域検出実行（_run_region_detection）
+  10b. 補完面解消（_resolve_complement_faces）
+  11. トップレベル解析（公開API: analyze_dxf_regions, assign_region_labels）
 """
-import ezdxf
+import math
 import gc
+from collections import defaultdict
+
+import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
 from .common_utils import filter_non_circuit_symbols
@@ -226,7 +231,6 @@ def _point_in_polygon(pt, poly):
 
 
 def _dist_point_to_polygon(pt, poly):
-    import math as _m
     x, y = pt
     best = float('inf')
     n = len(poly)
@@ -237,7 +241,7 @@ def _dist_point_to_polygon(pt, poly):
         denom = dx * dx + dy * dy
         t = 0.0 if denom == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / denom))
         px, py = x1 + t * dx, y1 + t * dy
-        best = min(best, _m.hypot(x - px, y - py))
+        best = min(best, math.hypot(x - px, y - py))
     return best
 
 
@@ -602,12 +606,10 @@ def _trace_faces(adj, node_xy):
     """2-core抽出済みの平面グラフ（adj, node_xy）から、半面探索で閉領域(面)を
     列挙する。各面は次数2以上のノードのみで構成される閉路（半面探索＝各有向辺を
     1回ずつ辿り、各ノードで「来た方向の直前（角度順で1つ前）」の隣接辺へ進む）。"""
-    import math as _m
-
     def ang(a, b):
         ax, ay = node_xy[a]
         bx, by = node_xy[b]
-        return _m.atan2(by - ay, bx - ax)
+        return math.atan2(by - ay, bx - ax)
 
     order = {n: sorted(nb, key=lambda mm: ang(n, mm)) for n, nb in adj.items()}
     visited = set()
@@ -777,6 +779,26 @@ def _count_letters(s):
     return sum(1 for ch in s if ch.isascii() and ch.isalpha())
 
 
+def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
+                              exclude_circuit_symbols, circuit_keep_terms):
+    """領域名候補ラベルとして有効かを返す（ポリゴン非依存フィルタ）。
+
+    region_name_candidates() と _name_union_parent() の両方で使われる共通判定。
+    """
+    if _count_letters(t) < min_letters:
+        return False
+    if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
+        return False
+    up = t.upper()
+    if any(term.upper() in up for term in (exclude_terms or ())):
+        return False
+    if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
+        matched, _ = filter_non_circuit_symbols([t])
+        if matched:
+            return False
+    return True
+
+
 def _bottom_edges(polygon, level_tol=2.0):
     """ポリゴンの下端（最小y）にある横エッジ群 [(x0,x1,y), ...] を返す。"""
     min_y = min(p[1] for p in polygon)
@@ -820,28 +842,26 @@ def _vertical_edges_at_extreme(polygon, side, level_tol=2.0):
 
 def _dist_to_bottom_edge(pt, bottom_segs):
     """点から下端横エッジ群までの最短距離。"""
-    import math as _m
     x, y = pt
     best = float('inf')
     for (x0, x1, ey) in bottom_segs:
         if x0 <= x <= x1:
             d = abs(y - ey)
         else:
-            d = _m.hypot(x - (x0 if x < x0 else x1), y - ey)
+            d = math.hypot(x - (x0 if x < x0 else x1), y - ey)
         best = min(best, d)
     return best
 
 
 def _dist_to_vertical_edge(pt, vertical_segs):
     """点から縦エッジ群までの最短距離（_dist_to_bottom_edge の縦版）。"""
-    import math as _m
     x, y = pt
     best = float('inf')
     for (y0, y1, ex) in vertical_segs:
         if y0 <= y <= y1:
             d = abs(x - ex)
         else:
-            d = _m.hypot(x - ex, y - (y0 if y < y0 else y1))
+            d = math.hypot(x - ex, y - (y0 if y < y0 else y1))
         best = min(best, d)
     return best
 
@@ -889,26 +909,12 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
                     エントリに対応。呼び出し側が「この候補がどれだけ確信度が
                     高いか」を判定するために使う）
     """
-    terms = [s for s in (exclude_terms or ())]
-
-    def _label_ok(t):
-        if _count_letters(t) < min_letters:
-            return False
-        if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
-            return False
-        up = t.upper()
-        if any(term.upper() in up for term in terms):
-            return False
-        if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
-            matched, _ = filter_non_circuit_symbols([t])
-            if matched:
-                return False
-        return True
-
     def _scan(edge_segs, dist_fn, require_inside):
         cand = []
         for (t, x, y) in labels:
-            if not _label_ok(t):
+            if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
+                                            exclude_terms, exclude_circuit_symbols,
+                                            circuit_keep_terms):
                 continue
             if require_inside and not _point_in_polygon((x, y), polygon):
                 continue
@@ -937,7 +943,9 @@ def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_let
     # Tier1/2 でも候補ゼロの場合のみ、ポリゴン全体の境界への最短距離でフォールバック
     if not tiered:
         for (t, x, y) in labels:
-            if not _label_ok(t):
+            if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
+                                            exclude_terms, exclude_circuit_symbols,
+                                            circuit_keep_terms):
                 continue
             d = _dist_point_to_polygon((x, y), polygon)
             if min_dist <= d <= max_dist:
@@ -966,12 +974,11 @@ def _label_rotation_angle(entity):
     """ラベルエンティティの実効回転角(度, 0-180で正規化前)を返す。
     MTEXT は rotation 属性ではなく text_direction ベクトルで回転が表現される
     ことがあるため、そちらを優先する。"""
-    import math as _m
     if entity.dxftype() == 'MTEXT':
         try:
             if entity.dxf.hasattr('text_direction'):
                 td = entity.dxf.get('text_direction')
-                return _m.degrees(_m.atan2(td[1], td[0]))
+                return math.degrees(math.atan2(td[1], td[0]))
         except Exception:
             pass
     return getattr(entity.dxf, 'rotation', 0) or 0
@@ -1063,7 +1070,7 @@ def _is_titleblock_region(polygon, labels):
 
 
 # ============================================================
-# 10. トップレベル解析（公開API）
+# 10. 領域検出実行（_run_region_detection）
 # ============================================================
 
 def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
@@ -1168,7 +1175,7 @@ def _remove_overlap_claimed_candidates(regions):
 
 
 # ============================================================
-# 10. 補完面解消（_resolve_complement_faces）
+# 10b. 補完面解消（_resolve_complement_faces）
 # ============================================================
 
 def _vertex_in_corner_set(vertex, corner_list, tol=1.0):
@@ -1396,25 +1403,12 @@ def _name_union_parent(parent_region, child_regions, labels, cfg,
     all_x1 = max(seg[1] for seg in bottom)
     center_x = (all_x0 + all_x1) / 2.0
 
-    def _label_ok(t):
-        if _count_letters(t) < min_letters:
-            return False
-        if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
-            return False
-        up = t.upper()
-        if any(term.upper() in up for term in (exclude_terms or ())):
-            return False
-        if exclude_circuit_symbols and not any(
-                k.upper() in up for k in (circuit_keep_terms or ())):
-            matched, _ = filter_non_circuit_symbols([t])
-            if matched:
-                return False
-        return True
-
     # 底辺エッジへの距離（領域外も許容）と中央距離でスコアリング
     scored = []
     for (t, x, y) in labels:
-        if not _label_ok(t) or t in claimed:
+        if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
+                                        exclude_terms, exclude_circuit_symbols,
+                                        circuit_keep_terms) or t in claimed:
             continue
         dist = _dist_to_bottom_edge((x, y), bottom)
         if dist < min_dist or dist > max_dist:
@@ -1454,12 +1448,11 @@ def _resolve_union_parents(regions, labels=None, cfg=None):
 
     to_remove = set()
     if labels is not None:
-        from collections import defaultdict as _dd
         effective_cfg = cfg or {}
         parent_indices = set(parent_to_children.keys())
         child_indices = {c for cs in parent_to_children.values() for c in cs}
         # フレーム別に「既使用名称」を管理（異なるフレームは独立して同名を許可）
-        parent_claimed_by_frame = _dd(set)
+        parent_claimed_by_frame = defaultdict(set)
         for parent_idx, (child_j, child_k) in parent_to_children.items():
             parent = regions[parent_idx]
             parent_frame = parent.get('frame', 0)
@@ -1521,8 +1514,6 @@ def analyze_dxf_regions(dxf_file, config=None):
           は報告されない。
       error: str | None
     """
-    from collections import defaultdict as _dd
-
     cfg = dict(DEFAULT_REGION_CONFIG)
     if config:
         cfg.update(config)
@@ -1600,7 +1591,7 @@ def analyze_dxf_regions(dxf_file, config=None):
         #    他図面では、このターゲット名称の矩形を面積に関係なく抽出する。
         target_names = set()
         if frame_cands:
-            by_name = _dd(list)
+            by_name = defaultdict(list)
             for cf in frame_cands[0]:
                 if cf['default_name']:
                     by_name[cf['default_name']].append(cf['area'])

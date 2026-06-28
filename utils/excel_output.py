@@ -1,15 +1,13 @@
 """Excel 出力モジュール
 
 通常モード（ラベル抽出）・領域付きモード（矩形領域付きラベル抽出）の
-Excel ファイル生成と、領域付き集計の構築を担う。
+Excel ファイル生成を担う。集計ロジック（build_region_results）は
+region_detector モジュールに実装されている。
 """
 import os
 import pandas as pd
 from io import BytesIO
-from collections import Counter, defaultdict
-
-from .region_detector import assign_region_labels
-from .common_utils import filter_non_circuit_symbols
+from collections import Counter
 
 
 def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):
@@ -185,80 +183,3 @@ def create_region_excel_output(region_results):
 
     output.seek(0)
     return output.getvalue()
-
-
-def build_region_results(analyses, name_selections, sort_value, filter_circuit_only=False):
-    """解析結果とユーザーがチェックした名称から、ファイルごとの領域付きラベル集計を構築する。
-
-    name_selections: {(filename, region_id): [チェックされた名称, ...]}
-    filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
-    """
-    region_results = {}
-    for fname, analysis in analyses.items():
-        named = []
-        named_region_ids = set()
-        no_name_idx = 0
-        for reg in analysis.get('regions', []):
-            chosen_names = name_selections.get((fname, reg['id']), [])
-            if not chosen_names and not reg.get('name_candidates'):
-                no_name_idx += 1
-                chosen_names = [f"no name {no_name_idx}"]
-            for nm in chosen_names:
-                if not nm:
-                    continue
-                named.append({
-                    'polygon': reg['polygon'], 'name': nm,
-                    'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
-                })
-                named_region_ids.add(reg['id'])
-
-        all_labels = analysis.get('labels', [])
-
-        if filter_circuit_only:
-            texts = [l[0] for l in all_labels]
-            matched, _ = filter_non_circuit_symbols(texts)
-            matched_set = set(matched)
-            labels = [l for l in all_labels if l[0] in matched_set]
-            filtered_count = len(all_labels) - len(labels)
-        else:
-            labels = all_labels
-            filtered_count = 0
-
-        assigned = assign_region_labels(labels, named)
-
-        cnt = Counter()
-        region_of = defaultdict(set)
-        in_region_count = 0
-        label_count_per_region = defaultdict(int)
-        for (text, x, y, names) in assigned:
-            cnt[text] += 1
-            if names:
-                in_region_count += 1
-            for n in names:
-                region_of[text].add(n)
-                label_count_per_region[n] += 1
-
-        rows = [
-            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
-            for t in cnt
-        ]
-        if sort_value == 'asc':
-            rows.sort(key=lambda r: r['ラベル'])
-        elif sort_value == 'desc':
-            rows.sort(key=lambda r: r['ラベル'], reverse=True)
-
-        for r in named:
-            r['label_count'] = label_count_per_region.get(r['name'], 0)
-
-        region_results[fname] = {
-            'rows': rows,
-            'named': named,
-            'frames': len(analysis.get('frames', [])),
-            'regions_detected': len(analysis.get('regions', [])),
-            'regions_named': len(named_region_ids),
-            'total_in_frame': len(all_labels),
-            'filtered_count': filtered_count,
-            'final_count': len(labels),
-            'in_region_count': in_region_count,
-        }
-    return region_results

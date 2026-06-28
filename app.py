@@ -13,8 +13,10 @@ sys.path.insert(0, utils_path)
 from utils.extract_labels import (
     extract_labels, get_layers_from_dxf, process_multiple_dxf_files,
 )
-from utils.region_detector import analyze_dxf_regions, DEFAULT_REGION_CONFIG, regions_overlap
-from utils.excel_output import create_excel_output, create_region_excel_output, build_region_results
+from utils.region_detector import (
+    analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
+)
+from utils.excel_output import create_excel_output, create_region_excel_output
 from utils.common_utils import save_uploadedfile, handle_error
 
 st.set_page_config(

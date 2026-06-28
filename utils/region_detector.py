@@ -23,7 +23,7 @@
 """
 import math
 import gc
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import ezdxf
 
@@ -68,6 +68,10 @@ DEFAULT_REGION_CONFIG = {
     'connection_point_threshold': 1,    # 境界上の接続点がこの数(個数)以上なら除外
     'connection_point_margin': 0.05,   # 接続点が境界線上とみなす座標距離マージン
 }
+
+# 内部定数（マジックナンバーの明示）
+_FRAME_MARGIN = 5       # 図面枠フィルタリング時の座標マージン（枠境界に対し ±5 単位で線分を収集）
+_MAX_FACE_NODES = 200_000  # 半面探索の暴走ループ防止: 頂点数がこれを超えたら無効とみなす
 
 
 # ============================================================
@@ -409,7 +413,11 @@ def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.
 # 5. 図面枠検出
 # ============================================================
 
-def detect_drawing_frames(frame_lines, eps=2.0, min_side=0.0):
+def detect_drawing_frames(
+    frame_lines: list,
+    eps: float = 2.0,
+    min_side: float = 0.0,
+) -> list[tuple[float, float, float, float]]:
     """lineweight=100・color=7 の線分（呼び出し元の `_collect_region_geometry` で
     既にこの2条件で絞り込まれている）から図面枠（複数可）を検出する。
     枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
@@ -629,7 +637,7 @@ def _trace_faces(adj, node_xy):
                 cu, cv = cv, w
                 if (cu, cv) == (u, v):
                     break
-                if len(face) > 200000:
+                if len(face) > _MAX_FACE_NODES:
                     ok = False
                     break
             if ok and len(face) >= 4:
@@ -715,8 +723,9 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, r
     各領域の polygon で行う。
     """
     xl, xr, y0, y1 = frame
-    Hf = [h for h in RH if y0 - 5 <= h[0] <= y1 + 5 and h[2] >= xl - 5 and h[1] <= xr + 5]
-    Vf = [v for v in RV if xl - 5 <= v[0] <= xr + 5 and v[2] >= y0 - 5 and v[1] <= y1 + 5]
+    m = _FRAME_MARGIN
+    Hf = [h for h in RH if y0 - m <= h[0] <= y1 + m and h[2] >= xl - m and h[1] <= xr + m]
+    Vf = [v for v in RV if xl - m <= v[0] <= xr + m and v[2] >= y0 - m and v[1] <= y1 + m]
     if not Hf or not Vf:
         return [], []
     # 共線セグメントの結合はレベル座標を厳密一致(merge_level_tol)で行い、別レベルの
@@ -733,7 +742,7 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, r
     bridge_h = cfg.get('bridge_horizontal_gaps', False)
     cband = cfg.get('connection_point_margin', 2.0)
     ctol = cfg.get('corner_tol', 0.5)
-    fcircles = [c for c in (circles or []) if xl - 5 <= c[0] <= xr + 5 and y0 - 5 <= c[1] <= y1 + 5]
+    fcircles = [c for c in (circles or []) if xl - m <= c[0] <= xr + m and y0 - m <= c[1] <= y1 + m]
     # 横線分の端点（縦ギャップのコーナー相手判定用）
     h_endpoints = []
     for (hy, hx0, hx1) in Hf:
@@ -866,10 +875,19 @@ def _dist_to_vertical_edge(pt, vertical_segs):
     return best
 
 
-def region_name_candidates(polygon, labels, max_dist=10.0, min_dist=1.0, min_letters=3,
-                           limit=8, exclude_circuit_symbols=True, exclude_terms=('NOTE', '☆'),
-                           exclude_lowercase=True, circuit_keep_terms=('RACK',),
-                           rotated_edge_roles=None):
+def region_name_candidates(
+    polygon: list[tuple[float, float]],
+    labels: list[tuple[str, float, float]],
+    max_dist: float = 10.0,
+    min_dist: float = 1.0,
+    min_letters: int = 3,
+    limit: int = 8,
+    exclude_circuit_symbols: bool = True,
+    exclude_terms: tuple = ('NOTE', '☆'),
+    exclude_lowercase: bool = True,
+    circuit_keep_terms: tuple = ('RACK',),
+    rotated_edge_roles: tuple | None = None,
+) -> tuple[list[tuple[float, str]], dict[str, int]]:
     """領域名候補ラベルを優先順位（Tier）→距離順に返す（テキスト重複除去）。
 
     優先順位（ユーザー確認による仕様、2026-06-21 v1.5.9）:
@@ -1488,7 +1506,7 @@ def _resolve_union_parents(regions, labels=None, cfg=None):
 # 11. トップレベル解析（公開API）
 # ============================================================
 
-def analyze_dxf_regions(dxf_file, config=None):
+def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
     """DXFファイルを解析し、図面枠・閉領域（名称候補つき）・図面枠内ラベルを返す。
 
     戻り値 dict:
@@ -1645,7 +1663,10 @@ def analyze_dxf_regions(dxf_file, config=None):
     return result
 
 
-def assign_region_labels(labels, named_regions):
+def assign_region_labels(
+    labels: list[tuple[str, float, float]],
+    named_regions: list[dict],
+) -> list[tuple[str, float, float, list[str]]]:
     """各ラベル(text,x,y)が内包される領域名のリストを返す。
 
     named_regions: [{'polygon': [...], 'name': str}]（名称確定済み）。
@@ -1660,3 +1681,85 @@ def assign_region_labels(labels, named_regions):
                 names.append(nm)
         out.append((t, x, y, names))
     return out
+
+
+def build_region_results(
+    analyses: dict,
+    name_selections: dict,
+    sort_value: str,
+    filter_circuit_only: bool = False,
+) -> dict:
+    """解析結果とユーザーがチェックした名称から、ファイルごとの領域付きラベル集計を構築する。
+
+    name_selections: {(filename, region_id): [チェックされた名称, ...]}
+    filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
+    """
+    region_results = {}
+    for fname, analysis in analyses.items():
+        named = []
+        named_region_ids = set()
+        no_name_idx = 0
+        for reg in analysis.get('regions', []):
+            chosen_names = name_selections.get((fname, reg['id']), [])
+            if not chosen_names and not reg.get('name_candidates'):
+                no_name_idx += 1
+                chosen_names = [f"no name {no_name_idx}"]
+            for nm in chosen_names:
+                if not nm:
+                    continue
+                named.append({
+                    'polygon': reg['polygon'], 'name': nm,
+                    'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
+                })
+                named_region_ids.add(reg['id'])
+
+        all_labels = analysis.get('labels', [])
+
+        if filter_circuit_only:
+            texts = [l[0] for l in all_labels]
+            matched, _ = filter_non_circuit_symbols(texts)
+            matched_set = set(matched)
+            labels = [l for l in all_labels if l[0] in matched_set]
+            filtered_count = len(all_labels) - len(labels)
+        else:
+            labels = all_labels
+            filtered_count = 0
+
+        assigned = assign_region_labels(labels, named)
+
+        cnt = Counter()
+        region_of = defaultdict(set)
+        in_region_count = 0
+        label_count_per_region = defaultdict(int)
+        for (text, x, y, names) in assigned:
+            cnt[text] += 1
+            if names:
+                in_region_count += 1
+            for n in names:
+                region_of[text].add(n)
+                label_count_per_region[n] += 1
+
+        rows = [
+            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
+            for t in cnt
+        ]
+        if sort_value == 'asc':
+            rows.sort(key=lambda r: r['ラベル'])
+        elif sort_value == 'desc':
+            rows.sort(key=lambda r: r['ラベル'], reverse=True)
+
+        for r in named:
+            r['label_count'] = label_count_per_region.get(r['name'], 0)
+
+        region_results[fname] = {
+            'rows': rows,
+            'named': named,
+            'frames': len(analysis.get('frames', [])),
+            'regions_detected': len(analysis.get('regions', [])),
+            'regions_named': len(named_region_ids),
+            'total_in_frame': len(all_labels),
+            'filtered_count': filtered_count,
+            'final_count': len(labels),
+            'in_region_count': in_region_count,
+        }
+    return region_results

@@ -30,8 +30,8 @@ DXF-extract-labels/
 |---------|------|
 | `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示） |
 | `extract_labels.py` | DXF エンティティからのテキスト抽出・図番判別・タイトル抽出 |
-| `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出 |
-| `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_region_excel_output` / `build_region_results`）|
+| `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出・集計（`build_region_results`）|
+| `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_region_excel_output`）|
 | `common_utils.py` | 機器符号フィルタリング・妥当性チェック・ファイル保存・エラー処理 |
 
 ---
@@ -517,6 +517,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.22 | コード品質リファクタリング（ロジック変更なし・出力は不変）。`region_detector.py`: `_label_ok()` クロージャの重複（`region_name_candidates` / `_name_union_parent` / Tier3 フォールバックの3か所）を module-level の `_is_valid_name_candidate()` に統合。`_detect_regions` 内のマジックナンバー `5` を `_FRAME_MARGIN = 5` 定数に、`_trace_faces` 内の `200000` を `_MAX_FACE_NODES = 200_000` 定数に置き換え。5公開 API 関数（`detect_drawing_frames` / `region_name_candidates` / `analyze_dxf_regions` / `assign_region_labels` / `build_region_results`）に Python 3.10+ 型アノテーションを追加。`build_region_results()` を `excel_output.py`（I/O 層）から `region_detector.py`（ビジネスロジック層）へ移動（モジュール責務の正常化）。`app.py` の import 先を更新。`excel_output.py`: モジュール docstring 更新、不要 import 削除（`assign_region_labels` / `filter_non_circuit_symbols`）。回帰テスト 25 件追加（`test_circuit_symbol_filter.py` 16 件・`test_excel_output.py` 9 件）、全 71 件 pass 確認。DXF-viewer の `core/region_detector.py` にも ①-④（`_is_valid_name_candidate` 統合・import 整理）および ⑤（マジックナンバー定数化）を移植済み。 |
 | v1.5.21 | `_name_union_parent()` に `exclude_names` パラメータを追加。`_resolve_union_parents()` で**同一フレーム内**の非親・非子領域がすでに `default_name` として使用している名称を `exclude_names` に渡し、合体親がそれらを誤って取得しないように修正。フレームをまたいだ場合（例: `DE5434-563-03A.dxf` の frame0・frame1 が同じ 'FX CHAMBER' を名乗る）は除外対象にしない（`parent_claimed_by_frame` でフレーム別に管理）。背景: EE6888-631-01A.dxf では frame0 に正規の 'SYSTEM I/F BOX' 領域が2件存在し、その内部の合体親（2件）が v1.5.20 で 'SYSTEM I/F BOX' を誤取得して 'SYSTEM' クエリの一致数が 2→4 に増加する回帰が発生した。修正後、EE6888-631-01A.dxf・EE6492-631-02A.dxf の回帰テストが再 PASS（'SYSTEM' クエリ = 2件）。`DE5434-563-03A.dxf` (5% 閾値) は引き続き frame0・frame1 の合体親がそれぞれ 'FX CHAMBER' を取得して保持。全25件の回帰テスト PASS。DXF-viewer の `core/region_detector.py` にも同じ変更を移植済み。|
 | v1.5.20 | `_resolve_union_parents()` を**除去から命名**に変更。結合親領域（2兄弟矩形の合体）が検出された場合、子領域の名称候補をすべて除外した上で、底辺中央近接条件（中心距離を第2ソートキーとする距離ソート）を加味した専用の名称探索関数 `_name_union_parent()` で親固有のラベルを探索し、見つかった場合は名称を更新して親を**残す**。見つからなかった場合は従来通り除去する。底辺近傍の探索は `require_inside` を緩和し、領域外（底辺の下方向）も探索対象にする（例: `DE5434-563-03A.dxf` の 'FX CHAMBER' @ y=76.4 は polygon 外だが底辺y=83 から 6.6 ユニット）。`_detect_union_parents()` の戻り値を `[parent_idx, ...]` から `{parent_idx: (child_j, child_k)}` に変更（内部 API のみ）。`analyze_dxf_regions()` の呼び出しを `_resolve_union_parents(regions, labels=frame_labels, cfg=cfg)` に更新。検証: `DE5434-563-03A.dxf` (5% 閾値) で合体親 [1] が 'FX CHAMBER' (pos=(98.6,76.4)) として残り、子 [3]='SB-1A(FX1)'・[4]='CN I/F B.D TYPE3' は独立して保持。`DE5401-405-21B.dxf` (20% 閾値) は未採用ラベルなしのため従来通り合体親が除去され、全25件の既存回帰テストが引き続き PASS。DXF-viewer の `core/region_detector.py` にも同じ変更（`name_candidate_positions` 用途の `_name_union_parent` 版）を移植済み。|
 | v1.5.19 | `_split_axis_aligned` の長さ比較を `> eps` から `>= eps` に変更し、長さがちょうど `snap`(eps=2.0) ユニットの極短スタブも V/H 線分として検出されるよう修正。実例: `DE5434-563-03A.dxf` の縦スタブ #10D0 (x=86, y=400~402, len=2.0) が `> eps` 条件を満たさず除外されていたため、x=86 の縦仕切り線分（INSERT #188E 部品上下のスタブ #10CF + #10D0 の橋渡し）が成立せず、frame[0] の 'SB-1A(FX1)'（左領域）と 'CN I/F B.D TYPE3'（右領域）が独立した閉領域として検出されていなかった。修正後、5% 閾値で両領域が正しく検出される（[3] 7.7% bbox=(32,83,86,402) 'SB-1A(FX1)'・[4] 7.6% bbox=(86,83,140,402) 'CN I/F B.D TYPE3'）。DXF-viewer の `core/region_detector.py` にも同じ変更を適用済み。|
@@ -553,4 +554,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-06-28 (v1.5.21)
+最終更新: 2026-06-28 (v1.5.22)

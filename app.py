@@ -329,27 +329,27 @@ def app():
             with rc2:
                 frm_area_pct = st.number_input(
                     "最小面積（単独領域・図面枠面積比 %）",
-                    value=int(saved_cfg['area_ratio'] * 100),
-                    min_value=1, max_value=100, step=5,
+                    value=min(99, max(1, int(saved_cfg['area_ratio'] * 100))),
+                    min_value=1, max_value=99, step=1,
                     help="1つの閉領域が単独でこの面積比以上のとき抽出対象とします",
                     key='frm_area_ratio_pct')
                 frm_group_pct = st.number_input(
                     "最小面積（同名複数領域・図面枠面積比 %）",
-                    value=int(saved_cfg['group_area_ratio'] * 100),
-                    min_value=1, max_value=100, step=5,
+                    value=min(50, max(1, int(saved_cfg['group_area_ratio'] * 100))),
+                    min_value=1, max_value=50, step=1,
                     help="同じ名称の複数ピースを合算したとき、この面積比以上なら抽出対象とします。"
                          "第1図面で成立した名称は他図面でも面積不問で抽出します。",
                     key='frm_group_area_ratio_pct')
                 frm_name_max = st.number_input(
                     "領域名称ラベルの境界線からの最大距離（座標）",
-                    value=int(saved_cfg.get('name_max_dist', 10.0)),
-                    min_value=0, step=1,
+                    value=min(20, max(1, int(saved_cfg.get('name_max_dist', 10.0)))),
+                    min_value=1, max_value=20, step=1,
                     help="下端境界線からこの座標距離以内のラベルを名称候補とします",
                     key='frm_name_max_dist')
                 frm_name_min = st.number_input(
                     "領域名称ラベルの境界線からの最小距離（座標）",
-                    value=int(saved_cfg['name_min_dist']),
-                    min_value=0, step=1,
+                    value=min(10, max(1, int(saved_cfg['name_min_dist']))),
+                    min_value=1, max_value=10, step=1,
                     help="この距離未満（境界線分上）のラベルは名称候補から除外します",
                     key='frm_name_min_dist')
                 frm_min_letters = st.number_input(

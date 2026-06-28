@@ -7,7 +7,7 @@ region_detector モジュールに実装されている。
 import os
 import pandas as pd
 from io import BytesIO
-from collections import Counter
+from collections import Counter, defaultdict
 
 
 def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):

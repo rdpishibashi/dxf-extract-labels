@@ -53,6 +53,9 @@ DEFAULT_REGION_CONFIG = {
     'bridge_horizontal_gaps': False, # 横線分(同一Y)のギャップは橋渡ししない
     'corner_tol': 0.5,               # 縦線端点と横線端点が一致（コーナー）とみなす許容。
                                      # ギャップ両端にコーナー相手がいれば橋渡ししない。
+    'span_level_merge': False,  # 共線結合のレベルを「スパンを構成した線分だけ」の平均で
+                                # 算出する（既定はレベルクラスタ全体の平均）。レベル汚染
+                                # フォールバック（analyze_dxf_regions 4パス目）が True で使う。
     'area_ratio': 0.20,         # 単独の領域の最小面積（枠面積比）
     'group_area_ratio': 0.10,   # 同名複数ピースを合算した場合の最小合計面積（枠面積比）
     'min_face_ratio': 0.005,    # 個々の閉領域として残す最小面積（枠面積比、ノイズ除去）
@@ -364,7 +367,7 @@ def _has_corner_partner(level, y, h_endpoints, tol):
 
 
 def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.0,
-                     h_endpoints=None, corner_tol=0.5):
+                     h_endpoints=None, corner_tol=0.5, span_levels=False):
     """同一レベル(±level_tol)の共線セグメントを結合する。
 
     bridge=True のとき隙間（ギャップ）も橋渡しして1本にする（部品で途切れた縦線分の
@@ -374,6 +377,15 @@ def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.
     縦線のギャップ橋渡しは、**ギャップ両端のどちらにも横線分の端点が一致しない**場合
     のみ行う（端点が一致する＝コーナーで境界が折れるステップなので橋渡ししない。これに
     より、別境界片や段差を誤って繋がない）。circles がギャップ上にある場合も橋渡ししない。
+
+    span_levels=True のとき、出力スパンのレベルを「そのスパンを構成した線分だけ」の
+    平均で算出する（既定 False はレベルクラスタ全体の平均）。既定の全体平均は、スパンが
+    重ならない無関係な近接線分（例: 境界線 y=122.00 の 0.37 上に乗ったコネクタ箱の底辺
+    y=122.37）にレベルを汚染され、境界線がシフト → 縦線端点とのノード接続（face_snap）
+    が切れて閉領域が不成立になることがある（EE6892-039-05B.dxf 2枠目で実証）。
+    `analyze_dxf_regions` のレベル汚染フォールバック（4パス目）が True で再検出する。
+    ギャップのコーナー相手・CIRCLE 判定は従来どおりクラスタ全体平均レベルで行う
+    （判定許容誤差に対して汚染幅は level_tol 以下なので結果は変わらない）。
     """
     if not items:
         return []
@@ -391,21 +403,24 @@ def _merge_collinear(items, level_tol, bridge=True, circles=None, circle_band=2.
     out = []
     for g in groups:
         level = sum(t[0] for t in g) / len(g)
-        spans = sorted((t[1], t[2]) for t in g)
-        merged = [list(spans[0])]
-        for lo, hi in spans[1:]:
+        # merged 要素: [lo, hi, [構成線分のレベル, ...]]
+        spans = sorted((t[1], t[2], t[0]) for t in g)
+        merged = [[spans[0][0], spans[0][1], [spans[0][2]]]]
+        for lo, hi, lv in spans[1:]:
             phi = merged[-1][1]
             if lo <= phi + 1e-6:  # 重なり/接触 → 結合
                 merged[-1][1] = max(phi, hi)
+                merged[-1][2].append(lv)
             elif (bridge
                   and not _has_corner_partner(level, phi, h_endpoints, corner_tol)
                   and not _has_corner_partner(level, lo, h_endpoints, corner_tol)
                   and not _gap_has_circle(level, phi, lo, circles, circle_band)):
                 merged[-1][1] = max(phi, hi)  # 橋渡し（両端コーナー無し・円無し）
+                merged[-1][2].append(lv)
             else:
-                merged.append([lo, hi])       # 隙間 → 別スパンとして分離
-        for lo, hi in merged:
-            out.append((level, lo, hi))
+                merged.append([lo, hi, [lv]])  # 隙間 → 別スパンとして分離
+        for lo, hi, lvs in merged:
+            out.append((sum(lvs) / len(lvs) if span_levels else level, lo, hi))
     return out
 
 
@@ -755,10 +770,13 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, r
         v_endpoints_swapped.append((vy0, vx))
         v_endpoints_swapped.append((vy1, vx))
     circles_swapped = [(cy, cx) for (cx, cy) in fcircles]
+    span_levels = cfg.get('span_level_merge', False)
     Hm = _merge_collinear(Hf, mtol, bridge=bridge_h, circles=circles_swapped, circle_band=cband,
-                          h_endpoints=v_endpoints_swapped, corner_tol=ctol)
+                          h_endpoints=v_endpoints_swapped, corner_tol=ctol,
+                          span_levels=span_levels)
     Vm = _merge_collinear(Vf, mtol, bridge=bridge_v, circles=fcircles, circle_band=cband,
-                          h_endpoints=h_endpoints, corner_tol=ctol)
+                          h_endpoints=h_endpoints, corner_tol=ctol,
+                          span_levels=span_levels)
     # 端点接続ベースの面探索（中ほど交差では繋がない）ため、部品矩形の縦線は領域辺の
     # 途中を横切るだけで接続せず、回り込みは発生しない。
     faces, dangling = _find_rectilinear_faces(Hm, Vm, fsnap)
@@ -1597,12 +1615,44 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         # 回転判定を条件に加えるのは、通常向きの図面で「単に検出ゼロ件だったから」を
         # トリガーに横線分も橋渡ししてしまうと、無関係な隣接矩形を誤って結合する副作用が
         # あるため（`_is_globally_rotated` 参照）。
+        det_cfg = cfg
         if _count_threshold_hits(frame_cands, single_thr) == 0 and rotated:
-            cfg_h_bridge = dict(cfg)
-            cfg_h_bridge['bridge_horizontal_gaps'] = True
+            det_cfg = dict(cfg)
+            det_cfg['bridge_horizontal_gaps'] = True
             frame_cands, dangling_by_frame = _run_region_detection(
-                lines_for_detection, cfg_h_bridge, frames, frame_area, frame_labels,
+                lines_for_detection, det_cfg, frames, frame_area, frame_labels,
                 connection_points, rotated_edge_roles)
+
+        # 4パス目（レベル汚染フォールバック・図面枠単位）: 領域境界線と同属性の無関係な
+        # 近接線分（例: 境界線 y=122.00 の 0.37 上のコネクタ箱底辺 y=122.37）が共線結合の
+        # レベルクラスタ平均を汚染して境界線をシフトさせ、縦線端点との接続が切れて閉領域が
+        # 不成立になる枠がある（EE6892-039-05B.dxf の2枠目、SYSTEM I/F BOX）。
+        # そのような「閾値超え候補ゼロの枠」に限り、スパン単位レベル（汚染なし）で再検出する。
+        # 発動条件（明示的な信号。「ゼロ件だから試す」だけをトリガーにしない）:
+        #   (a) 閾値超えゼロの枠がある
+        #   (b) 他の枠には閾値超えの領域がある（=全枠ゼロの図面タイプ〔電源基板の回路図等〕
+        #       では発動しない。EE6333-610-07A 等で基板外形を誤検出するのを防ぐ）
+        # 採用条件: 回復した領域の名称が他枠で検出済みの名称と一致する枠のみ置き換える
+        #   （1ファイル複数図面は同じユニット群の続きを描くため、同名領域が枠をまたいで
+        #    現れることを回復の根拠とする）。
+        zero_fis = [fi for fi, cl in enumerate(frame_cands)
+                    if not any(cf['area'] >= single_thr for cf in cl)]
+        hit_names = {cf['default_name']
+                     for fi, cl in enumerate(frame_cands) if fi not in zero_fis
+                     for cf in cl
+                     if cf['area'] >= single_thr and cf['default_name']}
+        if zero_fis and hit_names:
+            cfg_span = dict(det_cfg)
+            cfg_span['span_level_merge'] = True
+            sub_frames = [frames[fi] for fi in zero_fis]
+            fc2, dg2 = _run_region_detection(
+                lines_for_detection, cfg_span, sub_frames, frame_area, frame_labels,
+                connection_points, rotated_edge_roles)
+            for j, fi in enumerate(zero_fis):
+                if any(cf['area'] >= single_thr and cf['default_name'] in hit_names
+                       for cf in fc2[j]):
+                    frame_cands[fi] = fc2[j]
+                    dangling_by_frame[fi] = dg2[j]
 
         # 2) 第1図面（最左フレーム）で「同名複数ピース合算>=group_thr」となる名称を
         #    ターゲットとする（MPD RACK2 のように2矩形で合算が閾値超のケース）。

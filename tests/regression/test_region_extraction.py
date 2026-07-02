@@ -521,3 +521,50 @@ def test_horizontal_sibling_union_parent_removed():
     l_ch = next(r for r in a['regions'] if r['default_name'] == 'L CHAMBER')
     fx_ch = next(r for r in a['regions'] if r['default_name'] == 'FX CHAMBER')
     assert l_ch['corners'][0][1] > fx_ch['corners'][0][1]  # L CHAMBER の ymin > FX CHAMBER の ymin
+
+
+POLLUTED = _find_sample('EE6892-039-05B.dxf')  # レベル汚染で2枠目が不成立→4パス目で回復
+
+
+@pytest.mark.skipif(not os.path.exists(POLLUTED), reason='サンプル DXF が無い')
+def test_level_pollution_fallback_recovers_frame():
+    """レベル汚染フォールバック（4パス目）で欠けていた枠の領域が回復すること（v1.5.23）。
+
+    `EE6892-039-05B.dxf`（4枠）の2枠目は、SYSTEM I/F BOX の上辺境界線 y=122.00 の
+    0.37 上に同属性（lw=25/color=2）のコネクタ箱底辺 y=122.37 が並んでおり、
+    `_merge_collinear` のレベルクラスタ平均が境界線を y=122.25 へシフトさせるため、
+    縦線端点（y=122.00）とのノード接続（face_snap=0.1）が切れて閉領域が不成立だった。
+
+    4パス目は「閾値超えゼロの枠があり、かつ他の枠に閾値超え領域がある」場合のみ、
+    スパン単位レベル（span_level_merge=True、そのスパンを構成した線分だけの平均）で
+    該当枠を再検出し、回復領域の名称が他枠の検出済み名称と一致する場合のみ採用する。
+    全枠ゼロの図面タイプ（電源基板の回路図等、EE6333-610-07A など）では発動しない。"""
+    a = analyze_dxf_regions(POLLUTED)
+    assert a['error'] is None
+    assert len(a['frames']) == 4
+    # 4枠すべてで SYSTEM I/F BOX が検出される（修正前は2枠目が欠けて3領域だった）
+    assert len(a['regions']) == 4
+    assert sorted(r['frame'] for r in a['regions']) == [0, 1, 2, 3]
+    for r in a['regions']:
+        assert r['default_name'] == 'SYSTEM I/F BOX'
+    # 回復した2枠目（frame=1）の領域: 指定9ハンドルの線分と一致する8角の凹ポリゴン
+    rec = next(r for r in a['regions'] if r['frame'] == 1)
+    assert round(rec['area_pct'], 0) == 74.0
+    assert rec['corners'] == [
+        (462.95, 12.63), (462.95, 280.63), (802.84, 280.63), (802.84, 224.99),
+        (836.89, 224.99), (836.89, 122.0), (659.94, 122.0), (659.94, 12.63),
+    ]
+
+
+@pytest.mark.skipif(not os.path.exists(_find_sample('EE6333-610-07A.dxf')),
+                    reason='サンプル DXF が無い')
+def test_level_pollution_fallback_not_triggered_on_schematic():
+    """全枠に閾値超え領域がない図面（電源基板の回路図）では4パス目が発動しないこと。
+
+    `EE6333-610-07A.dxf` は PROCESS POWER SUPPLY の回路図で、lw=25/color=2 の
+    大きな枠（基板外形・ケーブル系統）はあるが機能領域（ラック/ボックス）ではない。
+    ゲート条件なしのフォールバックはここで ACCESSORY CABLE 65% / DC19A4 36%/30% を
+    誤検出していた。「他の枠に閾値超え領域がある」条件により発動せず 0 領域のまま。"""
+    a = analyze_dxf_regions(_find_sample('EE6333-610-07A.dxf'))
+    assert a['error'] is None
+    assert a['regions'] == []

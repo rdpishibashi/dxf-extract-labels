@@ -393,7 +393,10 @@ def app():
     # ============================================================
     # 領域を検出
     # ============================================================
-    if st.button("領域を検出", key="detect_regions_btn"):
+    detect_done = 'region_analyses' in st.session_state
+    extract_done = bool(st.session_state.get('excel_result'))
+    detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
+    if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
         try:
             with st.spinner('図面枠と矩形領域を検出中...'):
                 analyses = {}
@@ -413,6 +416,7 @@ def app():
                 for k in ['excel_result', 'is_region_mode', 'region_results_summary']:
                     if k in st.session_state:
                         del st.session_state[k]
+            st.rerun()
         except Exception as e:
             handle_error(e)
 
@@ -477,7 +481,8 @@ def app():
     # ============================================================
     # ラベルを抽出
     # ============================================================
-    if st.button("ラベルを抽出"):
+    extract_btn_type = "secondary" if st.session_state.get('excel_result') else "primary"
+    if st.button("ラベルを抽出", type=extract_btn_type):
         try:
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 if 'region_analyses' in st.session_state:
@@ -557,6 +562,7 @@ def app():
                         except Exception:
                             pass
 
+            st.rerun()
         except Exception as e:
             handle_error(e)
 
@@ -621,7 +627,7 @@ def app():
             data=st.session_state.excel_result,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width='stretch',
+            type="primary",
         )
 
         if st.button("🔄 新しい抽出を開始", key="restart_button"):

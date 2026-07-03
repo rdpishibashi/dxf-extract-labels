@@ -587,3 +587,34 @@ def test_zenkaku_only_label_is_valid_name_candidate():
     assert len(a['regions']) == 4
     for r in a['regions']:
         assert r['default_name'] == 'ＳＹＳＴＥＭ Ｉ／Ｆ ＢＯＸ'
+
+
+LSHAPE = _find_sample('EE6491-039-04A.dxf')  # L字型領域（名称ラベルが切り欠き下向きエッジ直上）
+
+
+@pytest.mark.skipif(not os.path.exists(LSHAPE), reason='サンプル DXF が無い')
+def test_lshape_notch_bottom_edge_label_is_candidate():
+    """L字型領域で、切り欠き部の下向きエッジ直上の名称ラベルが候補になること（v1.5.27）。
+
+    `EE6491-039-04A.dxf` の SYSTEM I/F BOX は FLAT CABLE 部と一体のL字型領域
+    （71.3%）で、名称ラベルは切り欠き部の下向き横エッジ（LINE #7DE, y=124.76。
+    最下端 y=13.24 ではない）の直上 3.5 にある。従来の Tier1/Tier2 探索は
+    最下端/最上端レベルのエッジしか見ないため、このラベルは候補から漏れ、
+    上端エッジ近傍の FLAT CABLE（ケーブル型式）が default になっていた。
+    `_notch_bottom_edges()` を Tier2 スキャンに加えることで候補化される。
+
+    併せて、ネストされた HEATER CTRL B.D 領域（8.5%、単独では閾値未満）が
+    「同名複数ピース合算」条件で従来通り保持されることも固定する（L字側の
+    default が変わってもグループ集計は候補確定前の default 名で行われるため）。"""
+    a = analyze_dxf_regions(LSHAPE)
+    assert a['error'] is None
+    assert len(a['frames']) == 1
+    by_name = {r['default_name']: r for r in a['regions']}
+    assert 'SYSTEM I/F BOX' in by_name
+    lshape = by_name['SYSTEM I/F BOX']
+    assert lshape['area_pct'] > 60
+    # FLAT CABLE は第2候補として残る（ユーザーがチェックボックスで選択可能）
+    assert 'FLAT CABLE' in [t for _d, t in lshape['name_candidates']]
+    # ネストされた HEATER CTRL B.D 領域の保持（従来挙動の維持）
+    assert 'HEATER CTRL B.D-5A(HCBD)' in by_name
+    assert len(a['regions']) == 2

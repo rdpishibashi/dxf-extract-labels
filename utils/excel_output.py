@@ -13,6 +13,7 @@ from io import BytesIO
 from collections import Counter, defaultdict
 
 from .common_utils import normalize_width
+from .region_detector import build_region_label_summary
 
 
 def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):
@@ -166,7 +167,7 @@ def create_region_excel_output(region_results):
             for r in data['named']:
                 reg_rows.append({
                     'ファイル名': fname,
-                    '図面': r['frame'] + 1,
+                    'ページ No.': r['frame'] + 1,
                     '領域名': r['name'],
                     '面積率[%]': round(r['area_pct'], 1),
                     '領域内ラベル数': r['label_count'],
@@ -179,6 +180,36 @@ def create_region_excel_output(region_results):
                 reg_ws.write(0, col_num, value, header_format)
             reg_ws.set_column('A:A', 28)
             reg_ws.set_column('C:C', 22)
+
+        # 領域別ラベル一覧: 領域名ごとに全ファイル横断でラベルを集計する
+        # （領域名は同名なら複数ファイルにまたがって合算。詳細は
+        # build_region_label_summary の docstring 参照）。
+        files, label_summary_rows = build_region_label_summary(region_results)
+        if label_summary_rows:
+            lbl_ws = workbook.add_worksheet('領域別ラベル一覧')
+            lbl_ws.write(0, 0, '領域名', header_format)
+            lbl_ws.write(0, 1, 'ラベル', header_format)
+            lbl_ws.write(0, 2, '合計個数', header_format)
+            col = 3
+            for _fname, _ident in files:
+                lbl_ws.write(0, col, '図番', header_format)
+                lbl_ws.write(0, col + 1, '個数', header_format)
+                col += 2
+
+            for row_num, r in enumerate(label_summary_rows, start=1):
+                lbl_ws.write(row_num, 0, r['領域名'])
+                lbl_ws.write(row_num, 1, r['ラベル'])
+                lbl_ws.write(row_num, 2, r['合計個数'])
+                col = 3
+                for fname, ident in files:
+                    lbl_ws.write(row_num, col, ident)
+                    lbl_ws.write(row_num, col + 1, r['per_file'].get(fname, 0))
+                    col += 2
+
+            lbl_ws.set_column('A:A', 28)
+            lbl_ws.set_column('B:B', 25)
+            lbl_ws.set_column(2, 2, 10)
+            lbl_ws.set_column(3, col - 1, 16)
 
         for fname, data in region_results.items():
             sheet_name = os.path.splitext(fname)[0][:31]

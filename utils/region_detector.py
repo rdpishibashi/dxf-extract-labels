@@ -23,6 +23,7 @@
 """
 import math
 import gc
+import os
 from collections import Counter, defaultdict
 
 import ezdxf
@@ -1842,6 +1843,7 @@ def build_region_results(
         region_of = defaultdict(set)
         in_region_count = 0
         label_count_per_region = defaultdict(int)
+        region_label_counts = defaultdict(Counter)
         for (text, x, y, names) in assigned:
             cnt[text] += 1
             if names:
@@ -1849,6 +1851,7 @@ def build_region_results(
             for n in names:
                 region_of[text].add(n)
                 label_count_per_region[n] += 1
+                region_label_counts[n][text] += 1
 
         rows = [
             {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
@@ -1872,5 +1875,49 @@ def build_region_results(
             'filtered_count': filtered_count,
             'final_count': len(labels),
             'in_region_count': in_region_count,
+            'drawing_number': analysis.get('main_drawing_number') or '',
+            'region_label_counts': {n: dict(c) for n, c in region_label_counts.items()},
         }
     return region_results
+
+
+def build_region_label_summary(region_results: dict) -> tuple[list[tuple[str, str]], list[dict]]:
+    """`build_region_results()` の結果から、領域名ごとに全ファイル横断でラベルを
+    集計した「領域別ラベル一覧」用の行データを構築する。
+
+    領域名は同名であれば複数ファイルにまたがって1グループに合算される
+    （矩形領域抽出は元々「同名複数ピース合算」「他図面でも同名採用」等、複数
+    ファイルで同じ領域名を共有する前提の設計であるため、これは自然な拡張）。
+
+    戻り値: (ファイル一覧 [(fname, 表示用図番), ...]（ファイル出現順。図番未抽出
+    時はファイル名〔拡張子なし〕にフォールバック）, 行データのリスト)。行データは
+    {'領域名': str, 'ラベル': str, '合計個数': int, 'per_file': {fname: 個数}}
+    （`per_file` は表示用図番ではなく **fname をキー**にする——2ファイルが同じ図番
+    〔未抽出時のフォールバックを含む〕を持つ場合の値衝突を避けるため）。
+    領域名は昇順、各領域内のラベルも昇順に整列する。ファイルにそのラベルが
+    存在しない場合の個数は 0（`per_file` に未登場のキーとして表現、呼び出し側で
+    `.get(fname, 0)` する）。
+    """
+    files = []
+    for fname, data in region_results.items():
+        ident = data.get('drawing_number') or os.path.splitext(fname)[0]
+        files.append((fname, ident))
+
+    by_region = defaultdict(lambda: defaultdict(int))
+    per_file_by_region = defaultdict(lambda: defaultdict(dict))
+    for fname, data in region_results.items():
+        for region_name, label_counts in data.get('region_label_counts', {}).items():
+            for label, count in label_counts.items():
+                by_region[region_name][label] += count
+                per_file_by_region[region_name][label][fname] = count
+
+    rows = []
+    for region_name in sorted(by_region.keys()):
+        for label in sorted(by_region[region_name].keys()):
+            rows.append({
+                '領域名': region_name,
+                'ラベル': label,
+                '合計個数': by_region[region_name][label],
+                'per_file': per_file_by_region[region_name][label],
+            })
+    return files, rows

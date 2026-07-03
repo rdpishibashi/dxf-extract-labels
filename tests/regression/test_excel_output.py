@@ -267,3 +267,91 @@ def test_zenkaku_circuit_symbol_recognized_by_filter():
     assert excluded == 1
     # 妥当性チェックも半角相当で判定（ＣＮ１ は CN1 として妥当）
     assert validate_circuit_symbols(['ＣＮ１']) == []
+
+
+# ---------------------------------------------------------------------------
+# 「領域一覧」列名変更（「図面」→「ページ No.」）・「領域別ラベル一覧」新設
+# ---------------------------------------------------------------------------
+
+def test_region_list_sheet_uses_page_no_header():
+    """「領域一覧」シートの列見出しが「ページ No.」であること（旧「図面」から変更）。
+    中身はファイル内の図面枠の通し番号のままで、DXF図番ではない。"""
+    wb = _load_wb(create_region_excel_output(_make_region_results()))
+    ws = wb['領域一覧']
+    headers = [c.value for c in ws[1]]
+    assert 'ページ No.' in headers
+    assert '図面' not in headers
+    col = headers.index('ページ No.') + 1
+    assert ws.cell(row=2, column=col).value == 1   # frame(=0) + 1
+
+
+def _make_multi_file_region_results():
+    """2ファイルが同じ領域名 'RACK1' を共有し、ラベルが一部重なる合成データ。
+    RACK1: R001 は両ファイルに登場（合計 8 = 5+3）、GND は file1 のみ（file2 は 0）。
+    file2 には drawing_number が無い（未抽出）ためファイル名にフォールバックする。"""
+    return {
+        'a.dxf': {
+            'rows': [], 'named': [
+                {'polygon': [], 'name': 'RACK1', 'id': 0,
+                 'frame': 0, 'area_pct': 30.0, 'label_count': 6},
+            ],
+            'frames': 1, 'regions_detected': 1, 'regions_named': 1,
+            'total_in_frame': 6, 'filtered_count': 0, 'final_count': 6,
+            'in_region_count': 6,
+            'drawing_number': 'EE6492-039-38A',
+            'region_label_counts': {'RACK1': {'R001': 5, 'GND': 1}},
+        },
+        'b.dxf': {
+            'rows': [], 'named': [
+                {'polygon': [], 'name': 'RACK1', 'id': 0,
+                 'frame': 0, 'area_pct': 30.0, 'label_count': 3},
+            ],
+            'frames': 1, 'regions_detected': 1, 'regions_named': 1,
+            'total_in_frame': 3, 'filtered_count': 0, 'final_count': 3,
+            'in_region_count': 3,
+            'drawing_number': '',   # 未抽出 → ファイル名にフォールバック
+            'region_label_counts': {'RACK1': {'R001': 3}},
+        },
+    }
+
+
+def test_build_region_label_summary_aggregates_across_files():
+    from utils.region_detector import build_region_label_summary
+    results = _make_multi_file_region_results()
+    files, rows = build_region_label_summary(results)
+
+    assert files == [('a.dxf', 'EE6492-039-38A'), ('b.dxf', 'b')]
+
+    by_label = {r['ラベル']: r for r in rows if r['領域名'] == 'RACK1'}
+    assert by_label['R001']['合計個数'] == 8
+    assert by_label['R001']['per_file'] == {'a.dxf': 5, 'b.dxf': 3}
+    assert by_label['GND']['合計個数'] == 1
+    assert by_label['GND']['per_file'].get('b.dxf', 0) == 0   # file2 に無いラベルは0扱い
+
+
+def test_create_region_excel_output_label_summary_sheet():
+    """「領域別ラベル一覧」シートが「領域一覧」の直後に作成され、指定のヘッダー・
+    データ配置になっていること。ファイルに存在しないラベルの個数は 0 で埋まる。"""
+    results = _make_multi_file_region_results()
+    wb = _load_wb(create_region_excel_output(results))
+
+    assert wb.sheetnames.index('領域別ラベル一覧') == wb.sheetnames.index('領域一覧') + 1
+
+    ws = wb['領域別ラベル一覧']
+    header = [c.value for c in ws[1]]
+    assert header == ['領域名', 'ラベル', '合計個数', '図番', '個数', '図番', '個数']
+
+    rows = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        rows[row[1]] = row  # ラベルをキーに
+
+    r001 = rows['R001']
+    assert r001[0] == 'RACK1'
+    assert r001[2] == 8
+    assert r001[3] == 'EE6492-039-38A' and r001[4] == 5
+    assert r001[5] == 'b' and r001[6] == 3
+
+    gnd = rows['GND']
+    assert gnd[2] == 1
+    assert gnd[3] == 'EE6492-039-38A' and gnd[4] == 1
+    assert gnd[5] == 'b' and gnd[6] == 0   # file2 に無いラベルは 0

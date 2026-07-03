@@ -802,8 +802,27 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, r
 # 7. 領域名称候補（Tier付き優先順位）
 # ============================================================
 
+def _is_letter(ch):
+    """半角・全角の英字（大小問わず）かどうかを判定する。
+
+    手書き回路DXFには領域名がすべて全角（例: `ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ`）で
+    書かれている図面があり、ASCII 限定判定では英字0字とみなされ
+    `name_min_letters` 条件で常に除外されていた（`is_single_uppercase_letter()`
+    の全角対応と同じ考え方）。
+    """
+    if ch.isascii() and ch.isalpha():
+        return True
+    return 'Ａ' <= ch <= 'Ｚ' or 'ａ' <= ch <= 'ｚ'
+
+
+def _is_lowercase_letter(ch):
+    if 'a' <= ch <= 'z':
+        return True
+    return 'ａ' <= ch <= 'ｚ'
+
+
 def _count_letters(s):
-    return sum(1 for ch in s if ch.isascii() and ch.isalpha())
+    return sum(1 for ch in s if _is_letter(ch))
 
 
 def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
@@ -814,7 +833,7 @@ def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
     """
     if _count_letters(t) < min_letters:
         return False
-    if exclude_lowercase and any('a' <= ch <= 'z' for ch in t):
+    if exclude_lowercase and any(_is_lowercase_letter(ch) for ch in t):
         return False
     up = t.upper()
     if any(term.upper() in up for term in (exclude_terms or ())):

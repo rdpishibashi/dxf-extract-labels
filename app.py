@@ -444,11 +444,11 @@ def app():
             st.markdown(f"### {fname}")
             dn_parts = []
             if analysis.get('main_drawing_number'):
-                dn_parts.append(f"図番 {analysis['main_drawing_number']}")
+                dn_parts.append(f"図番：{analysis['main_drawing_number']}")
             if analysis.get('title'):
-                dn_parts.append(f"タイトル {analysis['title']}")
+                dn_parts.append(f"タイトル：{analysis['title']}")
             if analysis.get('subtitle'):
-                dn_parts.append(f"サブタイトル {analysis['subtitle']}")
+                dn_parts.append(f"サブタイトル：{analysis['subtitle']}")
             if dn_parts:
                 st.caption("　/　".join(dn_parts))
             err = analysis.get('error')

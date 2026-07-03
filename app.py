@@ -195,10 +195,13 @@ def app():
     # ファイルアップロード
     # ============================================================
     st.subheader("DXFファイルのアップロード")
+    if 'uploader_version' not in st.session_state:
+        st.session_state['uploader_version'] = 0
     uploaded_files = st.file_uploader(
         "DXFファイルを選択してください（複数可）",
         type="dxf",
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key=f"dxf_uploader_{st.session_state['uploader_version']}",
     )
 
     if not uploaded_files:
@@ -582,6 +585,8 @@ def app():
                         except Exception:
                             pass
 
+                st.session_state['download_done'] = False
+
             st.rerun()
         except Exception as e:
             handle_error(e)
@@ -641,24 +646,31 @@ def app():
                     rows.append(row)
                 st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
+        download_done = st.session_state.get('download_done', False)
+
         st.write(f"出力ファイル：**{st.session_state.output_filename}**")
-        st.download_button(
+        downloaded = st.download_button(
             label="Excelをダウンロード",
             data=st.session_state.excel_result,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
+            type="secondary" if download_done else "primary",
         )
+        if downloaded and not download_done:
+            st.session_state['download_done'] = True
+            st.rerun()
 
-        if st.button("🔄 新しい抽出を開始", key="restart_button"):
+        if st.button("🔄 新しい抽出を開始", key="restart_button",
+                     type="primary" if download_done else "secondary"):
             for key in ['excel_result', 'output_filename', 'processing_settings',
                         'results', 'is_region_mode', 'region_analyses',
-                        'region_results_summary']:
+                        'region_results_summary', 'download_done']:
                 if key in st.session_state:
                     del st.session_state[key]
             for k in list(st.session_state.keys()):
                 if isinstance(k, str) and k.startswith('rc_'):
                     del st.session_state[k]
+            st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()
 
 

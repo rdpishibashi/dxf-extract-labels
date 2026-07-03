@@ -874,6 +874,38 @@ def _top_edges(polygon, level_tol=2.0):
     return segs
 
 
+def _notch_bottom_edges(polygon, level_tol=2.0, probe=0.5):
+    """最下端レベル以外にある下向き横エッジ群 [(x0,x1,y), ...] を返す。
+
+    「下向き」＝エッジ中点の probe 直上が領域内・probe 直下が領域外。
+    長方形では常に空（下向きエッジは最下端のみ）で、L字型等の非矩形ポリゴンの
+    切り欠き部の横エッジだけが該当する。実例: EE6491-039-04A.dxf の
+    SYSTEM I/F BOX。FLAT CABLE 部と一体のL字型領域で、名称ラベルが切り欠き部の
+    下向きエッジ（最下端ではない）の直上にあるため、最下端エッジ（Tier1）と
+    上端エッジ（Tier2）だけを見る従来の探索では候補から漏れていた。
+    `region_name_candidates` が Tier2 スキャンにこのエッジ群を加えて使う。
+    """
+    min_y = min(p[1] for p in polygon)
+    segs = []
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        if abs(y1 - y2) >= 0.5:
+            continue
+        my = (y1 + y2) / 2.0
+        if abs(my - min_y) <= level_tol:
+            continue  # 最下端レベルは Tier1（_bottom_edges）の担当
+        x0, x1s = min(x1, x2), max(x1, x2)
+        if x1s - x0 < probe:  # 極小エッジは内外判定が不安定なため除外
+            continue
+        mx = (x0 + x1s) / 2.0
+        if (_point_in_polygon((mx, my + probe), polygon)
+                and not _point_in_polygon((mx, my - probe), polygon)):
+            segs.append((x0, x1s, my))
+    return segs
+
+
 def _vertical_edges_at_extreme(polygon, side, level_tol=2.0):
     """ポリゴンの左端(side='left')または右端(side='right')にある縦エッジ群
     [(y0,y1,x), ...] を返す（図面全体が90°回転している場合の下端/上端の代替）。"""
@@ -988,7 +1020,9 @@ def region_name_candidates(
         dist_fn = _dist_to_vertical_edge
     else:
         tier1_edges = _bottom_edges(polygon)
-        tier2_edges = _top_edges(polygon)
+        # Tier2 は上端エッジに加え、L字型等の切り欠き部の下向きエッジも対象にする
+        # （切り欠き直上の名称ラベルを拾う。詳細は _notch_bottom_edges docstring）。
+        tier2_edges = _top_edges(polygon) + _notch_bottom_edges(polygon)
         dist_fn = _dist_to_bottom_edge
 
     tiered = []

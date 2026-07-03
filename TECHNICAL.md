@@ -154,8 +154,14 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 ### 処理フロー（UI）
 
 ```
-「領域を検出」ボタン  → analyze_dxf_regions() を各ファイルに実行（session_state 保持）
-「領域の確認」セクション → 各領域の名称候補をチェックボックス（ラジオ動作）で確定。
+「領域を検出」ボタン  → analyze_dxf_regions() を各ファイルに実行（session_state 保持）。
+                        「図面番号・タイトル・サブタイトルを抽出」オプションが ON の
+                        場合は extract_labels() も各ファイルに実行し、図番・タイトル・
+                        サブタイトルを analysis dict に格納（v1.5.27）
+「領域の確認」セクション → ファイル名見出しの直下に「図番：… / タイトル：… /
+                           サブタイトル：…」をキャプション表示（上記オプション ON 時
+                           のみ。空の項目は省略）。
+                           各領域の名称候補をチェックボックス（ラジオ動作）で確定。
                            他の図面/領域で選択済みの名称があればそれをデフォルト選択
                            （初回描画時のみ）。チェック後にユーザーが選択を変更した
                            場合も、同じ名称候補を持つ他領域（候補2件以上の領域に限る）
@@ -282,7 +288,10 @@ extract_btn_type = "secondary" if extract_done else "primary"
 
    - **Tier 1**: 下端横エッジ最近傍（図面全体が90°回転している場合は右端/左端の
      いずれか一方の縦エッジ。後述）。
-   - **Tier 2**: 上端横エッジ最近傍（回転時はもう一方の縦エッジ）。
+   - **Tier 2**: 上端横エッジ最近傍（回転時はもう一方の縦エッジ）。**v1.5.27 から、
+     L字型等の非矩形ポリゴンの「切り欠き部の下向き横エッジ」（最下端レベル以外に
+     ある、直上が領域内・直下が領域外のエッジ。`_notch_bottom_edges`）も Tier2 の
+     探索対象に含める**（後述）。
    - **Tier 3**: Tier1/2 のいずれでも候補がゼロの場合のみ、ポリゴン境界全体
      （任意の辺）への最短距離でフォールバック評価する（`_dist_point_to_polygon`）。
 
@@ -353,6 +362,28 @@ extract_btn_type = "secondary" if extract_done else "primary"
    等しい場合はどちらからも除去しない）。`default_name`/`default_name_tier` も
    除去結果に応じて再計算する。MPD RACK2 のような重ならない複数ピース合算は
    `regions_overlap()` が False のため対象外で、同名共有は引き続き機能する。
+
+   **L字型領域の切り欠き下向きエッジを Tier2 に追加（`_notch_bottom_edges`、
+   v1.5.27）**: Tier1/2 の従来実装は「最下端レベル（最小y ±2.0）の横エッジ」
+   「最上端レベル（最大y ±2.0）の横エッジ」しか探索対象にしないため、L字型領域で
+   名称ラベルが切り欠き部の下向き横エッジ（最下端ではない）の直上に置かれている
+   場合に候補から漏れていた（ユーザー報告: `EE6491-039-04A.dxf` の
+   `SYSTEM I/F BOX`。FLAT CABLE 部と一体のL字型領域〔71.3%〕で、ラベルは切り欠き
+   水平線 LINE #7DE〔y=124.76、最下端は y=13.24〕の直上 3.5 にあり、上端近傍の
+   ケーブル型式 `FLAT CABLE` が default になっていた）。`_notch_bottom_edges()`
+   （最下端レベル以外の横エッジのうち、エッジ中点の 0.5 直上が領域内・直下が
+   領域外のもの）を追加し、Tier2 スキャンの対象を `_top_edges() +
+   _notch_bottom_edges()` に拡張した。長方形では下向きエッジは最下端にしか
+   存在しないため挙動不変。この図面では最下端エッジ近傍（Tier1）の
+   `HEATER CTRL B.D` がいったん default になるが、同名をより近距離で持つ
+   ネスト領域が `_remove_overlap_claimed_candidates`（v1.5.14、前述）で候補を
+   引き取るため、最終的な default は `SYSTEM I/F BOX` になる。また「同名複数
+   ピース合算」の保持条件（手順5）はこの候補整理**前**の default 名で集計される
+   ため、ネストされた `HEATER CTRL B.D` 領域（8.5%、単独では閾値未満）の保持も
+   従来どおり機能する。全サンプル137件の before/after 比較で、default 名の変化は
+   同型パターンの改善2件（`EE6097-039-06C`/`EE6321-039-06A`: ケーブル型式→
+   `SYSTEM I/F BOX`）のみであることを確認済み。回帰テスト
+   `test_lshape_notch_bottom_edge_label_is_candidate` が本ケースを固定する。
 7. **ラベル所属**（`assign_region_labels`）: 点-多角形内包判定。1ラベルが複数領域に
    所属可。出力の「領域」列に所属領域名（複数はカンマ区切り、領域外は空欄）。
 
@@ -471,7 +502,7 @@ extract_btn_type = "secondary" if extract_done else "primary"
 | `is_region_mode` | bool | 最後に実行したのが領域モードか通常モードかの区別 |
 | `processing_settings` | dict | 適用したオプション設定 |
 | `results` | dict | ファイル名 → (labels, info) の辞書（通常モード）|
-| `region_analyses` | dict | ファイル名 → `analyze_dxf_regions()` 結果（領域モード）|
+| `region_analyses` | dict | ファイル名 → `analyze_dxf_regions()` 結果（領域モード）。「図面番号・タイトル・サブタイトルを抽出」ON で検出した場合は `main_drawing_number`/`title`/`subtitle` キーを追加格納（v1.5.27）|
 | `saved_region_cfg` | dict | 「設定完了」で確定した領域検出詳細設定 |
 | `region_cfg_is_saved` | bool | 詳細設定が保存済みかどうか（✅キャプション表示制御）|
 | `rc_<fname>_<reg_id>_<i>` | bool | 領域名チェックボックスの選択状態（ラジオ動作）|
@@ -546,6 +577,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.27 | 2件の変更。**(1) 「領域の確認」に図番・タイトル・サブタイトルを表示**: 「図面番号・タイトル・サブタイトルを抽出」オプションが ON のとき、「領域を検出」実行時に `extract_labels()` も各ファイルへ実行して図番・タイトル・サブタイトルを `region_analyses` の analysis dict（`main_drawing_number`/`title`/`subtitle` キー）に格納し、「領域の確認」のファイル名見出し直下に「図番：… / タイトル：… / サブタイトル：…」を `st.caption`（「図面枠 x 個 / 検出領域 x 個」と同じ書式）で表示する。空の項目は省略。オプション OFF 時は抽出も表示もしない（解析コストをかけない）。**(2) L字型領域の切り欠き下向きエッジ直上の名称ラベルを候補化**（`_notch_bottom_edges`）: `EE6491-039-04A.dxf` の `SYSTEM I/F BOX`（FLAT CABLE 部と一体のL字型領域）が検出されないとユーザー報告。名称候補の Tier1/2 探索が最下端/最上端レベルの横エッジしか見ておらず、切り欠き部の下向きエッジ（LINE #7DE）直上のラベルが候補から漏れていた（詳細は「検出アルゴリズム」手順6）。`_notch_bottom_edges()` を追加し Tier2 スキャン対象を `_top_edges() + _notch_bottom_edges()` に拡張。長方形領域では挙動不変。全サンプル137件の before/after 比較で default 名の変化は同型パターンの改善2件（`EE6097-039-06C`/`EE6321-039-06A`）のみ。当初案の「下端/上端エッジ全体の向きベース化＋同名グループ集計へのTier1候補追加」は差分が37ファイルに及んだため破棄し、Tier2への追加のみに絞り込んだ。`sample-dxf/EE6491-039-04A.dxf` を追加、回帰テスト `test_lshape_notch_bottom_edge_label_is_candidate` を追加、全80件 pass。DXF-viewer の `core/region_detector.py` にも `_notch_bottom_edges` を移植済み（併せて viewer 未移植だった `_remove_overlap_claimed_candidates`〔v1.5.14〕も移植。default_name のみ照合する Search Boundary で `SYSTEM I/F BOX` がヒットするために必要）。 |
 | v1.5.26 | 「領域を検出」「ラベルを抽出」「Excelをダウンロード」ボタンの配色をユーザー指定仕様に合わせて修正。従来は3ボタンとも `type` 未指定（secondary=白）または `width='stretch'`（Excelダウンロードのみ横幅いっぱい）で、有効な次操作が視覚的に分からなかった。`session_state`（`region_analyses`・`excel_result` の有無）から各ボタンの `type` を動的に計算するよう変更（詳細は「ボタンの色分け」節）。Excelダウンロードボタンは `width='stretch'` を外し、他の主要ボタンと同程度の横幅で左寄せ表示に変更。処理ブロック末尾に `st.rerun()` を追加し、クリック直後に新しい色が即座に反映されるよう修正（`st.rerun()` が無いと、ボタンウィジェットが処理より前に描画されるため次の操作まで旧い色が残って見えるユーザー報告あり）。`~/.claude/skills/streamlit/SKILL.md` にも本パターン（状態に応じた動的な `type` 計算・`st.rerun()` の必要性）を汎用ノウハウとして追記。 |
 | v1.5.25 | 出力ファイル（Excel）のラベル・矩形領域名称を**すべて半角に正規化して集計・記録**するよう変更（ユーザー指定の仕様）。`common_utils.py` に `normalize_width()`（NFKC 正規化。全角英数字・記号・スペース→半角、かな・漢字は不変）を追加。**集計への適用**: 通常モードは `create_excel_output()` が Counter 集計前にラベルを正規化（半角 `CN1` と全角 `ＣＮ１` が同一行に合算される）、Invalid シートの機器符号も正規化。領域付きモードは `build_region_results()` が集計前にラベルと確定領域名を正規化（各ファイルシートの `ラベル`/`領域` 列・`領域一覧` の `領域名` 列すべて半角）。**判定への適用**: `filter_non_circuit_symbols()`・`validate_circuit_symbols()` は判定のみ半角相当で行い（返り値の表記は不変）、全角の機器符号（`ＣＮ１` 等）が「機器符号のみ抽出」フィルタで欠落したり妥当性チェックで誤って invalid になる問題を解消。整合のため `region_detector._is_valid_name_candidate()` の除外語・keep-term（`RACK`）照合も半角相当に変更（全角 `ＲＡＣＫ１` が機器符号除外と keep-term のすき間に落ちるのを防止）。UI の領域名候補表示は図面の表記（全角のまま）を維持し、出力時のみ正規化する。実データ検証: `EE6492-039-38A.dxf`（全角のみの図面）で領域付き/通常（フィルタON/OFF・妥当性チェックON）の全出力に全角が残らないことを openpyxl で確認。回帰テスト6件追加（`test_excel_output.py`）、全79件 pass。 |
 | v1.5.24 | 領域名候補の英字判定（`_count_letters`）を**全角英字（Ａ-Ｚ, ａ-ｚ）にも対応**するよう修正。従来は `ch.isascii() and ch.isalpha()` で ASCII 半角英字のみを英字とみなしていたため、領域名ラベルが全角文字のみで書かれた図面（例: `ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ`）では `name_min_letters`(3) 条件を常に満たせず、名称候補が一切検出できなかった。ユーザー報告（`EE6492-039-38A.dxf` で「以前は検出できていたのに検出できなくなった」）を受け調査したところ、`git worktree` で region 検出機能導入時点（v1.4.0, `094ff71`）まで遡っても同じ結果であり、退行ではなく機能導入当初からの未対応（全角のみラベルへの非対応）と判明。`_is_letter()`（全角対応の英字判定）・`_is_lowercase_letter()`（全角小文字も含めた小文字判定、`exclude_lowercase` フィルタで使用）を追加し、`is_single_uppercase_letter()`（`extract_labels.py`）で既に採用されていた全角対応の考え方を踏襲。`sample-dxf/problems/EE6492-039-38A.dxf` を追加、回帰テスト `test_zenkaku_only_label_is_valid_name_candidate` を追加、全74件 pass 確認。DXF-viewer の `core/region_detector.py` にも同じ修正を移植済み。 |
@@ -587,4 +619,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-07-03 (v1.5.26)
+最終更新: 2026-07-03 (v1.5.27)

@@ -403,7 +403,18 @@ def app():
                 for uf in uploaded_files:
                     tmp = save_uploadedfile(uf)
                     try:
-                        analyses[uf.name] = analyze_dxf_regions(tmp, region_cfg)
+                        analysis = analyze_dxf_regions(tmp, region_cfg)
+                        if extract_all_option:
+                            _, dn_info = extract_labels(
+                                tmp,
+                                extract_drawing_numbers_option=True,
+                                extract_title_option=True,
+                                original_filename=uf.name,
+                            )
+                            analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
+                            analysis['title'] = dn_info.get('title')
+                            analysis['subtitle'] = dn_info.get('subtitle')
+                        analyses[uf.name] = analysis
                     finally:
                         try:
                             os.unlink(tmp)
@@ -431,6 +442,15 @@ def app():
             if file_idx > 0:
                 st.divider()
             st.markdown(f"### {fname}")
+            dn_parts = []
+            if analysis.get('main_drawing_number'):
+                dn_parts.append(f"図番 {analysis['main_drawing_number']}")
+            if analysis.get('title'):
+                dn_parts.append(f"タイトル {analysis['title']}")
+            if analysis.get('subtitle'):
+                dn_parts.append(f"サブタイトル {analysis['subtitle']}")
+            if dn_parts:
+                st.caption("　/　".join(dn_parts))
             err = analysis.get('error')
             n_frames = len(analysis.get('frames', []))
             regions = analysis.get('regions', [])

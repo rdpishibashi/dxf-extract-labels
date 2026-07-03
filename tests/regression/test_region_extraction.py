@@ -524,6 +524,7 @@ def test_horizontal_sibling_union_parent_removed():
 
 
 POLLUTED = _find_sample('EE6892-039-05B.dxf')  # レベル汚染で2枠目が不成立→4パス目で回復
+ZENKAKU = _find_sample('EE6492-039-38A.dxf')  # 領域名ラベルが全角文字のみで書かれている
 
 
 @pytest.mark.skipif(not os.path.exists(POLLUTED), reason='サンプル DXF が無い')
@@ -568,3 +569,21 @@ def test_level_pollution_fallback_not_triggered_on_schematic():
     a = analyze_dxf_regions(_find_sample('EE6333-610-07A.dxf'))
     assert a['error'] is None
     assert a['regions'] == []
+
+
+@pytest.mark.skipif(not os.path.exists(ZENKAKU), reason='サンプル DXF が無い')
+def test_zenkaku_only_label_is_valid_name_candidate():
+    """領域名ラベルが全角文字のみ（例: `ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ`）で書かれた
+    図面でも名称候補が検出されること。
+
+    `_count_letters()` が ASCII 限定判定だったため、全角文字しか含まないラベルは
+    英字0字とみなされ `name_min_letters`(3) 条件で常に除外されていた
+    （ユーザー報告: 以前は正しく検出できていたはずが検出できなくなったとの指摘を
+    受け調査。実際には region 検出機能導入時点(v1.4.0)から一貫してこの挙動で、
+    退行ではなく既存の未対応だったことを git bisect で確認）。"""
+    a = analyze_dxf_regions(ZENKAKU)
+    assert a['error'] is None
+    assert len(a['frames']) == 4
+    assert len(a['regions']) == 4
+    for r in a['regions']:
+        assert r['default_name'] == 'ＳＹＳＴＥＭ Ｉ／Ｆ ＢＯＸ'

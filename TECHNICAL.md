@@ -110,6 +110,10 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 
 シート名: 元ファイル名の拡張子除去、31 文字以内に切り詰め。
 
+**半角正規化（v1.5.25）**: 出力ファイルに記録するラベル・機器符号・矩形領域名称は
+すべて `normalize_width()`（NFKC）で半角へ統一してから集計する。図面上の表記が
+半角（`CN1`）でも全角（`ＣＮ１`）でも同じ語は同じ行に合算される（かな・漢字は不変）。
+
 ### Invalid シートのカラム仕様
 
 | カラム | 内容 |
@@ -517,6 +521,8 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.5.25 | 出力ファイル（Excel）のラベル・矩形領域名称を**すべて半角に正規化して集計・記録**するよう変更（ユーザー指定の仕様）。`common_utils.py` に `normalize_width()`（NFKC 正規化。全角英数字・記号・スペース→半角、かな・漢字は不変）を追加。**集計への適用**: 通常モードは `create_excel_output()` が Counter 集計前にラベルを正規化（半角 `CN1` と全角 `ＣＮ１` が同一行に合算される）、Invalid シートの機器符号も正規化。領域付きモードは `build_region_results()` が集計前にラベルと確定領域名を正規化（各ファイルシートの `ラベル`/`領域` 列・`領域一覧` の `領域名` 列すべて半角）。**判定への適用**: `filter_non_circuit_symbols()`・`validate_circuit_symbols()` は判定のみ半角相当で行い（返り値の表記は不変）、全角の機器符号（`ＣＮ１` 等）が「機器符号のみ抽出」フィルタで欠落したり妥当性チェックで誤って invalid になる問題を解消。整合のため `region_detector._is_valid_name_candidate()` の除外語・keep-term（`RACK`）照合も半角相当に変更（全角 `ＲＡＣＫ１` が機器符号除外と keep-term のすき間に落ちるのを防止）。UI の領域名候補表示は図面の表記（全角のまま）を維持し、出力時のみ正規化する。実データ検証: `EE6492-039-38A.dxf`（全角のみの図面）で領域付き/通常（フィルタON/OFF・妥当性チェックON）の全出力に全角が残らないことを openpyxl で確認。回帰テスト6件追加（`test_excel_output.py`）、全79件 pass。 |
+| v1.5.24 | 領域名候補の英字判定（`_count_letters`）を**全角英字（Ａ-Ｚ, ａ-ｚ）にも対応**するよう修正。従来は `ch.isascii() and ch.isalpha()` で ASCII 半角英字のみを英字とみなしていたため、領域名ラベルが全角文字のみで書かれた図面（例: `ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ`）では `name_min_letters`(3) 条件を常に満たせず、名称候補が一切検出できなかった。ユーザー報告（`EE6492-039-38A.dxf` で「以前は検出できていたのに検出できなくなった」）を受け調査したところ、`git worktree` で region 検出機能導入時点（v1.4.0, `094ff71`）まで遡っても同じ結果であり、退行ではなく機能導入当初からの未対応（全角のみラベルへの非対応）と判明。`_is_letter()`（全角対応の英字判定）・`_is_lowercase_letter()`（全角小文字も含めた小文字判定、`exclude_lowercase` フィルタで使用）を追加し、`is_single_uppercase_letter()`（`extract_labels.py`）で既に採用されていた全角対応の考え方を踏襲。`sample-dxf/problems/EE6492-039-38A.dxf` を追加、回帰テスト `test_zenkaku_only_label_is_valid_name_candidate` を追加、全74件 pass 確認。DXF-viewer の `core/region_detector.py` にも同じ修正を移植済み。 |
 | v1.5.23 | `analyze_dxf_regions()` に**レベル汚染フォールバック（4パス目）**を追加。既存3パス（LINE→+LWPOLYLINE→横ギャップ橋渡し）の後に、「閾値超えゼロの図面枠」が存在する場合に限り、スパン単位レベル（グループ全体の平均でなく、そのスパンを構成した線分だけの平均）で再検出し、名称一致で採用判定する。**発動ゲート条件**: (a) 閾値超えゼロの枠が1枚以上ある かつ (b) 他の枠に閾値超え領域が存在する（全枠ゼロの電源基板回路図等では発動しない）。**採用条件**: 回復した領域の `default_name` が他枠で検出済みの名称と一致する枠のみ置き換える（1ファイル複数図面は同名領域が枠をまたぐことを根拠とする）。**根本原因**: `merge_level_tol=0.5` の共線セグメント結合で、スパンが重ならない近接線分（例: 境界線 y=122.00 の 0.37 上にあるコネクタ箱底辺 y=122.37）が同一レベルクラスタに取り込まれてクラスタ平均がシフト（y≈122.25）し、縦線端点（y=122.00）との接続が `face_snap=0.1` 許容を超えて切断→閉路不成立、という「レベル汚染」（Level Contamination）現象。`_merge_collinear` に `span_levels` 引数を追加（スパン単位レベル算出を有効化する）、`DEFAULT_REGION_CONFIG` に `span_level_merge: False`（既定値・通常時は全体平均のまま）を追加。全変更はフォールバックとして閉じており、通常向き3パスへの副作用はゼロ（135サンプルで DIFF 1件のみ＝対象ファイル EE6892-039-05B.dxf の2ページ目 SYSTEM I/F BOX が新規検出）。`sample-dxf/EE6892-039-05B.dxf`（4ページ構成）を追加。回帰テスト `test_level_pollution_fallback_recovers_frame`・`test_level_pollution_fallback_not_triggered_on_schematic` を追加、全73件 pass 確認。 |
 | v1.5.22 | コード品質リファクタリング（ロジック変更なし・出力は不変）。`region_detector.py`: `_label_ok()` クロージャの重複（`region_name_candidates` / `_name_union_parent` / Tier3 フォールバックの3か所）を module-level の `_is_valid_name_candidate()` に統合。`_detect_regions` 内のマジックナンバー `5` を `_FRAME_MARGIN = 5` 定数に、`_trace_faces` 内の `200000` を `_MAX_FACE_NODES = 200_000` 定数に置き換え。5公開 API 関数（`detect_drawing_frames` / `region_name_candidates` / `analyze_dxf_regions` / `assign_region_labels` / `build_region_results`）に Python 3.10+ 型アノテーションを追加。`build_region_results()` を `excel_output.py`（I/O 層）から `region_detector.py`（ビジネスロジック層）へ移動（モジュール責務の正常化）。`app.py` の import 先を更新。`excel_output.py`: モジュール docstring 更新、不要 import 削除（`assign_region_labels` / `filter_non_circuit_symbols`）。回帰テスト 25 件追加（`test_circuit_symbol_filter.py` 16 件・`test_excel_output.py` 9 件）、全 71 件 pass 確認。DXF-viewer の `core/region_detector.py` にも ①-④（`_is_valid_name_candidate` 統合・import 整理）および ⑤（マジックナンバー定数化）を移植済み。 |
 | v1.5.21 | `_name_union_parent()` に `exclude_names` パラメータを追加。`_resolve_union_parents()` で**同一フレーム内**の非親・非子領域がすでに `default_name` として使用している名称を `exclude_names` に渡し、合体親がそれらを誤って取得しないように修正。フレームをまたいだ場合（例: `DE5434-563-03A.dxf` の frame0・frame1 が同じ 'FX CHAMBER' を名乗る）は除外対象にしない（`parent_claimed_by_frame` でフレーム別に管理）。背景: EE6888-631-01A.dxf では frame0 に正規の 'SYSTEM I/F BOX' 領域が2件存在し、その内部の合体親（2件）が v1.5.20 で 'SYSTEM I/F BOX' を誤取得して 'SYSTEM' クエリの一致数が 2→4 に増加する回帰が発生した。修正後、EE6888-631-01A.dxf・EE6492-631-02A.dxf の回帰テストが再 PASS（'SYSTEM' クエリ = 2件）。`DE5434-563-03A.dxf` (5% 閾値) は引き続き frame0・frame1 の合体親がそれぞれ 'FX CHAMBER' を取得して保持。全25件の回帰テスト PASS。DXF-viewer の `core/region_detector.py` にも同じ変更を移植済み。|
@@ -555,4 +561,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 
 ---
 
-最終更新: 2026-07-03 (v1.5.23)
+最終更新: 2026-07-03 (v1.5.25)

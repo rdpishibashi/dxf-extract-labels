@@ -3,15 +3,24 @@
 通常モード（ラベル抽出）・領域付きモード（矩形領域付きラベル抽出）の
 Excel ファイル生成を担う。集計ロジック（build_region_results）は
 region_detector モジュールに実装されている。
+
+出力ファイルに記録するラベル・機器符号は `normalize_width()` で半角へ統一する
+（領域付きモードの正規化は build_region_results 側で集計前に行われる）。
 """
 import os
 import pandas as pd
 from io import BytesIO
 from collections import Counter, defaultdict
 
+from .common_utils import normalize_width
+
 
 def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):
-    """通常モードの Excel を生成する。"""
+    """通常モードの Excel を生成する。
+
+    ラベルは半角へ正規化してから集計するため、図面上の表記が半角/全角どちら
+    でも同じ語は同じ行（同じ個数）にまとまる。
+    """
     output = BytesIO()
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -46,10 +55,11 @@ def create_excel_output(results, filter_non_parts, sort_option, validate_ref_des
                 'サブタイトル': info.get('subtitle', '')
             })
 
-            total_counter.update(Counter(labels))
+            total_counter.update(Counter(normalize_width(l) for l in labels))
 
             if validate_ref_designators and info.get('invalid_ref_designators'):
                 for symbol in info['invalid_ref_designators']:
+                    symbol = normalize_width(symbol)
                     invalid_by_symbol[symbol]['count'] += 1
                     if filename not in invalid_by_symbol[symbol]['files']:
                         invalid_by_symbol[symbol]['files'].append(filename)
@@ -84,7 +94,7 @@ def create_excel_output(results, filter_non_parts, sort_option, validate_ref_des
             filename = info.get('filename', os.path.basename(file_path))
             sheet_name = os.path.splitext(filename)[0][:31]
 
-            counter = Counter(labels)
+            counter = Counter(normalize_width(l) for l in labels)
             label_data = [
                 {'ラベル': lbl, '個数': counter[lbl]}
                 for lbl in sorted(counter.keys())

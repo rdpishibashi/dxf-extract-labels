@@ -2,12 +2,24 @@ import os
 import tempfile
 import traceback
 import re
+import unicodedata
 
 def save_uploadedfile(uploadedfile):
     """アップロードされたファイルを一時ディレクトリに保存する"""
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploadedfile.name)[1]) as f:
         f.write(uploadedfile.getbuffer())
         return f.name
+
+def normalize_width(text):
+    """全角の英数字・記号・スペースを半角に折り畳む（NFKC正規化）。
+
+    手書き回路DXFには同じ語が半角(SYSTEM)と全角(ＳＹＳＴＥＭ)で混在するため、
+    出力ファイルの集計・記録は半角へ統一する（ユーザー指定の仕様、2026-07-03）。
+    NFKC はかな・漢字には影響せず、半角カナは全角カナへ正規化される。
+    """
+    if not text:
+        return text
+    return unicodedata.normalize('NFKC', text)
 
 def handle_error(e, show_traceback=True):
     """エラーを適切に処理して表示する"""
@@ -60,9 +72,12 @@ def filter_non_circuit_symbols(labels, debug=False):
     excluded_count = 0
 
     for label in labels:
+        # 全角表記の機器符号（例: ＣＮ１）も半角相当で判定する。
+        # 返すラベル自体は加工しない（呼び出し元は元のテキストと突き合わせる）。
+        target = normalize_width(label)
         is_match = False
         for pattern in patterns:
-            if re.match(pattern, label):
+            if re.match(pattern, target):
                 is_match = True
                 break
 
@@ -147,9 +162,11 @@ def validate_circuit_symbols(labels):
     invalid_symbols = []
 
     for label in labels:
+        # 全角表記も半角相当で判定する（filter_non_circuit_symbols と同じ方針）。
+        target = normalize_width(label)
         is_valid = False
         for pattern in standard_patterns:
-            if re.match(pattern, label):
+            if re.match(pattern, target):
                 is_valid = True
                 break
 

@@ -171,3 +171,99 @@ def test_create_region_excel_output_empty():
     data = create_region_excel_output({})
     wb = _load_wb(data)
     assert 'Summary' in wb.sheetnames
+
+
+# ---------------------------------------------------------------------------
+# 半角正規化（出力ファイルのラベル・領域名はすべて半角で集計・記録する）
+# ---------------------------------------------------------------------------
+
+def test_normalize_width_basic():
+    from utils.common_utils import normalize_width
+    assert normalize_width('ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ') == 'SYSTEM I/F BOX'
+    assert normalize_width('ＣＮ１') == 'CN1'
+    assert normalize_width('CN1') == 'CN1'
+    assert normalize_width('ラック１') == 'ラック1'   # かなは不変・数字のみ半角化
+    assert normalize_width('') == ''
+
+
+def test_create_excel_output_merges_zenkaku_and_hankaku_labels():
+    """半角 CN1 と全角 ＣＮ１ は同じラベルとして1行に合算される（ユーザー指定、
+    2026-07-03: 出力ファイルのラベルはすべて半角にして集計・記録する）。"""
+    results = {
+        '/tmp/z.dxf': (['CN1', 'ＣＮ１', 'ＣＮ１'], {
+            'filename': 'z.dxf',
+            'total_extracted': 3,
+            'filtered_count': 0,
+            'final_count': 3,
+            'processed_layers': 1,
+            'total_layers': 1,
+            'main_drawing_number': '',
+            'source_drawing_number': '',
+            'title': '',
+            'subtitle': '',
+        }),
+    }
+    wb = _load_wb(create_excel_output(results, False, 'asc', False))
+    ws = wb['Total']
+    rows = {ws.cell(row=i, column=1).value: ws.cell(row=i, column=2).value
+            for i in range(2, ws.max_row + 1)}
+    assert rows == {'CN1': 3}
+
+
+def test_create_excel_output_invalid_sheet_normalized():
+    """Invalid シートの機器符号も半角で記録される。"""
+    results = {
+        '/tmp/y.dxf': (['ＷＥＩＲＤ９９９Ｘ？'], {
+            'filename': 'y.dxf',
+            'total_extracted': 1,
+            'filtered_count': 0,
+            'final_count': 1,
+            'processed_layers': 1,
+            'total_layers': 1,
+            'main_drawing_number': '',
+            'source_drawing_number': '',
+            'title': '',
+            'subtitle': '',
+            'invalid_ref_designators': ['ＷＥＩＲＤ９９９Ｘ？'],
+        }),
+    }
+    wb = _load_wb(create_excel_output(results, False, 'asc', True))
+    ws = wb['Invalid']
+    assert ws.cell(row=2, column=1).value == 'WEIRD999X?'
+
+
+def test_build_region_results_normalizes_names_and_labels():
+    """build_region_results は領域名・ラベルとも半角へ正規化して集計する
+    （合成データによる単体テスト。半角と全角の同一ラベルが1行に合算される）。"""
+    from utils.region_detector import build_region_results
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analyses = {
+        'z.dxf': {
+            'frames': [(0, 100, 0, 100)],
+            'labels': [('ＣＮ１', 10, 10), ('CN1', 20, 20), ('ＧＮＤ', 30, 30)],
+            'regions': [{
+                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
+                'name_candidates': [(2.5, 'ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ')],
+            }],
+        }
+    }
+    selections = {('z.dxf', 0): ['ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ']}
+    rr = build_region_results(analyses, selections, 'asc')
+    data = rr['z.dxf']
+    assert [r['name'] for r in data['named']] == ['SYSTEM I/F BOX']
+    rows = {r['ラベル']: (r['個数'], r['領域']) for r in data['rows']}
+    assert rows == {
+        'CN1': (2, 'SYSTEM I/F BOX'),   # 全角・半角が合算される
+        'GND': (1, 'SYSTEM I/F BOX'),
+    }
+
+
+def test_zenkaku_circuit_symbol_recognized_by_filter():
+    """全角の機器符号（ＣＮ１）も filter_non_circuit_symbols が機器符号として
+    認識する（判定は半角相当・返り値は元の表記のまま）。"""
+    from utils.common_utils import filter_non_circuit_symbols, validate_circuit_symbols
+    matched, excluded = filter_non_circuit_symbols(['ＣＮ１', 'これは説明文'])
+    assert matched == ['ＣＮ１']
+    assert excluded == 1
+    # 妥当性チェックも半角相当で判定（ＣＮ１ は CN1 として妥当）
+    assert validate_circuit_symbols(['ＣＮ１']) == []

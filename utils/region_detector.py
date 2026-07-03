@@ -28,7 +28,7 @@ from collections import Counter, defaultdict
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
-from .common_utils import filter_non_circuit_symbols
+from .common_utils import filter_non_circuit_symbols, normalize_width
 
 
 # ============================================================
@@ -835,7 +835,10 @@ def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
         return False
     if exclude_lowercase and any(_is_lowercase_letter(ch) for ch in t):
         return False
-    up = t.upper()
+    # 除外語・keep-term の照合は半角相当で行う（機器符号フィルタ側も
+    # normalize_width で判定するため、全角 ＲＡＣＫ１ 等が「機器符号として
+    # 除外されるのに keep-term は素通り」という不整合を防ぐ）。
+    up = normalize_width(t).upper()
     if any(term.upper() in up for term in (exclude_terms or ())):
         return False
     if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
@@ -1762,6 +1765,10 @@ def build_region_results(
 
     name_selections: {(filename, region_id): [チェックされた名称, ...]}
     filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
+
+    出力（集計・記録）の領域名・ラベルは `normalize_width()` で半角へ統一する。
+    図面上の表記が半角/全角どちらでも同じ語は同じ行に集計され、全角の機器符号も
+    正規化後に機器符号フィルタで正しく判定される。
     """
     region_results = {}
     for fname, analysis in analyses.items():
@@ -1777,12 +1784,13 @@ def build_region_results(
                 if not nm:
                     continue
                 named.append({
-                    'polygon': reg['polygon'], 'name': nm,
+                    'polygon': reg['polygon'], 'name': normalize_width(nm),
                     'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
                 })
                 named_region_ids.add(reg['id'])
 
-        all_labels = analysis.get('labels', [])
+        all_labels = [(normalize_width(t), x, y)
+                      for (t, x, y) in analysis.get('labels', [])]
 
         if filter_circuit_only:
             texts = [l[0] for l in all_labels]

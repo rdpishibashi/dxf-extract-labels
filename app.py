@@ -629,17 +629,20 @@ def app():
     # ============================================================
     # 未確定ラベル（機器符号（候補）パイプラインのみ、選択完了までの間表示）
     # ============================================================
-    # 列幅（文字数の目安: 採用=4字, ラベル=8字, 個数=3字）。テーブル全体も固定幅にし、
-    # st.container(horizontal=True) の折り返しでブラウザー幅に応じてテーブルの
-    # 横並び数が自動調整されるようにする。
-    UNCLASSIFIED_COL_WIDTH_APPROVE = 90
-    UNCLASSIFIED_COL_WIDTH_LABEL = 160
-    UNCLASSIFIED_COL_WIDTH_COUNT = 70
+    # 列幅（文字数の目安: 採用=4字, ラベル=8字, 個数=3字の75%幅）。テーブル全体も
+    # 固定幅にし、st.container(horizontal=True) の折り返しでブラウザー幅に応じて
+    # テーブルの横並び数（狭ければ2列、広ければ3列、さらに広ければ4列…）が
+    # 自動調整されるようにする。テーブル数は固定せず、テーブルあたりの行数を
+    # 固定してデータ量に応じた個数のテーブルを生成することで、折り返しが
+    # ブラウザー幅いっぱいまで機能する。
+    UNCLASSIFIED_COL_WIDTH_APPROVE = 68   # 元90pxの75%
+    UNCLASSIFIED_COL_WIDTH_LABEL = 120    # 元160pxの75%
+    UNCLASSIFIED_COL_WIDTH_COUNT = 53     # 元70pxの75%
     UNCLASSIFIED_TABLE_WIDTH = (
         UNCLASSIFIED_COL_WIDTH_APPROVE + UNCLASSIFIED_COL_WIDTH_LABEL
         + UNCLASSIFIED_COL_WIDTH_COUNT + 20
     )
-    UNCLASSIFIED_TABLE_GROUPS = 3
+    UNCLASSIFIED_ROWS_PER_TABLE = 10
 
     if st.session_state.get('ref_pending'):
         ref_pending = st.session_state['ref_pending']
@@ -668,10 +671,13 @@ def app():
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
-            # 固定幅のテーブルを横3列に分けて表示する。st.container(horizontal=True)
-            # によりブラウザー幅が足りない場合は自動的に次の行へ折り返す。
-            chunk = -(-len(review_rows) // UNCLASSIFIED_TABLE_GROUPS)  # 切り上げ除算
-            groups = [review_rows[i:i + chunk] for i in range(0, len(review_rows), chunk)]
+            # 固定幅・固定行数のテーブルに分けて表示する。st.container(horizontal=True)
+            # によりブラウザー幅に収まる個数だけ横に並び、収まらない分は自動的に
+            # 次の行へ折り返す（ブラウザーが広いほど多くのテーブルが横に並ぶ）。
+            groups = [
+                review_rows[i:i + UNCLASSIFIED_ROWS_PER_TABLE]
+                for i in range(0, len(review_rows), UNCLASSIFIED_ROWS_PER_TABLE)
+            ]
             dfs = []
             with st.container(horizontal=True):
                 for suffix, rows in enumerate(groups):

@@ -1,4 +1,4 @@
-"""filter_non_circuit_symbols / validate_circuit_symbols の回帰テスト。
+"""filter_non_circuit_symbols の回帰テスト。
 
 common_utils.py の機器符号フィルタリングロジックを直接検証する。
 パターン定義（正規表現）の変更が既存の判定結果を変えた場合にすぐ気づけるよう、
@@ -10,7 +10,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.common_utils import filter_non_circuit_symbols, validate_circuit_symbols  # noqa: E402
+from utils.common_utils import filter_non_circuit_symbols  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -100,32 +100,6 @@ def test_return_order_preserved():
     assert matched == ['CN3', 'R10', 'FB']
 
 
-# ---------------------------------------------------------------------------
-# validate_circuit_symbols — 標準パターン非準拠の機器符号を返す
-# ---------------------------------------------------------------------------
-
-def test_validate_all_valid():
-    """標準パターンに準拠したラベルは空リストを返す"""
-    labels = ['CB001', 'R10', 'C1', 'L5', 'Q2', 'U1A', 'SW1', 'CN3']
-    invalid = validate_circuit_symbols(labels)
-    assert invalid == []
-
-
-def test_validate_detects_invalid():
-    """標準パターン外のラベルが報告される"""
-    labels = ['CB001', 'UNKNOWN_SYMBOL', 'R10', 'WEIRD123XYZ']
-    invalid = validate_circuit_symbols(labels)
-    assert 'UNKNOWN_SYMBOL' in invalid
-    assert 'WEIRD123XYZ' in invalid
-    assert 'CB001' not in invalid
-    assert 'R10' not in invalid
-
-
-def test_validate_empty():
-    assert validate_circuit_symbols([]) == []
-
-
-def test_validate_circuit_breaker_variants():
-    labels = ['CB001', 'MCCB001', 'NFB001', 'ELB(CB)001']
-    invalid = validate_circuit_symbols(labels)
-    assert invalid == []
+# 機器符号妥当性チェック（旧 validate_circuit_symbols）は v1.6.0 で削除。
+# 「未確定ラベル」UI での人手選択に置き換わったため、標準パターン非準拠を
+# 自動検出する機能は不要になった。

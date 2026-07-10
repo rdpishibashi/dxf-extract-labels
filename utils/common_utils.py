@@ -92,89 +92,6 @@ def filter_non_circuit_symbols(labels, debug=False):
 
     return filtered_labels, excluded_count
 
-def validate_circuit_symbols(labels):
-    """
-    機器符号の妥当性をチェックし、適合しないものを返す
-
-    Args:
-        labels: チェック対象のラベルリスト
-
-    Returns:
-        list: 適合しない機器符号のリスト
-    """
-    # 標準的な機器符号パターンの定義
-    standard_patterns = [
-        # CB系（遮断器）
-        r'^CB\d+$',                 # CB001, CB999
-        r'^ELB\(CB\)\d+$',         # ELB(CB)001
-        r'^MCCB\d+$',              # MCCB001
-        r'^NFB\d+$',               # NFB001
-
-        # 抵抗器
-        r'^R\d*$',                 # R, R1, R10
-
-        # コンデンサ
-        r'^C\d*$',                 # C, C1, C10
-
-        # インダクタ
-        r'^L\d*$',                 # L, L1, L10
-
-        # トランジスタ
-        r'^Q\d*$',                 # Q, Q1, Q10
-
-        # IC・集積回路
-        r'^U\d*[A-Z]*$',           # U, U1, U10A
-
-        # 電源関連
-        r'^PSW?\d*$',              # PS, PSW, PS1, PSW1
-        r'^DC\d*$',                # DC, DC1
-        r'^AC\d*$',                # AC, AC1
-
-        # モータ・機械系
-        r'^M\d*[A-Z]*$',           # M, M1, M1A
-        r'^MOT\d*$',               # MOT, MOT1
-
-        # リレー・接触器
-        r'^K\d*[A-Z]*$',           # K, K1, K1A
-        r'^MC\d*$',                # MC, MC1
-
-        # スイッチ・ボタン
-        r'^S\d*[A-Z]*$',           # S, S1, S1A
-        r'^SW\d*$',                # SW, SW1
-        r'^PB\d*$',                # PB, PB1
-
-        # 表示・ランプ
-        r'^H\d*[A-Z]*$',           # H, H1, H1A
-        r'^HL\d*$',                # HL, HL1
-        r'^PL\d*$',                # PL, PL1
-
-        # 端子・コネクタ
-        r'^X\d*[A-Z]*$',           # X, X1, X14A
-        r'^CN\d*$',                # CN, CN1
-        r'^TB\d*$',                # TB, TB1
-
-        # その他
-        r'^F\d*$',                 # F, F1 (ヒューズ)
-        r'^T\d*$',                 # T, T1 (変圧器)
-        r'^A\d*$',                 # A, A1
-    ]
-
-    invalid_symbols = []
-
-    for label in labels:
-        # 全角表記も半角相当で判定する（filter_non_circuit_symbols と同じ方針）。
-        target = normalize_width(label)
-        is_valid = False
-        for pattern in standard_patterns:
-            if re.match(pattern, target):
-                is_valid = True
-                break
-
-        if not is_valid:
-            invalid_symbols.append(label)
-
-    return invalid_symbols
-
 def process_circuit_symbol_labels(labels, filter_non_parts=False, validate_ref_designators=False, debug=False):
     """
     ラベルに対して機器符号処理を統合的に実行する
@@ -182,14 +99,16 @@ def process_circuit_symbol_labels(labels, filter_non_parts=False, validate_ref_d
     Args:
         labels: 処理対象のラベルリスト
         filter_non_parts: 機器符号以外のラベルをフィルタリングするかどうか
-        validate_ref_designators: 機器符号の妥当性をチェックするかどうか
+        validate_ref_designators: 未使用（機器符号妥当性チェック機能は v1.6.0 で削除）。
+            `utils/extract_labels.py`（DXF-diff-manager とバイト一致コピーを維持する
+            共有ファイル）がこの引数を渡し続けるため、シグネチャ互換のためだけに残す。
         debug: デバッグ情報を表示するかどうか
 
     Returns:
         dict: 処理結果を含む辞書
             - 'labels': 処理後のラベルリスト
             - 'filtered_count': フィルタリングで除外されたラベル数
-            - 'invalid_ref_designators': 適合しない機器符号のリスト（妥当性チェック有効時のみ）
+            - 'invalid_ref_designators': 常に空リスト（機能削除済み、互換のため維持）
     """
     result = {
         'labels': labels.copy(),
@@ -202,10 +121,5 @@ def process_circuit_symbol_labels(labels, filter_non_parts=False, validate_ref_d
         filtered_labels, filtered_count = filter_non_circuit_symbols(labels, debug)
         result['labels'] = filtered_labels
         result['filtered_count'] = filtered_count
-
-    # 機器符号妥当性チェック（フィルタリング後のラベルに対して実行）
-    if validate_ref_designators and filter_non_parts:
-        invalid_designators = validate_circuit_symbols(result['labels'])
-        result['invalid_ref_designators'] = invalid_designators
 
     return result

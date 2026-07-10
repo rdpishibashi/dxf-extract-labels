@@ -33,18 +33,14 @@ def test_create_excel_output_returns_bytes():
     results = {
         '/tmp/foo.dxf': (['R10', 'CN3', 'R10'], {
             'filename': 'foo.dxf',
-            'total_extracted': 3,
-            'filtered_count': 0,
             'final_count': 3,
-            'processed_layers': 1,
-            'total_layers': 2,
             'main_drawing_number': 'EE0001-001-01A',
             'source_drawing_number': '',
             'title': 'TEST',
             'subtitle': '',
         }),
     }
-    data = create_excel_output(results, False, 'asc', False)
+    data = create_excel_output(results, 'asc')
     assert isinstance(data, bytes)
     assert len(data) > 0
 
@@ -53,68 +49,39 @@ def test_create_excel_output_sheet_names():
     results = {
         '/tmp/circuit.dxf': (['R10', 'CN3'], {
             'filename': 'circuit.dxf',
-            'total_extracted': 2,
-            'filtered_count': 0,
             'final_count': 2,
-            'processed_layers': 1,
-            'total_layers': 1,
             'main_drawing_number': '',
             'source_drawing_number': '',
             'title': '',
             'subtitle': '',
         }),
     }
-    wb = _load_wb(create_excel_output(results, False, 'asc', False))
+    wb = _load_wb(create_excel_output(results, 'asc'))
     assert 'Summary' in wb.sheetnames
     assert 'Total' in wb.sheetnames
     assert 'circuit' in wb.sheetnames   # 拡張子なし
 
 
-def test_create_excel_output_filter_mode():
-    """filter_non_parts=True でも例外なく完走する"""
+def test_create_excel_output_sort_option_desc():
+    """sort_option='desc' でも例外なく完走する（フィルタ・妥当性チェックは v1.6.0 で削除済み）"""
     results = {
         '/tmp/x.dxf': (['R10', 'CHAMBER', 'CN3'], {
             'filename': 'x.dxf',
-            'total_extracted': 3,
-            'filtered_count': 1,
-            'final_count': 2,
-            'processed_layers': 1,
-            'total_layers': 1,
+            'final_count': 3,
             'main_drawing_number': '',
             'source_drawing_number': '',
             'title': '',
             'subtitle': '',
         }),
     }
-    data = create_excel_output(results, True, 'desc', False)
+    data = create_excel_output(results, 'desc')
     wb = _load_wb(data)
     assert 'Summary' in wb.sheetnames
 
 
-def test_create_excel_output_invalid_sheet():
-    """validate_ref_designators=True かつ invalid ラベルがある場合 Invalid シートが作られる"""
-    results = {
-        '/tmp/y.dxf': (['R10', 'WEIRD'], {
-            'filename': 'y.dxf',
-            'total_extracted': 2,
-            'filtered_count': 0,
-            'final_count': 2,
-            'processed_layers': 1,
-            'total_layers': 1,
-            'main_drawing_number': '',
-            'source_drawing_number': '',
-            'title': '',
-            'subtitle': '',
-            'invalid_ref_designators': ['WEIRD'],
-        }),
-    }
-    wb = _load_wb(create_excel_output(results, False, 'asc', True))
-    assert 'Invalid' in wb.sheetnames
-
-
 def test_create_excel_output_empty_results():
     """ファイルが0件でも例外なく返る"""
-    data = create_excel_output({}, False, 'asc', False)
+    data = create_excel_output({}, 'asc')
     wb = _load_wb(data)
     assert 'Summary' in wb.sheetnames
 
@@ -192,44 +159,18 @@ def test_create_excel_output_merges_zenkaku_and_hankaku_labels():
     results = {
         '/tmp/z.dxf': (['CN1', 'ＣＮ１', 'ＣＮ１'], {
             'filename': 'z.dxf',
-            'total_extracted': 3,
-            'filtered_count': 0,
             'final_count': 3,
-            'processed_layers': 1,
-            'total_layers': 1,
             'main_drawing_number': '',
             'source_drawing_number': '',
             'title': '',
             'subtitle': '',
         }),
     }
-    wb = _load_wb(create_excel_output(results, False, 'asc', False))
+    wb = _load_wb(create_excel_output(results, 'asc'))
     ws = wb['Total']
     rows = {ws.cell(row=i, column=1).value: ws.cell(row=i, column=2).value
             for i in range(2, ws.max_row + 1)}
     assert rows == {'CN1': 3}
-
-
-def test_create_excel_output_invalid_sheet_normalized():
-    """Invalid シートの機器符号も半角で記録される。"""
-    results = {
-        '/tmp/y.dxf': (['ＷＥＩＲＤ９９９Ｘ？'], {
-            'filename': 'y.dxf',
-            'total_extracted': 1,
-            'filtered_count': 0,
-            'final_count': 1,
-            'processed_layers': 1,
-            'total_layers': 1,
-            'main_drawing_number': '',
-            'source_drawing_number': '',
-            'title': '',
-            'subtitle': '',
-            'invalid_ref_designators': ['ＷＥＩＲＤ９９９Ｘ？'],
-        }),
-    }
-    wb = _load_wb(create_excel_output(results, False, 'asc', True))
-    ws = wb['Invalid']
-    assert ws.cell(row=2, column=1).value == 'WEIRD999X?'
 
 
 def test_build_region_results_normalizes_names_and_labels():
@@ -261,12 +202,10 @@ def test_build_region_results_normalizes_names_and_labels():
 def test_zenkaku_circuit_symbol_recognized_by_filter():
     """全角の機器符号（ＣＮ１）も filter_non_circuit_symbols が機器符号として
     認識する（判定は半角相当・返り値は元の表記のまま）。"""
-    from utils.common_utils import filter_non_circuit_symbols, validate_circuit_symbols
+    from utils.common_utils import filter_non_circuit_symbols
     matched, excluded = filter_non_circuit_symbols(['ＣＮ１', 'これは説明文'])
     assert matched == ['ＣＮ１']
     assert excluded == 1
-    # 妥当性チェックも半角相当で判定（ＣＮ１ は CN1 として妥当）
-    assert validate_circuit_symbols(['ＣＮ１']) == []
 
 
 # ---------------------------------------------------------------------------

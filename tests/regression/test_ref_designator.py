@@ -132,6 +132,15 @@ def test_split_candidates():
     assert unclassified == ['GND', 'TITLE']
 
 
+def test_split_candidates_drops_non_pattern_matches():
+    """3パターン（Patterns シート）のいずれにも一致しない文字列（説明文・記号等）は
+    候補にも未確定ラベルにも分類されない（2026-07-10 ユーザー指摘のバグ修正）。"""
+    candidates, unclassified = ref_designator.split_candidates(
+        ['R10', 'GND', '(2/5)', '(-039-01)2/3', 'これは説明文'])
+    assert candidates == ['R10']
+    assert unclassified == ['GND']
+
+
 def test_summarize_labels_counts_and_sorts():
     result = ref_designator.summarize_labels(['R10', 'R10', 'CN3'])
     assert result == [('CN3', 1), ('R10', 2)]
@@ -223,6 +232,26 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
                            'KURIHARA', 'MORIOKA', 'KANAI'} & all_texts
     assert not titleblock_leakage, f'titleblock content leaked: {titleblock_leakage}'
     assert data['total_in_frame'] > 0
+
+
+@pytest.mark.parametrize('sample_name', [
+    'EE6868-500-01C.dxf',
+    'EE6097-039-06C.dxf',
+])
+def test_unclassified_labels_all_match_base_pattern(sample_name):
+    """未確定ラベルは Patterns（3パターン）に一致したものだけ。パターンに一致しない
+    説明文・注記（例 `(2/5)`、`(-039-01)2/3`）は候補にも未確定にも現れない
+    （2026-07-10 ユーザー指摘のバグ修正の回帰検証）。"""
+    path = _find_sample(sample_name)
+    if not path:
+        pytest.skip(f'sample DXF not found: {sample_name}')
+
+    data = ref_designator.extract_ref_designator_data(
+        path, frame_lineweight=100, original_filename=sample_name)
+    for text, _x, _y in data['unclassified_labels']:
+        judgment = ref_designator._judgment_text(text)
+        assert ref_designator.CANDIDATE_PATTERN.match(judgment), (
+            f'{text!r} in unclassified_labels does not match CANDIDATE_PATTERN')
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():

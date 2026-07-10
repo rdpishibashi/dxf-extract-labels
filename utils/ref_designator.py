@@ -120,32 +120,50 @@ def _judgment_text(normalized_label: str) -> str:
     return normalized_label[:idx] if idx >= 0 else normalized_label
 
 
+def _classify_judgment(judgment: str) -> str:
+    """判定用文字列（括弧より前）を 'candidate' / 'excluded' / 'no_match' に分類する。
+
+    'no_match' は3パターン（Patterns シート）のいずれにも一致しない文字列
+    （説明文・記号・注記等）。reference_designator_candidates.xlsx の
+    ReferenceDesignators シート（Patterns 一致のみを集めたもの）に元々含まれない
+    ため、機器符号（候補）にも未確定ラベルにも分類しない（2026-07-10 ユーザー指摘。
+    未確定ラベルは「Patterns には一致したが除外パターンに該当したもの」＝
+    RemainingUnclassified シートと同じ母集団に限る）。
+    """
+    if not judgment or not CANDIDATE_PATTERN.match(judgment):
+        return 'no_match'
+    if judgment in EXCLUSION_EXACT:
+        return 'excluded'
+    if any(rx.match(judgment) for rx in EXCLUSION_REGEXES):
+        return 'excluded'
+    return 'candidate'
+
+
 def is_ref_designator_candidate(label: str) -> bool:
     """正規化済みラベル（表示用、括弧を含みうる）が機器符号（候補）かどうかを返す。
 
     判定は括弧より前の部分に対して行う。呼び出し側は `normalize_label()` で
     正規化した文字列を渡すこと（内部では再正規化しない）。
     """
-    judgment = _judgment_text(label)
-    if not judgment or not CANDIDATE_PATTERN.match(judgment):
-        return False
-    if judgment in EXCLUSION_EXACT:
-        return False
-    if any(rx.match(judgment) for rx in EXCLUSION_REGEXES):
-        return False
-    return True
+    return _classify_judgment(_judgment_text(label)) == 'candidate'
 
 
 def split_candidates(
     labels: List[str],
 ) -> Tuple[List[str], List[str]]:
-    """正規化済みラベルのリストを (機器符号候補, 未確定ラベル) に分ける。"""
+    """正規化済みラベルのリストを (機器符号候補, 未確定ラベル) に分ける。
+
+    未確定ラベルは Patterns（3パターン）に一致し除外パターンに該当したものだけ。
+    3パターンいずれにも一致しない文字列はどちらにも含めず捨てる
+    （`_classify_judgment` 参照）。
+    """
     candidates = []
     unclassified = []
     for label in labels:
-        if is_ref_designator_candidate(label):
+        status = _classify_judgment(_judgment_text(label))
+        if status == 'candidate':
             candidates.append(label)
-        else:
+        elif status == 'excluded':
             unclassified.append(label)
     return candidates, unclassified
 
@@ -341,13 +359,21 @@ def normalize_labels(
 def classify_labels(
     labels: List[Tuple[str, float, float]],
 ) -> Tuple[List[Tuple[str, float, float]], List[Tuple[str, float, float]]]:
-    """正規化済み (text,x,y) リストを (機器符号候補, 未確定ラベル) に分ける。"""
+    """正規化済み (text,x,y) リストを (機器符号候補, 未確定ラベル) に分ける。
+
+    未確定ラベルは Patterns（3パターン）に一致し除外パターンに該当したものだけ
+    （reference_designator_candidates.xlsx の RemainingUnclassified シートと同じ
+    母集団＝ ReferenceDesignators〔Patterns一致〕から除外分類されたもの、の
+    "裏側"＝除外された側）。3パターンいずれにも一致しない文字列（説明文・記号等、
+    例 `(2/5)`）はどちらにも分類せず捨てる（2026-07-10 ユーザー指摘）。
+    """
     candidates = []
     unclassified = []
     for item in labels:
-        if is_ref_designator_candidate(item[0]):
+        status = _classify_judgment(_judgment_text(item[0]))
+        if status == 'candidate':
             candidates.append(item)
-        else:
+        elif status == 'excluded':
             unclassified.append(item)
     return candidates, unclassified
 

@@ -652,29 +652,39 @@ def app():
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
-            df = pd.DataFrame(unclassified_rows)
-            df.insert(0, '採用', False)
-            edited_frames[fname] = st.data_editor(
-                df,
-                key=f"unclassified_editor_{fname}",
-                column_config={
-                    '採用': st.column_config.CheckboxColumn('採用', default=False),
-                    'ラベル': st.column_config.TextColumn('ラベル', disabled=True),
-                    '個数': st.column_config.NumberColumn('個数', disabled=True),
-                },
-                hide_index=True,
-                width='stretch',
-            )
+            # 余白を減らすため横2列（左右）に分けて表示する
+            half = (len(unclassified_rows) + 1) // 2
+            halves = [unclassified_rows[:half], unclassified_rows[half:]]
+            cols = st.columns(2)
+            dfs = []
+            for suffix, (rows, col) in zip('LR', zip(halves, cols)):
+                if not rows:
+                    continue
+                d = pd.DataFrame(rows)
+                d.insert(0, '採用', False)
+                with col:
+                    edited = st.data_editor(
+                        d,
+                        key=f"unclassified_editor_{fname}_{suffix}",
+                        column_config={
+                            '採用': st.column_config.CheckboxColumn('採用', default=False),
+                            'ラベル': st.column_config.TextColumn('ラベル', disabled=True),
+                            '個数': st.column_config.NumberColumn('個数', disabled=True),
+                        },
+                        hide_index=True,
+                        width='stretch',
+                    )
+                dfs.append(edited)
+            edited_frames[fname] = dfs
 
         if st.button("選択完了", type="primary"):
             try:
                 with st.spinner("選択内容を反映しています..."):
                     approved_by_file = {}
                     for fname in ref_pending:
-                        edited_df = edited_frames.get(fname)
                         approved = set()
-                        if edited_df is not None:
-                            approved = set(edited_df.loc[edited_df['採用'] == True, 'ラベル'])
+                        for edited_df in edited_frames.get(fname, []):
+                            approved |= set(edited_df.loc[edited_df['採用'] == True, 'ラベル'])
                         approved_by_file[fname] = approved
 
                     if st.session_state.get('ref_pending_mode') == 'region':

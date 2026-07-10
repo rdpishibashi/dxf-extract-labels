@@ -629,6 +629,18 @@ def app():
     # ============================================================
     # 未確定ラベル（機器符号（候補）パイプラインのみ、選択完了までの間表示）
     # ============================================================
+    # 列幅（文字数の目安: 採用=4字, ラベル=8字, 個数=3字）。テーブル全体も固定幅にし、
+    # st.container(horizontal=True) の折り返しでブラウザー幅に応じてテーブルの
+    # 横並び数が自動調整されるようにする。
+    UNCLASSIFIED_COL_WIDTH_APPROVE = 90
+    UNCLASSIFIED_COL_WIDTH_LABEL = 160
+    UNCLASSIFIED_COL_WIDTH_COUNT = 70
+    UNCLASSIFIED_TABLE_WIDTH = (
+        UNCLASSIFIED_COL_WIDTH_APPROVE + UNCLASSIFIED_COL_WIDTH_LABEL
+        + UNCLASSIFIED_COL_WIDTH_COUNT + 20
+    )
+    UNCLASSIFIED_TABLE_GROUPS = 3
+
     if st.session_state.get('ref_pending'):
         ref_pending = st.session_state['ref_pending']
         st.subheader("未確定ラベル")
@@ -656,29 +668,32 @@ def app():
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
-            # 余白を減らすため横2列（左右）に分けて表示する
-            half = (len(review_rows) + 1) // 2
-            halves = [review_rows[:half], review_rows[half:]]
-            cols = st.columns(2)
+            # 固定幅のテーブルを横3列に分けて表示する。st.container(horizontal=True)
+            # によりブラウザー幅が足りない場合は自動的に次の行へ折り返す。
+            chunk = -(-len(review_rows) // UNCLASSIFIED_TABLE_GROUPS)  # 切り上げ除算
+            groups = [review_rows[i:i + chunk] for i in range(0, len(review_rows), chunk)]
             dfs = []
-            for suffix, (rows, col) in zip('LR', zip(halves, cols)):
-                if not rows:
-                    continue
-                d = pd.DataFrame(rows)
-                d.insert(0, '採用', False)
-                with col:
+            with st.container(horizontal=True):
+                for suffix, rows in enumerate(groups):
+                    if not rows:
+                        continue
+                    d = pd.DataFrame(rows)
+                    d.insert(0, '採用', False)
                     edited = st.data_editor(
                         d,
                         key=f"unclassified_editor_{fname}_{suffix}",
                         column_config={
-                            '採用': st.column_config.CheckboxColumn('採用', default=False),
-                            'ラベル': st.column_config.TextColumn('ラベル', disabled=True),
-                            '個数': st.column_config.NumberColumn('個数', disabled=True),
+                            '採用': st.column_config.CheckboxColumn(
+                                '採用', default=False, width=UNCLASSIFIED_COL_WIDTH_APPROVE),
+                            'ラベル': st.column_config.TextColumn(
+                                'ラベル', disabled=True, width=UNCLASSIFIED_COL_WIDTH_LABEL),
+                            '個数': st.column_config.NumberColumn(
+                                '個数', disabled=True, width=UNCLASSIFIED_COL_WIDTH_COUNT),
                         },
                         hide_index=True,
-                        width='stretch',
+                        width=UNCLASSIFIED_TABLE_WIDTH,
                     )
-                dfs.append(edited)
+                    dfs.append(edited)
             edited_frames[fname] = dfs
 
         if st.button("選択完了", type="primary"):

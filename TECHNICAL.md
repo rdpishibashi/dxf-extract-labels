@@ -757,7 +757,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0
 ための独立した Streamlit ツールを `tools/` 配下に置く。deploy 対象の本体アプリの
 一部ではなく、開発者がパターンを見直す際に使うローカル/内部向けツール。
 
-### `reference_designator_analyzer.py`（v1.6.0）
+### `reference_designator_analyzer.py`（v1.6.0、確定パターンは v1.6.2）
 
 ```
 streamlit run tools/reference_designator_analyzer.py
@@ -765,9 +765,9 @@ streamlit run tools/reference_designator_analyzer.py
 
 複数の `extracted_labels*.xlsx`（本体アプリの「機器符号（候補）以外も抽出」ON で
 出力した Excel。`Total` シートにラベル・個数を持つ）を入力とし、
-`reference_designator_candidates.xlsx` と同じ5シート構成（`ReferenceDesignators` /
-`Patterns` / `PatternSignatures` / `ExclusionPatterns` / `RemainingUnclassified`）の
-分析用 Excel を生成する。
+`reference_designator_candidates.xlsx` と同じ6シート構成（`ReferenceDesignators` /
+`Patterns` / `PatternSignatures` / `ExclusionPatterns` / `ConfirmedPatterns` /
+`RemainingUnclassified`）の分析用 Excel を生成する。
 
 - **入力**: `st.file_uploader`（複数可）とローカルフォルダパス（1行1つ、glob パターン・
   再帰検索の有無を指定可）を併用できる。
@@ -777,6 +777,20 @@ streamlit run tools/reference_designator_analyzer.py
   `EXCLUSION_EXACT_CATEGORIES` / `classify_judgment_detailed()` / `matched_pattern_name()`
   を公開 API として追加し（v1.6.0、動作は不変）、本ツールと本体アプリが常に同じ判定結果を
   返すようにしている。
+- **確定パターン**（`ConfirmedPatterns` シート、v1.6.2、`ExclusionPatterns` と
+  `RemainingUnclassified` の間に配置）: `RemainingUnclassified`（Patterns一致・除外
+  非該当の残り）のうち、確実に Reference Designator と判定してよい形として
+  ユーザーと確定した4パターン（`CONFIRMED_PATTERN_CATEGORIES`、本ツール専用・
+  `utils/ref_designator.py` にはまだ持ち込んでいない＝本体アプリの判定は未変更）:
+  (1) 英大文字繰り返し+数字2桁または3桁（`^[A-Z]+[0-9]{2,3}$`）、
+  (2) 同+英大文字1字（`^[A-Z]+[0-9]{2,3}[A-Z]$`）、
+  (3) 英大文字繰り返し-英大文字繰り返し+数字繰り返し・末尾に続きなし
+  （`^[A-Z]+-[A-Z]+[0-9]+$`）、
+  (4) A,B以外の英大文字1字+数字の繰り返し・桁数不問（`^[C-Z][0-9]+$`）。
+  A,B の除外はこの(4)のみに適用（(1)(2)には適用しない。A1/B12等は既存の
+  `terminal_row_letter_digit` 除外パターンで確定パターン判定より前に除外される
+  ため実害はない）。一致したラベルは `RemainingUnclassified` から除かれ、
+  `ReferenceDesignators` シートの `確定カテゴリ`/`確定ステータス` 列に記録される。
 - **パターン表記**（`PatternSignatures` シート）: 数字列の前の部分はそのまま、直後の数字は
   桁数表記（1桁→`1`、2桁→`12`…）、後ろに続きがなければ `+1*` に集約、続きがあれば
   `+` の後に英字繰返し=`A*`／数字繰返し=`1*`／ハイフンはそのまま、というノーテーション
@@ -785,7 +799,9 @@ streamlit run tools/reference_designator_analyzer.py
 - **本体アプリとの違い（既知の制限）**: 本ツールは集計済みラベル一覧（座標情報なし）
   だけを見るため、本体アプリが行う図面枠・図面情報欄の構造的除外はできない。人名は
   個別リストを持たない設計のため、図面情報欄由来のラベル（人名等）がパターン一致・
-  除外非該当のまま `RemainingUnclassified` に残ることがある。
+  除外非該当のまま `RemainingUnclassified` に残ることがある。確定パターン・パターン
+  表記はいずれも本ツール専用の分析ロジックで、本体アプリ（`app.py`／
+  `utils/ref_designator.py`）の実際の抽出結果には影響しない。
 
 回帰テスト: `tests/regression/test_reference_designator_analyzer.py`（集計・分類・
 Excel出力の配線を検証。パターン/除外リストの定義自体は `test_ref_designator.py` 側で検証）。
@@ -810,6 +826,7 @@ Excel出力の配線を検証。パターン/除外リストの定義自体は `
 
 | バージョン | 変更内容 |
 |-----------|---------|
+| v1.6.2 | `tools/reference_designator_analyzer.py` に「確定パターン」機能を追加。`RemainingUnclassified`（Patterns一致・除外非該当の残り）のうち、確実に Reference Designator と判定してよい4パターン（英字+数字2-3桁／同+英字1字／英字-英字+数字・末尾なし／A,B以外の単一英字+数字桁数不問）をユーザーと確定し、新シート `ConfirmedPatterns` を `ExclusionPatterns` と `RemainingUnclassified` の間に追加。一致したラベルは `RemainingUnclassified` から除外され（実データで残存 7,072→3,682 件に半減）、`ReferenceDesignators` シートに `確定カテゴリ`/`確定ステータス` 列を追加して記録する。A,B の除外は「単一英字+数字」パターンのみに適用（複数文字許容パターンには適用しない。A1/B12等は既存の除外パターンで先に除外されるため実害なし）。本体アプリ（`utils/ref_designator.py`）の判定ロジックは変更していない（分析専用）。回帰テスト13件追加、全163件pass。 |
 | v1.6.1 | `reference_designator_candidates.xlsx` を作成していたその場限りのスクリプトを、`tools/reference_designator_analyzer.py`（Streamlit ツール）として恒久化。複数ファイルのアップロード・ローカルフォルダパス指定（glob パターン・再帰検索）に対応し、`extracted_labels*.xlsx` の `Total` シートを集計して同じ5シート構成の分析用 Excel を生成する。パターン・除外リストの定義を独自に持たず `utils/ref_designator.py` を単一の正として参照するため、本体アプリと分析結果が常に一致する設計。これを可能にするため `utils/ref_designator.py` に `PATTERN_CATEGORIES`/`EXCLUSION_REGEX_CATEGORIES`/`EXCLUSION_EXACT_CATEGORIES`/`classify_judgment_detailed()`/`matched_pattern_name()` を新規公開 API として追加（既存の `CANDIDATE_PATTERN`/`EXCLUSION_REGEXES`/`EXCLUSION_EXACT`/`_classify_judgment()` はこれらから導出する形にリファクタリングしたのみで判定結果は不変、全140件の既存回帰テストで確認）。パターン表記（`PatternSignatures` シート）生成ロジックは本体アプリでは使わない分析専用のため `tools/` 側に閉じた。回帰テスト10件追加（`tests/regression/test_reference_designator_analyzer.py`）、全150件pass。 |
 | v1.6.0 | 機器符号（候補）抽出を全面刷新。新モジュール `utils/ref_designator.py` に、実データ調査（`reference_designator_candidates.xlsx` の `Patterns`/`ExclusionPatterns` シート）で確定した3パターン＋除外リスト（正規表現10種＋完全一致5カテゴリ約190語）を実装。**(1) 抽出対象を図面枠内・図面情報欄外に限定**: 図面枠は「領域検出の詳細設定」の「図面枠の太さ」＋`color=7`（lineweight単独だと無関係な線分を拾い誤検出することを`EE6868-500-01C.dxf`で実証: lineweight単独=772本→誤検出31枠、lineweight+color=7=52本→正しく13枠）で検出。図面情報欄・図面枠外の位置記号（A-F,1-8等）は、図面枠線を直接の子に持つ「フォーマットブロック」（実データでは`JZB_*`）のINSERT由来と判明したため、そのブロック由来のTEXT/MTEXTを丸ごと除外する構造的アプローチを採用（人名は増減するため個別リストを持たない）。**(2) パターン判定は括弧より前で行う**（`R10(2.2K)`→`R10`で判定、出力は原文）。**(3) 「未確定ラベル」UI新設**: 機器符号（候補）＝Patternsシートの3パターンに一致し除外パターンに該当しないラベル（`reference_designator_candidates.xlsx`のRemainingUnclassifiedシートと同じ母集団）は自動確定されず、ファイルごとに`st.data_editor`（採用チェック列、初期全OFF、横2列表示）で全件レビュー対象として一覧表示する。「選択完了」でチェックしたものだけが最終的な機器符号としてExcelに出力される。除外パターン該当（GND・TITLE・N24等）・3パターンいずれにも一致しない文字列（`(2/5)`等の記号・注記）はどちらも候補にも未確定ラベルにも一切現れない。`_classify_judgment()`で判定文字列を`candidate`/`excluded`/`no_match`の3値に分類して実現（初版はこの判定が逆転しており、除外語が未確定ラベルに紛れ込む不具合があった。ユーザーが実データ`RemainingUnclassified`シートの中身〔CN1・D1・R1等の"良い"候補のみで、GND・TITLE等の除外語は含まれない〕を根拠に指摘し、2回の修正〔(2/5)等の非パターン一致排除→GND等の除外語排除〕を経て確定、2026-07-10）。**(4) 「機器符号（候補）以外も抽出」ON時は図面枠制限・フィルタなしの全量抽出**（従来の「機器符号以外も抽出」と同じ動作、`process_multiple_dxf_files()`をパラメータ無しで呼ぶだけで実現）。**(5) 機能削除**: 「特定のレイヤーのみを処理する」（未使用のためUI・機能とも削除。`extract_labels.py`自体は変更せず`selected_layers`を渡さなくなるだけ）、「機器符号妥当性チェック」（未確定ラベルUIで人手選択に置き換えたためUI・機能とも削除。`common_utils.py`の`validate_circuit_symbols()`を削除、`process_circuit_symbol_labels()`は`extract_labels.py`とのシグネチャ互換のため`validate_ref_designators`引数のみ残し常に空リストを返す）、Invalidシート。**実装方針**: `extract_labels.py`はDXF-diff-managerとのバイト一致コピー維持のため一切変更しない。`region_detector.py`も既存の領域検出機能（`analyze_dxf_regions`/`assign_region_labels`等）を変更せず、`ref_designator.py`に集計ロジック（`build_named_regions`/`build_region_output`）を複製して領域付きモードに対応（`create_region_excel_output()`はregion_resultsの形を合わせることで無改造のまま流用）。除外パターンのうち「L/N/P+数字」（3相の相線L1-L3・DC電源レールN24/P24等）・「X+英字」（PLC/内部信号名）はユーザーとの協議で確定（`X+数字`はIEC正規の端子/コネクタ記号として除外対象外に区別）。**(6) 「領域を検出」ボタンの配色修正**: 「ラベルを抽出」が開始済み（未確定ラベルの選択待ち＝`ref_pending`セット済み含む）なら「領域を検出」を白にする（従来は`excel_result`の有無のみで判定していたため、既定モードで「領域を検出」せず「ラベルを抽出」しても未確定ラベル選択が完了するまで「領域を検出」が青のままだった。ユーザー報告により修正、詳細は「ボタンの色分け」節）。回帰テスト17件追加（`tests/regression/test_ref_designator.py`。未確定ラベルの3値分類修正分を含む）、既存テストのシグネチャ変更に伴う更新（`create_excel_output`引数削減・Invalidシートテスト削除・`validate_circuit_symbols`テスト削除）、全140件pass。 |
 | v1.5.29 | ユーザー要望2件（「Excelをダウンロード」/「新しい抽出を開始」ボタン）。**(1) ダウンロード後の配色切り替え**: 「Excelをダウンロード」クリック後は同ボタンを白（secondary）、「新しい抽出を開始」を青（primary）に切り替える。`download_done`（session_state、`st.download_button` の戻り値が True になった回にセット）を基準に、既存の「ボタンの色分け」パターン（v1.5.26）と同じ `type` 動的計算＋`st.rerun()`即時反映の方式を踏襲。新規に「ラベルを抽出」が成功した回（`excel_result` を新規セットするタイミング）に `download_done=False` へリセットする。**(2) 「新しい抽出を開始」でアップロード済みファイルもクリア**: 従来は結果関連の session_state のみクリアしていたが、`file_uploader` の `key` を `uploader_version`（カウンタ）でバージョニングし、クリック時にインクリメントしてウィジェットを再生成することでアップロード済みファイル一覧も空に戻すよう変更。レイヤー選択・機器符号フィルタ・ソート順等のオプション設定ウィジェットはクリア対象に含めず、再アップロード後も同じ設定が復元される（ユーザー指定: 「オプション設定は以前のままにしておきたい」）。詳細は「ボタンの色分け」節の追記を参照。ブラウザでの実動作確認はユーザーが実施（この環境では claude-in-chrome から localhost の Streamlit サーバーへ到達できず、`AppTest` も `file_uploader` のシミュレートに非対応のため、コードパスの手動トレースと構文チェック・既存回帰テスト全83件 pass で検証）。 |
@@ -856,4 +873,4 @@ Excel出力の配線を検証。パターン/除外リストの定義自体は `
 
 ---
 
-最終更新: 2026-07-10 (v1.6.1)
+最終更新: 2026-07-10 (v1.6.2)

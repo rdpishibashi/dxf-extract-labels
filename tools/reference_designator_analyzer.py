@@ -158,21 +158,56 @@ def build_pattern_signature(label: str, pattern_name: str):
 
 
 # ============================================================
+# 確定パターン（RemainingUnclassified のうち Reference Designator と確定できるもの）
+# ============================================================
+#
+# ExclusionPatterns で明らかに Reference Designator ではないものを除いた後の
+# 残り（RemainingUnclassified）から、さらに「確実に Reference Designator と
+# 判定してよい」形をユーザーと確定した4パターン（2026-07-10）。本体アプリの
+# 判定ロジック（utils/ref_designator.py の候補/除外判定）はまだ変更せず、
+# 本ツールでの分析・検討専用として tools/ 側に閉じる。
+
+CONFIRMED_PATTERN_CATEGORIES = [
+    ('letters_digits_2or3', re.compile(r'^[A-Z]+[0-9]{2,3}$'),
+     '英大文字繰り返し + 数字2桁または3桁'),
+    ('letters_digits_2or3_letter', re.compile(r'^[A-Z]+[0-9]{2,3}[A-Z]$'),
+     '英大文字繰り返し + 数字2桁または3桁 + 英大文字1字'),
+    ('hyphen_letters_digits_notail', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+$'),
+     '英大文字繰り返し + ハイフン + 英大文字繰り返し + 数字繰り返し（末尾に続きなし）'),
+    ('single_letter_digits_except_ab', re.compile(r'^[C-Z][0-9]+$'),
+     'A,B以外の英大文字1字 + 数字の繰り返し'),
+]
+
+
+def matched_confirmed_category(judgment: str):
+    """判定用文字列（括弧より前）が確定パターンのいずれかに一致すればカテゴリ名を、
+    一致しなければ None を返す。"""
+    for name, rx, _desc in CONFIRMED_PATTERN_CATEGORIES:
+        if rx.match(judgment):
+            return name
+    return None
+
+
+# ============================================================
 # 分類・Excel 生成
 # ============================================================
 
 def classify_aggregated_labels(agg):
     """agg（aggregate_labels の戻り値）を分類する。
 
-    戻り値: (ref_designator_rows, signature_rows, exclusion_impact)
+    戻り値: (ref_designator_rows, signature_rows, exclusion_impact, confirmed_impact)
       ref_designator_rows: [{'ラベル','個数','出現ファイル数','一致パターン',
-                              '除外カテゴリ','除外ステータス'}]（Patterns一致のみ）
+                              '除外カテゴリ','除外ステータス',
+                              '確定カテゴリ','確定ステータス'}]（Patterns一致のみ）
       signature_rows: [{'パターン表記','個数','出現ファイル数','該当ラベル数'}]
       exclusion_impact: {カテゴリ名: {'labels': int, 'count': int}}
+      confirmed_impact: {カテゴリ名: {'labels': int, 'count': int}}
+        （除外されなかったラベルのうち、確定パターンに一致したものだけを集計）
     """
     ref_rows = []
     sig_agg = defaultdict(lambda: {'count': 0, 'files': set(), 'labels': set()})
     exclusion_impact = defaultdict(lambda: {'labels': 0, 'count': 0})
+    confirmed_impact = defaultdict(lambda: {'labels': 0, 'count': 0})
 
     for label, data in agg.items():
         judgment = rd._judgment_text(label)
@@ -180,6 +215,11 @@ def classify_aggregated_labels(agg):
         if status == 'no_match':
             continue
         pattern_name = rd.matched_pattern_name(judgment)
+
+        confirmed_category = None
+        if status == 'candidate':
+            confirmed_category = matched_confirmed_category(judgment)
+
         ref_rows.append({
             'ラベル': label,
             '個数': data['count'],
@@ -187,10 +227,15 @@ def classify_aggregated_labels(agg):
             '一致パターン': pattern_name,
             '除外カテゴリ': category or '',
             '除外ステータス': '確定' if status == 'excluded' else '',
+            '確定カテゴリ': confirmed_category or '',
+            '確定ステータス': '確定' if confirmed_category else '',
         })
         if status == 'excluded':
             exclusion_impact[category]['labels'] += 1
             exclusion_impact[category]['count'] += data['count']
+        elif confirmed_category:
+            confirmed_impact[confirmed_category]['labels'] += 1
+            confirmed_impact[confirmed_category]['count'] += data['count']
 
         sig = build_pattern_signature(judgment, pattern_name)
         if sig:
@@ -205,20 +250,22 @@ def classify_aggregated_labels(agg):
         for sig, d in sig_agg.items()
     ]
     signature_rows.sort(key=lambda r: r['パターン表記'])
-    return ref_rows, signature_rows, exclusion_impact
+    return ref_rows, signature_rows, exclusion_impact, confirmed_impact
 
 
-def build_output_workbook(ref_rows, signature_rows, exclusion_impact):
+def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_impact):
     """reference_designator_candidates.xlsx と同じ構成の Excel を作る。"""
     wb = openpyxl.Workbook()
 
     ws1 = wb.active
     ws1.title = 'ReferenceDesignators'
-    ws1.append(['ラベル', '個数', '出現ファイル数', '一致パターン', '除外カテゴリ', '除外ステータス'])
+    ws1.append(['ラベル', '個数', '出現ファイル数', '一致パターン', '除外カテゴリ', '除外ステータス',
+                '確定カテゴリ', '確定ステータス'])
     for r in ref_rows:
         ws1.append([r['ラベル'], r['個数'], r['出現ファイル数'], r['一致パターン'],
-                    r['除外カテゴリ'], r['除外ステータス']])
-    for col, width in zip('ABCDEF', (20, 10, 14, 26, 26, 12)):
+                    r['除外カテゴリ'], r['除外ステータス'],
+                    r['確定カテゴリ'], r['確定ステータス']])
+    for col, width in zip('ABCDEFGH', (20, 10, 14, 26, 26, 12, 28, 12)):
         ws1.column_dimensions[col].width = width
     ws1.freeze_panes = 'A2'
 
@@ -252,15 +299,24 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact):
         ws4.column_dimensions[col].width = width
     ws4.freeze_panes = 'A2'
 
-    ws5 = wb.create_sheet('RemainingUnclassified')
-    ws5.append(['ラベル', '個数', '出現ファイル数', '一致パターン'])
-    remaining = [r for r in ref_rows if r['除外ステータス'] == '']
-    remaining.sort(key=lambda r: -r['個数'])
-    for r in remaining:
-        ws5.append([r['ラベル'], r['個数'], r['出現ファイル数'], r['一致パターン']])
-    for col, width in zip('ABCD', (20, 10, 14, 20)):
+    ws5 = wb.create_sheet('ConfirmedPatterns')
+    ws5.append(['カテゴリ', 'ステータス', '種別', 'パターン/一覧', '理由', '該当ラベル数', '該当個数合計'])
+    for name, rx, desc in CONFIRMED_PATTERN_CATEGORIES:
+        imp = confirmed_impact.get(name, {'labels': 0, 'count': 0})
+        ws5.append([name, '確定', '正規表現', rx.pattern, desc, imp['labels'], imp['count']])
+    for col, width in zip('ABCDEFG', (30, 10, 12, 60, 55, 12, 14)):
         ws5.column_dimensions[col].width = width
     ws5.freeze_panes = 'A2'
+
+    ws6 = wb.create_sheet('RemainingUnclassified')
+    ws6.append(['ラベル', '個数', '出現ファイル数', '一致パターン'])
+    remaining = [r for r in ref_rows if r['除外ステータス'] == '' and r['確定ステータス'] == '']
+    remaining.sort(key=lambda r: -r['個数'])
+    for r in remaining:
+        ws6.append([r['ラベル'], r['個数'], r['出現ファイル数'], r['一致パターン']])
+    for col, width in zip('ABCD', (20, 10, 14, 20)):
+        ws6.column_dimensions[col].width = width
+    ws6.freeze_panes = 'A2'
 
     output = BytesIO()
     wb.save(output)
@@ -322,8 +378,10 @@ def app():
         else:
             with st.spinner(f"{len(sources)} 個のファイルを処理中..."):
                 agg, per_source_stats = aggregate_labels(sources)
-                ref_rows, signature_rows, exclusion_impact = classify_aggregated_labels(agg)
-                excel_bytes = build_output_workbook(ref_rows, signature_rows, exclusion_impact)
+                ref_rows, signature_rows, exclusion_impact, confirmed_impact = \
+                    classify_aggregated_labels(agg)
+                excel_bytes = build_output_workbook(
+                    ref_rows, signature_rows, exclusion_impact, confirmed_impact)
 
             st.session_state['rda_result'] = {
                 'excel_bytes': excel_bytes,
@@ -332,8 +390,11 @@ def app():
                 'total_labels': len(agg),
                 'pattern_matched': len(ref_rows),
                 'excluded': sum(1 for r in ref_rows if r['除外ステータス']),
-                'remaining': sum(1 for r in ref_rows if not r['除外ステータス']),
+                'confirmed': sum(1 for r in ref_rows if r['確定ステータス']),
+                'remaining': sum(1 for r in ref_rows
+                                  if not r['除外ステータス'] and not r['確定ステータス']),
                 'exclusion_impact': dict(exclusion_impact),
+                'confirmed_impact': dict(confirmed_impact),
                 'signature_count': len(signature_rows),
             }
             st.rerun()
@@ -343,11 +404,12 @@ def app():
         st.subheader("結果")
         st.success(f"{len(result['sources'])} 個のファイルを処理しました。")
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("正規化後ラベル種類数", result['total_labels'])
         m2.metric("Patterns 一致", result['pattern_matched'])
         m3.metric("除外", result['excluded'])
-        m4.metric("残存（機器符号候補）", result['remaining'])
+        m4.metric("確定（機器符号）", result['confirmed'])
+        m5.metric("未分類（要検討）", result['remaining'])
 
         with st.expander("📊 入力ファイル別の内訳", expanded=False):
             import pandas as pd
@@ -358,6 +420,15 @@ def app():
             rows = [
                 {'カテゴリ': name, '該当ラベル数': imp['labels'], '該当個数合計': imp['count']}
                 for name, imp in sorted(result['exclusion_impact'].items(),
+                                         key=lambda kv: -kv[1]['labels'])
+            ]
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+
+        with st.expander("📊 確定パターン別の内訳", expanded=False):
+            import pandas as pd
+            rows = [
+                {'カテゴリ': name, '該当ラベル数': imp['labels'], '該当個数合計': imp['count']}
+                for name, imp in sorted(result['confirmed_impact'].items(),
                                          key=lambda kv: -kv[1]['labels'])
             ]
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)

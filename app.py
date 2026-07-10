@@ -221,9 +221,10 @@ def app():
             "機器符号（候補）以外も抽出",
             value=False,
             help="チェックなし（既定）：図面枠内・図面情報欄外のラベルのうち、機器符号\n"
-                 "（Reference Designator）パターンに一致し除外パターンに該当しないものを\n"
-                 "「未確定ラベル」として一覧表示します。チェックして採用したものだけが\n"
-                 "最終的に機器符号（候補）として出力されます（自動確定ではありません）。\n\n"
+                 "（Reference Designator）パターンに一致し除外パターンに該当しないものが対象。\n"
+                 "確実に機器符号と判定できる形（確定パターン）に一致したものは自動採用され、\n"
+                 "それ以外は「未確定ラベル」として一覧表示し、チェックして採用したものだけが\n"
+                 "最終的に機器符号として出力されます。\n\n"
                  "チェックあり：図面枠外・図面情報欄内も含め、すべてのラベルを"
                  "そのまま抽出します（機器符号（候補）の判定・未確定ラベルの選択は行いません）。\n\n"
                  "【機器符号パターン例】\n"
@@ -632,7 +633,8 @@ def app():
         ref_pending = st.session_state['ref_pending']
         st.subheader("未確定ラベル")
         st.caption(
-            "機器符号（候補）パターンに一致し、除外パターンに該当しなかったラベルです。"
+            "機器符号（候補）パターンに一致し、除外パターンに該当しなかったラベルのうち、"
+            "確定パターン（レビュー不要で自動採用される形）に一致しなかったものです。"
             "Reference Designator として採用するものにチェックを入れ、"
             "「選択完了」を押してください（チェックしたものだけが出力されます）。"
         )
@@ -644,18 +646,19 @@ def app():
             st.markdown(f"### {fname}")
             if data.get('warning'):
                 st.warning(data['warning'])
-            candidate_rows = ref_designator.build_labeled_rows(data['candidate_labels'])
+            review_rows = ref_designator.build_labeled_rows(data['review_labels'])
             st.caption(
                 f"図面枠内ラベル数 {data['total_in_frame']}　/　"
-                f"未確定ラベル（要選択） {len(candidate_rows)} 種"
+                f"確定（自動採用） {len(data['confirmed_labels'])}　/　"
+                f"未確定ラベル（要選択） {len(review_rows)} 種"
             )
-            if not candidate_rows:
+            if not review_rows:
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
             # 余白を減らすため横2列（左右）に分けて表示する
-            half = (len(candidate_rows) + 1) // 2
-            halves = [candidate_rows[:half], candidate_rows[half:]]
+            half = (len(review_rows) + 1) // 2
+            halves = [review_rows[:half], review_rows[half:]]
             cols = st.columns(2)
             dfs = []
             for suffix, (rows, col) in zip('LR', zip(halves, cols)):
@@ -693,8 +696,8 @@ def app():
                         region_results = {}
                         for fname, data in ref_pending.items():
                             approved = approved_by_file[fname]
-                            final_labels = [
-                                item for item in data['candidate_labels']
+                            final_labels = list(data['confirmed_labels']) + [
+                                item for item in data['review_labels']
                                 if item[0] in approved
                             ]
                             analysis = analyses[fname]
@@ -702,7 +705,7 @@ def app():
                             named, _ = ref_designator.build_named_regions(
                                 analysis, name_selections, fname)
                             out = ref_designator.build_region_output(final_labels, named, sort_value)
-                            candidate_texts = {t for t, _x, _y in data['candidate_labels']}
+                            review_texts = {t for t, _x, _y in data['review_labels']}
                             region_results[fname] = {
                                 'rows': out['rows'],
                                 'named': out['named'],
@@ -710,7 +713,7 @@ def app():
                                 'regions_detected': len(analysis.get('regions', [])),
                                 'regions_named': len({r['id'] for r in named}),
                                 'total_in_frame': data['total_in_frame'],
-                                'filtered_count': len(candidate_texts - approved),
+                                'filtered_count': len(review_texts - approved),
                                 'final_count': len(final_labels),
                                 'in_region_count': out['in_region_count'],
                                 'drawing_number': analysis.get('main_drawing_number') or '',
@@ -726,18 +729,18 @@ def app():
                         ref_final = {}
                         for fname, data in ref_pending.items():
                             approved = approved_by_file[fname]
-                            final_labels = [
-                                item for item in data['candidate_labels']
+                            final_labels = list(data['confirmed_labels']) + [
+                                item for item in data['review_labels']
                                 if item[0] in approved
                             ]
                             rows = ref_designator.build_labeled_rows(final_labels)
                             if sort_value == 'desc':
                                 rows.sort(key=lambda r: r['ラベル'], reverse=True)
-                            candidate_texts = {t for t, _x, _y in data['candidate_labels']}
+                            review_texts = {t for t, _x, _y in data['review_labels']}
                             ref_final[fname] = {
                                 'rows': rows,
                                 'total_in_frame': data['total_in_frame'],
-                                'unclassified_count': len(candidate_texts - approved),
+                                'unclassified_count': len(review_texts - approved),
                                 'warning': data.get('warning'),
                                 'main_drawing_number': data.get('main_drawing_number'),
                                 'source_drawing_number': data.get('source_drawing_number'),

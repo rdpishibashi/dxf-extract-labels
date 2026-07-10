@@ -147,7 +147,8 @@ def test_build_output_workbook_sheet_names_and_remaining_sorted_desc():
     wb = openpyxl.load_workbook(BytesIO(data))
     assert wb.sheetnames == [
         'ReferenceDesignators', 'Patterns', 'PatternSignatures',
-        'ExclusionPatterns', 'ConfirmedPatterns', 'RemainingUnclassified',
+        'ExclusionPatterns', 'ConfirmedPatterns', 'ConfirmedDesignators',
+        'RemainingUnclassified',
     ]
 
     remaining = list(wb['RemainingUnclassified'].iter_rows(min_row=2, values_only=True))
@@ -174,12 +175,16 @@ def test_build_output_workbook_confirmed_labels_excluded_from_remaining():
     assert row[5] == 1   # 該当ラベル数
     assert row[6] == 4   # 該当個数合計
 
+    designator_rows = list(wb['ConfirmedDesignators'].iter_rows(min_row=2, values_only=True))
+    assert designator_rows == [('R10', 4, 1, 'letters_digits_2or3')]
+
 
 def test_build_output_workbook_empty_input_does_not_raise():
     data = rda.build_output_workbook([], [], {}, {})
     wb = openpyxl.load_workbook(BytesIO(data))
     assert 'ReferenceDesignators' in wb.sheetnames
     assert 'ConfirmedPatterns' in wb.sheetnames
+    assert 'ConfirmedDesignators' in wb.sheetnames
 
 
 # ---------------------------------------------------------------------------

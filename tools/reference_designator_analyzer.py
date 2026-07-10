@@ -163,29 +163,13 @@ def build_pattern_signature(label: str, pattern_name: str):
 #
 # ExclusionPatterns で明らかに Reference Designator ではないものを除いた後の
 # 残り（RemainingUnclassified）から、さらに「確実に Reference Designator と
-# 判定してよい」形をユーザーと確定した4パターン（2026-07-10）。本体アプリの
-# 判定ロジック（utils/ref_designator.py の候補/除外判定）はまだ変更せず、
-# 本ツールでの分析・検討専用として tools/ 側に閉じる。
+# 判定してよい」形をユーザーと確定した4パターン（2026-07-10）。本体アプリ
+# （`utils/ref_designator.py`）も v1.6.3 でこの4パターンを取り込み、確定した
+# ラベルは「未確定ラベル」UI でのレビューを経ずに自動採用するようになったため、
+# ここでも `utils/ref_designator.py` を単一の正として参照する（独自に定義し直さない）。
 
-CONFIRMED_PATTERN_CATEGORIES = [
-    ('letters_digits_2or3', re.compile(r'^[A-Z]+[0-9]{2,3}$'),
-     '英大文字繰り返し + 数字2桁または3桁'),
-    ('letters_digits_2or3_letter', re.compile(r'^[A-Z]+[0-9]{2,3}[A-Z]$'),
-     '英大文字繰り返し + 数字2桁または3桁 + 英大文字1字'),
-    ('hyphen_letters_digits_notail', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+$'),
-     '英大文字繰り返し + ハイフン + 英大文字繰り返し + 数字繰り返し（末尾に続きなし）'),
-    ('single_letter_digits_except_ab', re.compile(r'^[C-Z][0-9]+$'),
-     'A,B以外の英大文字1字 + 数字の繰り返し'),
-]
-
-
-def matched_confirmed_category(judgment: str):
-    """判定用文字列（括弧より前）が確定パターンのいずれかに一致すればカテゴリ名を、
-    一致しなければ None を返す。"""
-    for name, rx, _desc in CONFIRMED_PATTERN_CATEGORIES:
-        if rx.match(judgment):
-            return name
-    return None
+CONFIRMED_PATTERN_CATEGORIES = rd.CONFIRMED_PATTERN_CATEGORIES
+matched_confirmed_category = rd.matched_confirmed_category
 
 
 # ============================================================
@@ -307,6 +291,16 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
     for col, width in zip('ABCDEFG', (30, 10, 12, 60, 55, 12, 14)):
         ws5.column_dimensions[col].width = width
     ws5.freeze_panes = 'A2'
+
+    ws5b = wb.create_sheet('ConfirmedDesignators')
+    ws5b.append(['ラベル', '個数', '出現ファイル数', '一致パターン'])
+    confirmed_rows = [r for r in ref_rows if r['確定ステータス'] == '確定']
+    confirmed_rows.sort(key=lambda r: -r['個数'])
+    for r in confirmed_rows:
+        ws5b.append([r['ラベル'], r['個数'], r['出現ファイル数'], r['確定カテゴリ']])
+    for col, width in zip('ABCD', (20, 10, 14, 30)):
+        ws5b.column_dimensions[col].width = width
+    ws5b.freeze_panes = 'A2'
 
     ws6 = wb.create_sheet('RemainingUnclassified')
     ws6.append(['ラベル', '個数', '出現ファイル数', '一致パターン'])

@@ -109,10 +109,62 @@ def test_x_plus_digit_is_not_excluded():
     assert ref_designator.is_ref_designator_candidate('X24') is True
 
 
+@pytest.mark.parametrize('label', ['OUT2', 'IN1', 'COM3', 'GND9', 'POWER5'])
+def test_circuit_description_excludes_keyword_plus_single_digit(label):
+    """circuit_description のキーワードは末尾に数字1桁があっても除外対象
+    （例 OUT2, IN1, COM3。2026-07-10 ユーザー指摘）。"""
+    assert ref_designator.is_ref_designator_candidate(label) is False
+    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
+
+
+@pytest.mark.parametrize('label', ['OUT12', 'IN10', 'GND12'])
+def test_circuit_description_two_digit_suffix_not_excluded(label):
+    """数字2桁以上は circuit_description の除外対象外（候補として残る）。"""
+    status, _category = ref_designator.classify_judgment_detailed(label)
+    assert status != 'excluded'
+
+
 def test_person_name_not_excluded_by_content_filter():
     """人名リストは実装に持たない（図面情報枠の構造的除外で対応する設計）ため、
     単体の is_ref_designator_candidate は人名を弾かない。"""
     assert ref_designator.is_ref_designator_candidate('KURIHARA') is True
+
+
+# ---------------------------------------------------------------------------
+# 確定パターン（CONFIRMED_PATTERN_CATEGORIES / matched_confirmed_category /
+# is_confirmed_designator / split_confirmed）— 未確定ラベルUIのレビュー不要判定
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label,expected', [
+    ('R10', 'letters_digits_2or3'),
+    ('R100', 'letters_digits_2or3'),
+    ('CN3', None),                        # 数字1桁・複数文字プレフィックスは不一致
+    ('R10A', 'letters_digits_2or3_letter'),
+    ('CN-IF21', 'hyphen_letters_digits_notail'),
+    ('CN-IF2-1', None),                   # 末尾に続きがあるので対象外
+    ('D1', 'single_letter_digits_except_ab'),
+    ('D1000', 'single_letter_digits_except_ab'),   # 桁数不問
+    ('A1', None),                         # A,Bは対象外（単一英字パターンのみ）
+    ('B12', 'letters_digits_2or3'),       # A,B除外は単一英字パターン限定
+])
+def test_matched_confirmed_category(label, expected):
+    assert ref_designator.matched_confirmed_category(label) == expected
+
+
+def test_is_confirmed_designator_requires_candidate_first():
+    """is_confirmed_designator は機器符号候補であることが前提。除外パターン
+    該当のラベルは、たとえ確定パターンの正規表現に文字列として一致しても
+    確定扱いにしない。"""
+    assert ref_designator.is_confirmed_designator('R10') is True
+    assert ref_designator.is_confirmed_designator('CN3') is False   # 候補だが確定でない
+    assert ref_designator.is_confirmed_designator('GND') is False   # 除外パターン該当
+
+
+def test_split_confirmed():
+    labels = [('R10', 0, 0), ('CN3', 1, 1), ('D100', 2, 2)]
+    confirmed, review = ref_designator.split_confirmed(labels)
+    assert confirmed == [('R10', 0, 0), ('D100', 2, 2)]
+    assert review == [('CN3', 1, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +269,7 @@ def test_build_region_output_counts_and_sorts():
 ])
 def test_titleblock_content_excluded_from_real_sample(sample_name):
     """図面情報欄内のラベル（TITLE/DATE/REVISION/人名等）が機器符号候補
-    （＝未確定ラベルUIでのレビュー対象）に一切現れないこと（構造的除外の検証）。"""
+    （確定＋未確定ラベルUIでのレビュー対象）に一切現れないこと（構造的除外の検証）。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
@@ -225,7 +277,8 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
     assert data['warning'] is None
-    all_texts = {t for t, _x, _y in data['candidate_labels']}
+    all_texts = {t for t, _x, _y in data['confirmed_labels']} | \
+        {t for t, _x, _y in data['review_labels']}
 
     titleblock_leakage = {'TITLE', 'DATE', 'REVISION', 'APPRV', 'CHECK', 'DESIG',
                            'DRAW', 'MARK', 'REMARKS', 'SCALE', 'NAME',
@@ -239,11 +292,12 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     'EE6097-039-06C.dxf',
 ])
 def test_candidate_labels_all_match_base_pattern_and_exclude_known_words(sample_name):
-    """機器符号（候補）＝未確定ラベルUIでのレビュー対象は (1) Patterns（3パターン）に
-    一致したものだけで (2) 除外パターン該当（GND・INPUT・TITLE等）は一切含まれない
-    （2026-07-10 ユーザー指摘のバグ修正の回帰検証。実データで RemainingUnclassified
-    シートの中身を再確認し、GND/INPUT/TITLE等には除外カテゴリが付与されている＝
-    候補に含まれないのが正しい動作と確定）。"""
+    """機器符号（候補）＝確定＋未確定ラベルUIでのレビュー対象は (1) Patterns（3パターン）に
+    一致したものだけで (2) 除外パターン該当（GND・INPUT・TITLE等）は一切含まれず、
+    (3) 確定と未確定は互いに排他であること（2026-07-10 ユーザー指摘のバグ修正の
+    回帰検証。実データで RemainingUnclassified シートの中身を再確認し、
+    GND/INPUT/TITLE等には除外カテゴリが付与されている＝候補に含まれないのが
+    正しい動作と確定）。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
@@ -251,12 +305,18 @@ def test_candidate_labels_all_match_base_pattern_and_exclude_known_words(sample_
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
     excluded_words = {'GND', 'INPUT', 'OUTPUT', 'TITLE', 'POWER', 'ALARM'}
-    for text, _x, _y in data['candidate_labels']:
+    confirmed_texts = {t for t, _x, _y in data['confirmed_labels']}
+    review_texts = {t for t, _x, _y in data['review_labels']}
+    assert confirmed_texts.isdisjoint(review_texts)
+    for text, _x, _y in list(data['confirmed_labels']) + list(data['review_labels']):
         judgment = ref_designator._judgment_text(text)
         assert ref_designator.CANDIDATE_PATTERN.match(judgment), (
-            f'{text!r} in candidate_labels does not match CANDIDATE_PATTERN')
+            f'{text!r} does not match CANDIDATE_PATTERN')
         assert text not in excluded_words, (
-            f'{text!r} matches ExclusionPatterns but leaked into candidate_labels')
+            f'{text!r} matches ExclusionPatterns but leaked into candidate pool')
+    for text in confirmed_texts:
+        assert ref_designator.matched_confirmed_category(
+            ref_designator._judgment_text(text)) is not None
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
@@ -281,7 +341,8 @@ def test_extract_ref_designator_rows_end_to_end():
         path, frame_lineweight=100, original_filename='EE6491-039-04A.dxf')
     assert result['filename'] == 'EE6491-039-04A.dxf'
     assert result['warning'] is None
-    assert len(result['candidate_rows']) > 0
+    assert len(result['confirmed_rows']) > 0
+    assert len(result['review_rows']) > 0
     # 行データは {'ラベル': str, '個数': int} の形
-    sample = result['candidate_rows'][0]
-    assert set(sample.keys()) == {'ラベル', '個数'}
+    for sample in (result['confirmed_rows'][0], result['review_rows'][0]):
+        assert set(sample.keys()) == {'ラベル', '個数'}

@@ -33,6 +33,12 @@ from .common_utils import normalize_width
 from .extract_labels import extract_text_from_entity, _block_has_text_content
 from .region_detector import detect_drawing_frames, assign_region_labels
 
+# パターン・除外・確定リストの版。リスト（PATTERN_CATEGORIES /
+# EXCLUSION_*_CATEGORIES / CONFIRMED_PATTERN_CATEGORIES）を変更したら上げる。
+# 判断ログ（utils/decision_log.py）の patterns_version 列に記録され、
+# 「パターン更新後もまだ手動判断され続けているラベル」の特定に使う。
+PATTERNS_VERSION = '1.6.4'
+
 
 # ============================================================
 # 1. Reference Designator パターン（Patterns シートが正）

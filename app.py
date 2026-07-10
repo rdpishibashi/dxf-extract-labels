@@ -18,6 +18,9 @@ from utils.excel_output import (
 )
 from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
+from utils import decision_log
+
+APP_VERSION = '1.7.0'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -486,7 +489,8 @@ def app():
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 # 前回の結果・未確定ラベル選択状態をクリアする
                 for k in ['excel_result', 'is_region_mode', 'region_results_summary',
-                          'ref_pending', 'ref_pending_mode', 'ref_results_summary']:
+                          'ref_pending', 'ref_pending_mode', 'ref_results_summary',
+                          'decision_log_result']:
                     if k in st.session_state:
                         del st.session_state[k]
                 for k in list(st.session_state.keys()):
@@ -712,6 +716,19 @@ def app():
                             approved |= set(edited_df.loc[edited_df['採用'] == True, 'ラベル'])
                         approved_by_file[fname] = approved
 
+                    # 判断ログ: 未確定ラベルの採用/非採用をエントリ化する
+                    # （記録自体は Excel 生成が成功した後に行う）
+                    log_entries = []
+                    for fname, data in ref_pending.items():
+                        log_entries += decision_log.build_entries(
+                            file_name=fname,
+                            drawing_number=data.get('main_drawing_number'),
+                            review_labels=data['review_labels'],
+                            approved=approved_by_file[fname],
+                            app_version=APP_VERSION,
+                            patterns_version=ref_designator.PATTERNS_VERSION,
+                        )
+
                     if st.session_state.get('ref_pending_mode') == 'region':
                         analyses = st.session_state['region_analyses']
                         region_results = {}
@@ -773,6 +790,18 @@ def app():
                         st.session_state['is_region_mode'] = False
                         st.session_state['ref_results_summary'] = ref_final
 
+                    # 判断ログの記録（失敗しても抽出本体は止めない。結果は
+                    # rerun 後の抽出結果セクションで表示する）
+                    log_ok, log_msg = decision_log.record(log_entries)
+                    st.session_state['decision_log_result'] = {
+                        'ok': log_ok,
+                        'message': log_msg,
+                        'fallback_csv': (
+                            None if log_ok
+                            else decision_log.entries_to_csv_bytes(log_entries)
+                        ),
+                    }
+
                     del st.session_state['ref_pending']
                     st.session_state.pop('ref_pending_mode', None)
                     st.session_state['download_done'] = False
@@ -797,6 +826,21 @@ def app():
         else:
             results = st.session_state.get('results', {})
             st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
+
+        log_result = st.session_state.get('decision_log_result')
+        if log_result:
+            if log_result['ok']:
+                st.caption(f"📝 {log_result['message']}")
+            else:
+                st.warning(f"📝 {log_result['message']}")
+                if log_result.get('fallback_csv'):
+                    st.download_button(
+                        label="判断ログをダウンロード（記録失敗分）",
+                        data=log_result['fallback_csv'],
+                        file_name="decision_log_fallback.csv",
+                        mime="text/csv",
+                        key="decision_log_fallback_download",
+                    )
 
         with st.expander("📊 抽出結果統計", expanded=False):
             if is_region_mode:
@@ -871,7 +915,7 @@ def app():
             for key in ['excel_result', 'output_filename', 'processing_settings',
                         'results', 'is_region_mode', 'region_analyses',
                         'region_results_summary', 'ref_pending', 'ref_pending_mode',
-                        'ref_results_summary', 'download_done']:
+                        'ref_results_summary', 'download_done', 'decision_log_result']:
                 if key in st.session_state:
                     del st.session_state[key]
             for k in list(st.session_state.keys()):

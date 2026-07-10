@@ -34,30 +34,59 @@ from .region_detector import detect_drawing_frames, assign_region_labels
 # 1. Reference Designator パターン（Patterns シートが正）
 # ============================================================
 
-_PATTERN_CORE = (
-    r'[A-Z]+-[A-Z]+[0-9]+[A-Z0-9-]*'   # 英字繰返し-英字繰返し+数字繰返し+英数字/ハイフン任意
-    r'|[A-Z]+[0-9]+[A-Z0-9-]*'          # 英字繰返し+数字繰返し+英数字/ハイフン任意
-    r'|[A-Z]+'                          # 英字繰返しのみ
-)
+# (カテゴリ名, 正規表現, 説明) — reference_designator_candidates.xlsx の
+# Patterns シートと同じ3カテゴリ。CANDIDATE_PATTERN はこれらの OR で導出する
+# （tools/reference_designator_analyzer.py 等、外部ツールが個別カテゴリ名を
+# 参照できるよう名前付きで公開する）。
+PATTERN_CATEGORIES = [
+    ('hyphen_letters_digits_any', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+[A-Z0-9-]*$'),
+     '英字繰返し-英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
+    ('letters_digits_any', re.compile(r'^[A-Z]+[0-9]+[A-Z0-9-]*$'),
+     '英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
+    ('letters_only', re.compile(r'^[A-Z]+$'),
+     '英字繰返しのみ'),
+]
+_PATTERN_CORE = '|'.join(rx.pattern[1:-1] for _n, rx, _d in PATTERN_CATEGORIES)
 CANDIDATE_PATTERN = re.compile(r'^(?:%s)$' % _PATTERN_CORE)
+
+
+def matched_pattern_name(judgment: str) -> Optional[str]:
+    """判定用文字列（括弧より前）がどの候補パターンに一致したかを返す
+    （一致しなければ None）。"""
+    for name, rx, _desc in PATTERN_CATEGORIES:
+        if rx.match(judgment):
+            return name
+    return None
 
 
 # ============================================================
 # 2. 除外パターン（ExclusionPatterns シートが正、2026-07-10 確定）
 # ============================================================
 
-EXCLUSION_REGEXES = [
-    re.compile(r'^[A-Z]$'),                                          # single_letter_position
-    re.compile(r'.*[+-]$'),                                          # trailing_sign
-    re.compile(r'^AWG[0-9]*$'),                                      # wire_gauge
-    re.compile(r'^RACK[0-9]*(-[0-9]+)?$'),                           # rack_prefix
-    re.compile(r'^[A-Z]{2}[0-9]{4}-[0-9]{3}(-[0-9]{2})?[A-Z]?$'),    # drawing_number
-    re.compile(r'^(JIS|DWG)[A-Z0-9]*$'),                             # jis_dwg_prefix
-    re.compile(r'^[AB][0-9]+$'),                                     # terminal_row_letter_digit
-    re.compile(r'^PE[0-9]+$'),                                       # earth_terminal_digit
-    re.compile(r'^[LNP][0-9]+[A-Z]?$'),                              # phase_rail_letter_digit
-    re.compile(r'^X[A-Z]+$'),                                        # io_signal_x_prefix
+# (カテゴリ名, 正規表現, 説明)。EXCLUSION_REGEXES はこれらから導出する。
+EXCLUSION_REGEX_CATEGORIES = [
+    ('single_letter_position', re.compile(r'^[A-Z]$'),
+     '図形枠外の位置記号（単一英大文字）'),
+    ('trailing_sign', re.compile(r'.*[+-]$'),
+     '末尾が + / - で終わる（電源端子）'),
+    ('wire_gauge', re.compile(r'^AWG[0-9]*$'),
+     'AWG（ケーブル線径表記）'),
+    ('rack_prefix', re.compile(r'^RACK[0-9]*(-[0-9]+)?$'),
+     'RACK*（ユニット名）'),
+    ('drawing_number', re.compile(r'^[A-Z]{2}[0-9]{4}-[0-9]{3}(-[0-9]{2})?[A-Z]?$'),
+     '図番（例 EE1234-500-01A、DE3527-553-05B）'),
+    ('jis_dwg_prefix', re.compile(r'^(JIS|DWG)[A-Z0-9]*$'),
+     'JIS*/DWG*（図面情報枠）'),
+    ('terminal_row_letter_digit', re.compile(r'^[AB][0-9]+$'),
+     'A+1*/B+1*（機器端子の行番号）'),
+    ('earth_terminal_digit', re.compile(r'^PE[0-9]+$'),
+     'PE+1*（保護接地端子番号。例 PE1,PE2）'),
+    ('phase_rail_letter_digit', re.compile(r'^[LNP][0-9]+[A-Z]?$'),
+     'L/N/P+1*（相線 L1-L3・電源レール N24/P24 等）'),
+    ('io_signal_x_prefix', re.compile(r'^X[A-Z]+$'),
+     'X+英字（PLC/内部信号名。例 XRST,XMCON,XPBON。X+数字は除外対象外）'),
 ]
+EXCLUSION_REGEXES = [rx for _n, rx, _d in EXCLUSION_REGEX_CATEGORIES]
 
 _COMMON_NOUNS = {
     'ABORT', 'ACCESSORY', 'ALARM', 'ANNEAL', 'ANODE', 'AUTO', 'AUTOSTART',
@@ -107,10 +136,15 @@ _TITLEBLOCK_TERMS = {
 # 必要はない（候補にすらならない）。図面情報枠の構造的除外（フォーマット
 # ブロック丸ごと除外）が第一防衛線であり、本リストは第二防衛線。
 
-EXCLUSION_EXACT = (
-    _COMMON_NOUNS | _CIRCUIT_DESCRIPTION | _UNIT_NAMES | _CABLE_COLORS
-    | _TITLEBLOCK_TERMS
-)
+# (カテゴリ名 -> (完全一致セット, 説明))。EXCLUSION_EXACT はこれらの union。
+EXCLUSION_EXACT_CATEGORIES = {
+    'common_nouns': (_COMMON_NOUNS, '端子/スイッチ等の機能説明語（普通名詞）'),
+    'circuit_description': (_CIRCUIT_DESCRIPTION, '回路の説明（電源・接地・信号系統名）'),
+    'unit_names': (_UNIT_NAMES, 'ユニット/モジュール名'),
+    'cable_colors': (_CABLE_COLORS, 'ケーブル色（JIS配線色略号）'),
+    'titleblock_terms': (_TITLEBLOCK_TERMS, '図面情報枠内のタイトル項目'),
+}
+EXCLUSION_EXACT = set().union(*(words for words, _d in EXCLUSION_EXACT_CATEGORIES.values()))
 
 
 def normalize_label(label: str) -> str:
@@ -126,28 +160,38 @@ def _judgment_text(normalized_label: str) -> str:
     return normalized_label[:idx] if idx >= 0 else normalized_label
 
 
-def _classify_judgment(judgment: str) -> str:
-    """判定用文字列（括弧より前）を 'candidate' / 'excluded' / 'no_match' に分類する。
+def classify_judgment_detailed(judgment: str) -> Tuple[str, Optional[str]]:
+    """判定用文字列（括弧より前）を分類し、(status, category) を返す。
 
+    status は 'candidate' / 'excluded' / 'no_match'。
     - 'no_match': 3パターン（Patterns シート）のいずれにも一致しない文字列
-      （説明文・記号・注記等、例 `(2/5)`）。
+      （説明文・記号・注記等、例 `(2/5)`）。category は常に None。
     - 'excluded': Patterns には一致したが、除外パターン（ExclusionPatterns シート、
       例 GND・TITLE・N24 等）に該当したもの。明らかに Reference Designator では
-      ないと確定しているため、候補にも未確定ラベルにも含めない。
-    - 'candidate': Patterns に一致し、除外パターンにも該当しないもの。
-      reference_designator_candidates.xlsx の RemainingUnclassified シートと
-      同じ母集団（＝機器符号候補そのもの）で、「未確定ラベル」UI での
+      ないと確定しているため、候補にも未確定ラベルにも含めない。category は
+      該当した `EXCLUSION_REGEX_CATEGORIES`/`EXCLUSION_EXACT_CATEGORIES` の名前。
+    - 'candidate': Patterns に一致し、除外パターンにも該当しないもの。category は
+      常に None。reference_designator_candidates.xlsx の RemainingUnclassified
+      シートと同じ母集団（＝機器符号候補そのもの）で、「未確定ラベル」UI での
       レビュー対象になる（2026-07-10、実データで RemainingUnclassified の
       中身を再確認して確定: GND/INPUT/TITLE 等は除外カテゴリが付与されており
       RemainingUnclassified には含まれない＝'excluded' は表示対象外が正しい）。
     """
     if not judgment or not CANDIDATE_PATTERN.match(judgment):
-        return 'no_match'
-    if judgment in EXCLUSION_EXACT:
-        return 'excluded'
-    if any(rx.match(judgment) for rx in EXCLUSION_REGEXES):
-        return 'excluded'
-    return 'candidate'
+        return 'no_match', None
+    for name, (words, _desc) in EXCLUSION_EXACT_CATEGORIES.items():
+        if judgment in words:
+            return 'excluded', name
+    for name, rx, _desc in EXCLUSION_REGEX_CATEGORIES:
+        if rx.match(judgment):
+            return 'excluded', name
+    return 'candidate', None
+
+
+def _classify_judgment(judgment: str) -> str:
+    """`classify_judgment_detailed()` の status のみを返す簡易版。"""
+    status, _category = classify_judgment_detailed(judgment)
+    return status
 
 
 def is_ref_designator_candidate(label: str) -> bool:

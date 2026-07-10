@@ -199,6 +199,30 @@ class GitHubBackend:
         raise last_error
 
 
+def fetch_log_text(token: str, repo: str,
+                    path: str = DEFAULT_GITHUB_PATH,
+                    branch: str = DEFAULT_GITHUB_BRANCH) -> str:
+    """ログ専用リポジトリから decision_log.csv の内容をテキストで取得する（分析用の読み取り専用）。
+
+    ファイルが存在しない場合は空文字列を返す。`tools/reference_designator_analyzer.py`
+    のログ集計モードが使う（`GitHubBackend` は追記=書き込み専用のため、読み取り専用の
+    この関数を別に用意する）。
+    """
+    import requests
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    url = f'{_GITHUB_API}/repos/{repo}/contents/{path}'
+    r = requests.get(url, headers=headers, params={'ref': branch}, timeout=15)
+    if r.status_code == 404:
+        return ''
+    r.raise_for_status()
+    data = r.json()
+    return base64.b64decode(data['content']).decode('utf-8')
+
+
 def _github_backend_from_secrets() -> Optional[GitHubBackend]:
     """st.secrets['github'] があれば GitHubBackend を作る。無ければ None。
 

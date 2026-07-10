@@ -179,6 +179,26 @@ class TestGitHubBackend(unittest.TestCase):
         self.assertEqual(backend.default_source(), 'cloud')
 
 
+class TestFetchLogText(unittest.TestCase):
+    def test_returns_empty_string_when_not_found(self):
+        resp = MagicMock(status_code=404)
+        with patch('requests.get', return_value=resp):
+            text = decision_log.fetch_log_text(token='t', repo='org/repo')
+        self.assertEqual(text, '')
+
+    def test_returns_decoded_content_when_found(self):
+        content = ','.join(decision_log.CSV_HEADER) + '\n'
+        resp = MagicMock(status_code=200)
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            'content': base64.b64encode(content.encode('utf-8')).decode('ascii'),
+        }
+        with patch('requests.get', return_value=resp) as mock_get:
+            text = decision_log.fetch_log_text(token='t', repo='org/repo', branch='main')
+        self.assertEqual(text, content)
+        self.assertEqual(mock_get.call_args.kwargs['params'], {'ref': 'main'})
+
+
 class TestPickBackendAndRecord(unittest.TestCase):
     def test_pick_backend_prefers_github_when_secrets_present(self):
         fake_secrets = {'github': {'token': 'tok', 'repo': 'org/repo'}}

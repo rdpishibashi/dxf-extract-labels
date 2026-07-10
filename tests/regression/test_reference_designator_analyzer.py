@@ -70,7 +70,7 @@ def test_aggregate_labels_merges_zenkaku_hankaku_and_sums_across_files():
 
 def test_classify_aggregated_labels_splits_candidate_excluded_confirmed_and_drops_no_match():
     src = _make_total_xlsx([
-        ('R10', 5), ('D100', 4), ('C1A', 6), ('CN3', 2),
+        ('R10', 5), ('D100', 4), ('C1A', 6), ('KZ3', 2),
         ('GND', 9), ('(2/5)', 1), ('AWG14', 3),
     ])
     agg, _ = rda.aggregate_labels([('x.xlsx', src)])
@@ -88,9 +88,10 @@ def test_classify_aggregated_labels_splits_candidate_excluded_confirmed_and_drop
     assert by_label['D100']['確定カテゴリ'] == 'letters_digits_2or3'
     # C1A: 数字が1桁のみなので letters_digits_2or3_letter（2-3桁要求）には一致しない
     assert by_label['C1A']['確定ステータス'] == ''
-    # CN3: 英字2文字+数字1桁 -> 4パターンいずれにも一致せず未確定のまま
-    assert by_label['CN3']['確定ステータス'] == ''
-    assert by_label['CN3']['除外ステータス'] == ''
+    # KZ3: 英字2文字+数字1桁 -> 確定パターンいずれにも一致せず未確定のまま
+    # （CNプレフィックスの cn_single_digit 等は対象外のプレフィックスのため無関係）
+    assert by_label['KZ3']['確定ステータス'] == ''
+    assert by_label['KZ3']['除外ステータス'] == ''
 
     assert exc_impact['circuit_description'] == {'labels': 1, 'count': 9}
     assert exc_impact['wire_gauge'] == {'labels': 1, 'count': 3}
@@ -104,10 +105,10 @@ def test_classify_aggregated_labels_splits_candidate_excluded_confirmed_and_drop
 @pytest.mark.parametrize('judgment,expected', [
     ('R10', 'letters_digits_2or3'),
     ('R100', 'letters_digits_2or3'),
-    ('CN3', None),       # 数字1桁・複数文字プレフィックスはパターン1-3どれにも不一致
+    ('CN3', 'cn_single_digit'),   # CN+数字1桁（2026-07-10 追加、他パターンより先に判定）
     ('R10A', 'letters_digits_2or3_letter'),
-    ('CN-IF21', 'hyphen_letters_digits_notail'),
-    ('CN-IF2-1', None),  # 末尾に続きがあるので対象外
+    ('CN-IF21', 'cn_if_prefix'),   # "CN-IF"+任意の文字が先に判定される
+    ('CN-IF2-1', 'cn_if_prefix'),  # 2026-07-10: 末尾に続きがあっても確定対象
     ('D1', 'single_letter_digits_except_ab'),   # 単一英字+数字は桁数を問わない
     ('D1000', 'single_letter_digits_except_ab'),
     # A,B は「単一英字+数字」パターン(4)の対象外だが、複数桁ルール(1,2)には
@@ -172,8 +173,9 @@ def test_build_output_workbook_confirmed_labels_excluded_from_remaining():
 
     confirmed_rows = {r[0]: r for r in wb['ConfirmedPatterns'].iter_rows(min_row=2, values_only=True)}
     row = confirmed_rows['letters_digits_2or3']
-    assert row[5] == 1   # 該当ラベル数
-    assert row[6] == 4   # 該当個数合計
+    # 列構成: カテゴリ,ステータス,種別,判定基準,パターン/一覧,理由,該当ラベル数,該当個数合計
+    assert row[6] == 1   # 該当ラベル数
+    assert row[7] == 4   # 該当個数合計
 
     designator_rows = list(wb['ConfirmedDesignators'].iter_rows(min_row=2, values_only=True))
     assert designator_rows == [('R10', 4, 1, 'letters_digits_2or3')]

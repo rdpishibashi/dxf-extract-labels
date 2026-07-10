@@ -124,6 +124,36 @@ def test_circuit_description_two_digit_suffix_not_excluded(label):
     assert status != 'excluded'
 
 
+# ---------------------------------------------------------------------------
+# 除外パターン追加分（2026-07-10: circuit_description 追加語 / phase_rail 拡張）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label', [
+    'AOUT', 'LG', 'MR', 'MRR', 'RX', 'TX', 'CLR', 'ZERO', 'YOUT', 'AG',
+])
+def test_circuit_description_new_keywords_excluded(label):
+    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
+
+
+@pytest.mark.parametrize('label', ['AG1', 'ZERO1', 'RX9'])
+def test_circuit_description_new_keywords_plus_single_digit_excluded(label):
+    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
+
+
+@pytest.mark.parametrize('label', ['ZERO12', 'AG12'])
+def test_circuit_description_new_keywords_two_digit_suffix_not_excluded(label):
+    status, _category = ref_designator.classify_judgment_detailed(label)
+    assert status != 'excluded'
+
+
+@pytest.mark.parametrize('label', ['N24AB', 'L1XY', 'P24Z', 'N1A'])
+def test_phase_rail_letter_digit_allows_repeated_trailing_letters(label):
+    """L/N/P+数字繰り返し+英大文字繰り返し（2026-07-10: 末尾の英大文字を
+    0字以上に拡張。従来は0-1字までしか許容していなかった）。"""
+    assert ref_designator.classify_judgment_detailed(label) == (
+        'excluded', 'phase_rail_letter_digit')
+
+
 def test_person_name_not_excluded_by_content_filter():
     """人名リストは実装に持たない（図面情報枠の構造的除外で対応する設計）ため、
     単体の is_ref_designator_candidate は人名を弾かない。"""
@@ -138,17 +168,56 @@ def test_person_name_not_excluded_by_content_filter():
 @pytest.mark.parametrize('label,expected', [
     ('R10', 'letters_digits_2or3'),
     ('R100', 'letters_digits_2or3'),
-    ('CN3', None),                        # 数字1桁・複数文字プレフィックスは不一致
+    ('CN3', 'cn_single_digit'),           # CN+数字1桁（2026-07-10 追加）
     ('R10A', 'letters_digits_2or3_letter'),
-    ('CN-IF21', 'hyphen_letters_digits_notail'),
-    ('CN-IF2-1', None),                   # 末尾に続きがあるので対象外
+    ('CN-IF21', 'cn_if_prefix'),          # "CN-IF"+任意の文字が優先判定される
+    ('CN-IF2-1', 'cn_if_prefix'),         # 2026-07-10: 末尾に続きがあっても確定対象
     ('D1', 'single_letter_digits_except_ab'),
     ('D1000', 'single_letter_digits_except_ab'),   # 桁数不問
     ('A1', None),                         # A,Bは対象外（単一英字パターンのみ）
     ('B12', 'letters_digits_2or3'),       # A,B除外は単一英字パターン限定
+    ('FB', None),                         # 英字のみ（数字を要求するパターンはいずれも不一致）
 ])
 def test_matched_confirmed_category(label, expected):
     assert ref_designator.matched_confirmed_category(label) == expected
+
+
+# ---------------------------------------------------------------------------
+# 確定パターン追加分（2026-07-10: CN+数字1桁 / "CN-IF"+任意 / R(...) / VR(...)）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label,expected', [
+    ('CN1', 'cn_single_digit'),
+    ('CN9', 'cn_single_digit'),
+    ('CN12', 'letters_digits_2or3'),          # 数字2桁は cn_single_digit の対象外
+    ('CN-IF1-1A', 'cn_if_prefix'),
+    ('CN-IFX', 'cn_if_prefix'),
+])
+def test_confirmed_cn_patterns(label, expected):
+    assert ref_designator.matched_confirmed_category(label) == expected
+
+
+@pytest.mark.parametrize('label,expected', [
+    ('R10(2.2K)', 'r_paren_suffix'),
+    ('R1(2.2K)', 'r_paren_suffix'),
+    ('R1000(2.2K)', 'r_paren_suffix'),
+    ('R10()', 'r_paren_suffix'),              # 括弧の中身は任意（空文字も可）
+    ('VR5(10K)', 'vr_paren_suffix'),
+    ('VR100(10K)', 'vr_paren_suffix'),
+])
+def test_confirmed_paren_suffix_patterns_use_full_label(label, expected):
+    """R(...)/VR(...) は括弧の中身自体を問うため、`_judgment_text()` で
+    括弧を取り除いた文字列ではなく正規化済みラベル全体（括弧含む）に対して
+    判定する（basis='full'）。"""
+    assert ref_designator.matched_confirmed_category(label) == expected
+
+
+def test_confirmed_paren_suffix_requires_parens():
+    """R10/VR5 単体（括弧なし）は r_paren_suffix/vr_paren_suffix の対象外。
+    R10 は既存の letters_digits_2or3 で確定するが、VR5 はどの判定基準にも
+    一致せず未確定のまま。"""
+    assert ref_designator.matched_confirmed_category('R10') == 'letters_digits_2or3'
+    assert ref_designator.matched_confirmed_category('VR5') is None
 
 
 def test_is_confirmed_designator_requires_candidate_first():
@@ -156,15 +225,15 @@ def test_is_confirmed_designator_requires_candidate_first():
     該当のラベルは、たとえ確定パターンの正規表現に文字列として一致しても
     確定扱いにしない。"""
     assert ref_designator.is_confirmed_designator('R10') is True
-    assert ref_designator.is_confirmed_designator('CN3') is False   # 候補だが確定でない
+    assert ref_designator.is_confirmed_designator('FB') is False   # 候補だが確定でない
     assert ref_designator.is_confirmed_designator('GND') is False   # 除外パターン該当
 
 
 def test_split_confirmed():
-    labels = [('R10', 0, 0), ('CN3', 1, 1), ('D100', 2, 2)]
+    labels = [('R10', 0, 0), ('FB', 1, 1), ('D100', 2, 2)]
     confirmed, review = ref_designator.split_confirmed(labels)
     assert confirmed == [('R10', 0, 0), ('D100', 2, 2)]
-    assert review == [('CN3', 1, 1)]
+    assert review == [('FB', 1, 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +384,10 @@ def test_candidate_labels_all_match_base_pattern_and_exclude_known_words(sample_
         assert text not in excluded_words, (
             f'{text!r} matches ExclusionPatterns but leaked into candidate pool')
     for text in confirmed_texts:
-        assert ref_designator.matched_confirmed_category(
-            ref_designator._judgment_text(text)) is not None
+        # matched_confirmed_category は正規化済みラベル全体（括弧を含みうる）を
+        # 受け取る想定のため、judgment に切り詰めずそのまま渡す
+        # （r_paren_suffix/vr_paren_suffix は括弧の中身自体を問うため）。
+        assert ref_designator.matched_confirmed_category(text) is not None
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():

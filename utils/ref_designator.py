@@ -84,13 +84,14 @@ _COMMON_NOUNS = {
     'SERIAL', 'SERVICE', 'SET', 'SETTING', 'SHUTTER', 'SIGN', 'SLAVE',
     'SLOT', 'SPARE', 'START', 'STATAUS', 'STATUS', 'STO', 'STOP',
     'SWITCH', 'SYSTEM', 'TERMINAL', 'THERMOCOUPLE', 'TIME', 'TRIGGER',
-    'USB', 'VGA', 'VIDEO', 'WATCHDOG', 'WATER', 'WIRING', 'ZERO',
+    'USB', 'VGA', 'VIDEO', 'WATCHDOG', 'WATER', 'WIRING',
 }
 
 _CIRCUIT_DESCRIPTION = {
-    'AC', 'ACIN', 'AGND', 'COM', 'DC', 'DCIN', 'FG', 'GND', 'IN', 'LOAD',
-    'OFF', 'ON', 'OUT', 'PE', 'PGND', 'POW', 'POWER', 'POWIN', 'PWR',
-    'SG', 'VAC', 'VCC', 'VDC',
+    'AC', 'ACIN', 'AG', 'AGND', 'AOUT', 'CLR', 'COM', 'DC', 'DCIN', 'FG',
+    'GND', 'IN', 'LG', 'LOAD', 'MR', 'MRR', 'OFF', 'ON', 'OUT', 'PE',
+    'PGND', 'POW', 'POWER', 'POWIN', 'PWR', 'RX', 'SG', 'TX', 'VAC',
+    'VCC', 'VDC', 'YOUT', 'ZERO',
 }
 # circuit_description は完全一致に加え「キーワード+数字1桁」も除外対象とする
 # （例 OUT2, IN1, COM3。回路のI/O端子番号としてよく使われる形。2026-07-10
@@ -148,8 +149,9 @@ EXCLUSION_REGEX_CATEGORIES = [
      'A+1*/B+1*（機器端子の行番号）'),
     ('earth_terminal_digit', re.compile(r'^PE[0-9]+$'),
      'PE+1*（保護接地端子番号。例 PE1,PE2）'),
-    ('phase_rail_letter_digit', re.compile(r'^[LNP][0-9]+[A-Z]?$'),
-     'L/N/P+1*（相線 L1-L3・電源レール N24/P24 等）'),
+    ('phase_rail_letter_digit', re.compile(r'^[LNP][0-9]+[A-Z]*$'),
+     'L/N/P+1*（相線 L1-L3・電源レール N24/P24 等。末尾の英大文字は0字以上許容、'
+     '2026-07-10 英大文字繰り返しにも対応）'),
     ('io_signal_x_prefix', re.compile(r'^X[A-Z]+$'),
      'X+英字（PLC/内部信号名。例 XRST,XMCON,XPBON。X+数字は除外対象外）'),
     ('circuit_description', _CIRCUIT_DESCRIPTION_REGEX,
@@ -236,30 +238,55 @@ def summarize_labels(labels: List[str]) -> List[Tuple[str, int]]:
 # ============================================================
 #
 # 機器符号（候補）＝ is_ref_designator_candidate の中でも、確実に Reference
-# Designator と判定してよい形をユーザーと確定した4パターン（2026-07-10）。
-# 一致したラベルは「未確定ラベル」UI でのレビューを経ずに最終出力へ自動採用する。
+# Designator と判定してよい形をユーザーと確定したパターン（2026-07-10、
+# CN/CN-IF/R(...)/VR(...) は2026-07-10 追加確定）。一致したラベルは
+# 「未確定ラベル」UI でのレビューを経ずに最終出力へ自動採用する。
 # A,B の除外は single_letter_digits_except_ab（単一英字+数字）のみに適用する
 # （letters_digits_2or3 系には適用しない。A1/B12等は既存の
 # terminal_row_letter_digit 除外パターンで確定パターン判定より前に除外される
 # ため実害はない）。
+#
+# 各カテゴリの判定基準（第2要素）:
+#   'judgment' … 括弧より前の判定用文字列（`_judgment_text()`）に対して判定
+#                （通常のパターン・除外判定と同じ基準）
+#   'full'     … 正規化済みラベル全体（括弧を含む）に対して判定
+#                （R(...)/VR(...) のように括弧の中身自体を問う場合に使う）
 
 CONFIRMED_PATTERN_CATEGORIES = [
-    ('letters_digits_2or3', re.compile(r'^[A-Z]+[0-9]{2,3}$'),
+    # より限定的なパターンを先に判定する（複数一致した場合、より具体的な
+    # カテゴリ名が集計・表示に反映されるようにするため。確定/未確定の結果
+    # 自体はどの順でも変わらない＝いずれか1つでも一致すれば確定）。
+    ('cn_single_digit', 'judgment', re.compile(r'^CN[0-9]$'),
+     'CN + 数字1桁'),
+    ('cn_if_prefix', 'judgment', re.compile(r'^CN-IF.*$'),
+     '"CN-IF" + 任意の文字'),
+    ('r_paren_suffix', 'full', re.compile(r'^R[0-9]+\(.*\)$'),
+     'R + 数字繰り返し + "(" + 任意の文字 + ")"'),
+    ('vr_paren_suffix', 'full', re.compile(r'^VR[0-9]+\(.*\)$'),
+     'VR + 数字繰り返し + "(" + 任意の文字 + ")"'),
+    ('letters_digits_2or3', 'judgment', re.compile(r'^[A-Z]+[0-9]{2,3}$'),
      '英大文字繰り返し + 数字2桁または3桁'),
-    ('letters_digits_2or3_letter', re.compile(r'^[A-Z]+[0-9]{2,3}[A-Z]$'),
+    ('letters_digits_2or3_letter', 'judgment', re.compile(r'^[A-Z]+[0-9]{2,3}[A-Z]$'),
      '英大文字繰り返し + 数字2桁または3桁 + 英大文字1字'),
-    ('hyphen_letters_digits_notail', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+$'),
+    ('hyphen_letters_digits_notail', 'judgment', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+$'),
      '英大文字繰り返し + ハイフン + 英大文字繰り返し + 数字繰り返し（末尾に続きなし）'),
-    ('single_letter_digits_except_ab', re.compile(r'^[C-Z][0-9]+$'),
+    ('single_letter_digits_except_ab', 'judgment', re.compile(r'^[C-Z][0-9]+$'),
      'A,B以外の英大文字1字 + 数字の繰り返し'),
 ]
 
 
-def matched_confirmed_category(judgment: str) -> Optional[str]:
-    """判定用文字列（括弧より前）が確定パターンのいずれかに一致すればカテゴリ名を、
-    一致しなければ None を返す。"""
-    for name, rx, _desc in CONFIRMED_PATTERN_CATEGORIES:
-        if rx.match(judgment):
+def matched_confirmed_category(label: str) -> Optional[str]:
+    """正規化済みラベル（括弧を含みうる）が確定パターンのいずれかに一致すれば
+    カテゴリ名を、一致しなければ None を返す。
+
+    大半のパターンは括弧より前の判定用文字列（judgment）に対して判定するが、
+    括弧の中身自体を問うパターン（`r_paren_suffix`/`vr_paren_suffix`）は
+    ラベル全体に対して判定する（`CONFIRMED_PATTERN_CATEGORIES` の判定基準参照）。
+    """
+    judgment = _judgment_text(label)
+    for name, basis, rx, _desc in CONFIRMED_PATTERN_CATEGORIES:
+        target = label if basis == 'full' else judgment
+        if rx.match(target):
             return name
     return None
 
@@ -272,7 +299,7 @@ def is_confirmed_designator(label: str) -> bool:
     judgment = _judgment_text(label)
     if _classify_judgment(judgment) != 'candidate':
         return False
-    return matched_confirmed_category(judgment) is not None
+    return matched_confirmed_category(label) is not None
 
 
 # ============================================================
@@ -485,7 +512,7 @@ def split_confirmed(
     confirmed = []
     review = []
     for item in labels:
-        if matched_confirmed_category(_judgment_text(item[0])):
+        if matched_confirmed_category(item[0]):
             confirmed.append(item)
         else:
             review.append(item)

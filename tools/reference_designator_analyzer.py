@@ -202,7 +202,7 @@ def classify_aggregated_labels(agg):
 
         confirmed_category = None
         if status == 'candidate':
-            confirmed_category = matched_confirmed_category(judgment)
+            confirmed_category = matched_confirmed_category(label)
 
         ref_rows.append({
             'ラベル': label,
@@ -284,11 +284,11 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
     ws4.freeze_panes = 'A2'
 
     ws5 = wb.create_sheet('ConfirmedPatterns')
-    ws5.append(['カテゴリ', 'ステータス', '種別', 'パターン/一覧', '理由', '該当ラベル数', '該当個数合計'])
-    for name, rx, desc in CONFIRMED_PATTERN_CATEGORIES:
+    ws5.append(['カテゴリ', 'ステータス', '種別', '判定基準', 'パターン/一覧', '理由', '該当ラベル数', '該当個数合計'])
+    for name, basis, rx, desc in CONFIRMED_PATTERN_CATEGORIES:
         imp = confirmed_impact.get(name, {'labels': 0, 'count': 0})
-        ws5.append([name, '確定', '正規表現', rx.pattern, desc, imp['labels'], imp['count']])
-    for col, width in zip('ABCDEFG', (30, 10, 12, 60, 55, 12, 14)):
+        ws5.append([name, '確定', '正規表現', basis, rx.pattern, desc, imp['labels'], imp['count']])
+    for col, width in zip('ABCDEFGH', (30, 10, 12, 12, 55, 55, 12, 14)):
         ws5.column_dimensions[col].width = width
     ws5.freeze_panes = 'A2'
 

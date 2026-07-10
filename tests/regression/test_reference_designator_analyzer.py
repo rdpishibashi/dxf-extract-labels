@@ -216,3 +216,115 @@ def test_iter_input_sources_combines_uploads_and_folder(tmp_path):
 def test_iter_input_sources_missing_folder_is_skipped_not_raised():
     sources = rda._iter_input_sources([], ['/no/such/folder'], 'extracted_labels*.xlsx', False)
     assert sources == []
+
+
+# ---------------------------------------------------------------------------
+# 判断ログ集計（aggregate_decision_log / build_decision_log_suggestions /
+# build_decision_log_workbook）v1.7.0
+# ---------------------------------------------------------------------------
+
+_LOG_HEADER = ','.join([
+    'timestamp', 'source', 'file_name', 'drawing_number',
+    'label', 'decision', 'count', 'app_version', 'patterns_version',
+])
+
+
+def _make_log_csv(rows):
+    """rows: [(file_name, label, decision, count), ...] から CSV バイト列を作る。"""
+    lines = [_LOG_HEADER]
+    for file_name, label, decision, count in rows:
+        lines.append(
+            f"2026-07-10T10:00:00,cloud,{file_name},,{label},{decision},{count},1.7.0,1.6.4")
+    return ('\n'.join(lines) + '\n').encode('utf-8-sig')
+
+
+def test_aggregate_decision_log_sums_adopted_and_rejected_across_sources():
+    csv_a = _make_log_csv([
+        ('a.dxf', 'R10', 'adopted', 2),
+        ('a.dxf', 'CN3', 'rejected', 1),
+    ])
+    csv_b = _make_log_csv([
+        ('b.dxf', 'R10', 'adopted', 1),
+        ('b.dxf', 'CN3', 'rejected', 3),
+    ])
+    agg, stats = rda.aggregate_decision_log([('a.csv', csv_a), ('b.csv', csv_b)])
+
+    assert agg['R10']['adopted'] == 3
+    assert agg['R10']['rejected'] == 0
+    assert agg['R10']['files'] == {'a.dxf', 'b.dxf'}
+    assert agg['CN3']['adopted'] == 0
+    assert agg['CN3']['rejected'] == 4
+    assert stats == [
+        {'ソース': 'a.csv', '行数': 2},
+        {'ソース': 'b.csv', '行数': 2},
+    ]
+
+
+def test_aggregate_decision_log_normalizes_zenkaku_labels():
+    csv_data = _make_log_csv([('a.dxf', 'ＲＡＣＫ１', 'adopted', 1)])
+    agg, _ = rda.aggregate_decision_log([('a.csv', csv_data)])
+    assert 'RACK1' in agg
+    assert agg['RACK1']['adopted'] == 1
+
+
+def test_aggregate_decision_log_skips_malformed_source_without_raising():
+    bad = b'not,a,valid,decision,log\n1,2,3,4,5'
+    agg, stats = rda.aggregate_decision_log([('bad.csv', bad)])
+    assert agg == {}
+    assert stats == [{'ソース': 'bad.csv', '行数': 0}]
+
+
+def test_aggregate_decision_log_accepts_already_fetched_text():
+    text = _make_log_csv([('a.dxf', 'R10', 'adopted', 1)]).decode('utf-8-sig')
+    agg, _ = rda.aggregate_decision_log([('GitHub:org/repo', text)])
+    assert agg['R10']['adopted'] == 1
+
+
+def test_build_decision_log_suggestions_classifies_by_rate_and_min_occurrences():
+    agg = {
+        'ALWAYS_ADOPTED': {'adopted': 5, 'rejected': 0, 'files': {'a.dxf'}},
+        'ALWAYS_REJECTED': {'adopted': 0, 'rejected': 5, 'files': {'a.dxf'}},
+        'MIXED': {'adopted': 3, 'rejected': 3, 'files': {'a.dxf'}},
+        'TOO_FEW': {'adopted': 1, 'rejected': 0, 'files': {'a.dxf'}},
+    }
+    rows = rda.build_decision_log_suggestions(
+        agg, min_occurrences=3, confirm_rate=1.0, exclude_rate=1.0)
+    by_label = {r['ラベル']: r for r in rows}
+
+    assert by_label['ALWAYS_ADOPTED']['提案'] == '確定パターン候補'
+    assert by_label['ALWAYS_REJECTED']['提案'] == '除外パターン候補'
+    assert by_label['MIXED']['提案'] == '様子見'
+    assert by_label['TOO_FEW']['提案'] == '様子見（サンプル不足）'
+
+    # 合計降順・同数ならラベル昇順でソートされる（MIXED=6, ALWAYS_*=5, TOO_FEW=1）
+    assert [r['ラベル'] for r in rows] == [
+        'MIXED', 'ALWAYS_ADOPTED', 'ALWAYS_REJECTED', 'TOO_FEW']
+
+
+def test_build_decision_log_suggestions_rate_thresholds_are_configurable():
+    agg = {'MOSTLY_ADOPTED': {'adopted': 9, 'rejected': 1, 'files': {'a.dxf'}}}
+    strict = rda.build_decision_log_suggestions(
+        agg, min_occurrences=3, confirm_rate=1.0, exclude_rate=1.0)
+    assert strict[0]['提案'] == '様子見'
+
+    lenient = rda.build_decision_log_suggestions(
+        agg, min_occurrences=3, confirm_rate=0.8, exclude_rate=1.0)
+    assert lenient[0]['提案'] == '確定パターン候補'
+
+
+def test_build_decision_log_workbook_contains_summary_sheet():
+    rows = [{
+        'ラベル': 'R10', '採用数': 5, '非採用数': 0, '合計': 5,
+        '採用率': 1.0, '出現ファイル数': 1, '提案': '確定パターン候補',
+    }]
+    data = rda.build_decision_log_workbook(rows)
+    wb = openpyxl.load_workbook(BytesIO(data))
+    assert wb.sheetnames == ['DecisionLogSummary']
+    values = list(wb['DecisionLogSummary'].iter_rows(min_row=2, values_only=True))
+    assert values == [('R10', 5, 0, 5, 1.0, 1, '確定パターン候補')]
+
+
+def test_build_decision_log_workbook_empty_input_does_not_raise():
+    data = rda.build_decision_log_workbook([])
+    wb = openpyxl.load_workbook(BytesIO(data))
+    assert 'DecisionLogSummary' in wb.sheetnames

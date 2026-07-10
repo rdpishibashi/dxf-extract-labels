@@ -10,12 +10,13 @@ reference_designator_candidates.xlsx と同じ構成の分析用 Excel を生成
 起動方法:
     streamlit run tools/reference_designator_analyzer.py
 """
+import csv
 import glob
 import os
 import re
 import sys
 from collections import Counter, defaultdict
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import openpyxl
 import streamlit as st
@@ -25,6 +26,7 @@ _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
 
 from utils import ref_designator as rd  # noqa: E402
+from utils import decision_log as dlog  # noqa: E402
 
 st.set_page_config(
     page_title="Reference Designator 抽出検討ツール",
@@ -319,11 +321,124 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
 
 
 # ============================================================
+# 判断ログ（decision_log.csv）の集計・パターン候補提案（v1.7.0）
+# ============================================================
+#
+# DXF-extract-labels 本体アプリの「未確定ラベル」UI でユーザーが行った採用/非採用の
+# 判断（utils/decision_log.py が記録）を集計し、確定パターン・除外パターンの
+# 候補を機械的に提案する。GitHub 上のログ専用リポジトリから直接取得するか、
+# ローカル/Dropbox の decision_log.csv をアップロード・フォルダ指定で読み込む。
+
+def _read_decision_log_rows(name, source):
+    """(表示名, バイト列・パス・テキストのいずれか) から判断ログの行（dict）を読む。"""
+    try:
+        if isinstance(source, (bytes, bytearray)):
+            text = source.decode('utf-8-sig')
+        elif isinstance(source, str) and os.path.exists(source):
+            with open(source, encoding='utf-8-sig') as f:
+                text = f.read()
+        else:
+            text = source  # GitHub から取得済みのテキストそのもの
+    except Exception as e:
+        st.warning(f"{name}: 読み込みに失敗しました（{e}）")
+        return []
+    if not text:
+        return []
+    reader = csv.DictReader(StringIO(text))
+    if not reader.fieldnames or not {'label', 'decision'}.issubset(reader.fieldnames):
+        st.warning(f"{name}: 判断ログの形式ではありません（label/decision 列が見つかりません）")
+        return []
+    return list(reader)
+
+
+def aggregate_decision_log(sources):
+    """判断ログ（複数ソース）を正規化ラベル単位で集計する。
+
+    戻り値: (agg, per_source_stats)
+      agg: {正規化ラベル: {'adopted': int, 'rejected': int, 'files': set(file_name)}}
+      per_source_stats: [{'ソース': str, '行数': int}]
+    """
+    agg = defaultdict(lambda: {'adopted': 0, 'rejected': 0, 'files': set()})
+    per_source_stats = []
+    for name, source in sources:
+        rows = _read_decision_log_rows(name, source)
+        for row in rows:
+            label = rd.normalize_label(row.get('label', ''))
+            decision = row.get('decision', '')
+            if not label or decision not in ('adopted', 'rejected'):
+                continue
+            try:
+                count = int(row.get('count') or 0)
+            except ValueError:
+                count = 0
+            agg[label][decision] += count
+            fname = row.get('file_name') or ''
+            if fname:
+                agg[label]['files'].add(fname)
+        per_source_stats.append({'ソース': name, '行数': len(rows)})
+    return agg, per_source_stats
+
+
+def build_decision_log_suggestions(agg, min_occurrences=3, confirm_rate=1.0, exclude_rate=1.0):
+    """集計結果から確定/除外パターンの候補を提案する。
+
+    - 合計出現回数（adopted+rejected）が min_occurrences 未満の行はサンプル不足として
+      「様子見」に固定する（提案対象外）。
+    - 採用率（adopted/合計） >= confirm_rate → 「確定パターン候補」
+    - 非採用率（rejected/合計） >= exclude_rate → 「除外パターン候補」
+    - どちらでもなければ「様子見」
+    """
+    rows = []
+    for label, d in agg.items():
+        total = d['adopted'] + d['rejected']
+        if total == 0:
+            continue
+        adopt_rate = d['adopted'] / total
+        reject_rate = d['rejected'] / total
+        if total < min_occurrences:
+            suggestion = '様子見（サンプル不足）'
+        elif adopt_rate >= confirm_rate:
+            suggestion = '確定パターン候補'
+        elif reject_rate >= exclude_rate:
+            suggestion = '除外パターン候補'
+        else:
+            suggestion = '様子見'
+        rows.append({
+            'ラベル': label,
+            '採用数': d['adopted'],
+            '非採用数': d['rejected'],
+            '合計': total,
+            '採用率': round(adopt_rate, 3),
+            '出現ファイル数': len(d['files']),
+            '提案': suggestion,
+        })
+    rows.sort(key=lambda r: (-r['合計'], r['ラベル']))
+    return rows
+
+
+def build_decision_log_workbook(rows):
+    """判断ログ集計結果を1シートの Excel にする。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'DecisionLogSummary'
+    ws.append(['ラベル', '採用数', '非採用数', '合計', '採用率', '出現ファイル数', '提案'])
+    for r in rows:
+        ws.append([r['ラベル'], r['採用数'], r['非採用数'], r['合計'],
+                    r['採用率'], r['出現ファイル数'], r['提案']])
+    for col, width in zip('ABCDEFG', (20, 10, 10, 10, 10, 14, 22)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = 'A2'
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+# ============================================================
 # Streamlit UI
 # ============================================================
 
-def app():
-    st.title("Reference Designator 抽出検討ツール")
+def _app_extracted_labels():
     st.write(
         "複数の `extracted_labels*.xlsx`（Total シート）からラベルを集計し、"
         "機器符号（候補）パターン・除外パターンの判定結果を "
@@ -438,6 +553,170 @@ def app():
         if st.button("🔄 リセット"):
             del st.session_state['rda_result']
             st.rerun()
+
+
+def _app_decision_log():
+    st.write(
+        "DXF-extract-labels 本体アプリの「未確定ラベル」UI でユーザーが行った"
+        "採用/非採用の判断ログ（`decision_log.csv`）を集計し、確定パターン・"
+        "除外パターンの候補を提案します。"
+    )
+    with st.expander("ℹ️ このモードについて", expanded=False):
+        st.info(
+            "判断ログは本体アプリが GitHub のログ専用リポジトリ（Streamlit Cloud）"
+            "または `~/Documents/DXF-extract-labels/decision_log.csv`（Windows/"
+            "ローカル）に追記記録します。同一ラベルについて『ほぼ常に採用されている』"
+            "→確定パターン候補、『ほぼ常に非採用』→除外パターン候補として提案します。\n\n"
+            "提案はあくまで機械的な集計に基づく候補です。実際にパターンへ反映するかは "
+            "`utils/ref_designator.py` の `CONFIRMED_PATTERN_CATEGORIES` /"
+            "`EXCLUSION_*_CATEGORIES` を人手で判断・編集してください。"
+        )
+
+    st.subheader("入力")
+    col_left, col_right = st.columns(2)
+    with col_left:
+        uploaded_logs = st.file_uploader(
+            "decision_log.csv をアップロード（複数可）",
+            type="csv",
+            accept_multiple_files=True,
+            key="decision_log_uploader",
+        )
+    with col_right:
+        folder_text = st.text_area(
+            "フォルダパス（1行に1つ、ローカル/Dropbox のフルパス）",
+            value="",
+            help="ローカル・Windows アプリの decision_log.csv を配置しているフォルダを"
+                 "指定すると、配下のログファイルも対象に加えます。",
+            key="decision_log_folder_text",
+        )
+        glob_pattern = st.text_input(
+            "検索パターン（glob）", value="decision_log*.csv", key="decision_log_glob")
+        recursive = st.checkbox(
+            "サブフォルダも検索する", value=True, key="decision_log_recursive")
+
+    with st.expander("☁️ GitHub のログ専用リポジトリから直接取得（Streamlit Cloud）", expanded=False):
+        st.caption(
+            "アプリ本体と同じ `st.secrets['github']` を使う場合はトークン欄を空にしてください。"
+        )
+        gh_repo = st.text_input(
+            "リポジトリ（owner/repo）", value="", key="decision_log_gh_repo")
+        gh_path = st.text_input(
+            "パス", value=dlog.DEFAULT_GITHUB_PATH, key="decision_log_gh_path")
+        gh_branch = st.text_input(
+            "ブランチ", value=dlog.DEFAULT_GITHUB_BRANCH, key="decision_log_gh_branch")
+        gh_token = st.text_input(
+            "トークン（省略時は st.secrets['github']['token'] を使用）",
+            value="", type="password", key="decision_log_gh_token")
+        fetch_from_github = st.checkbox(
+            "この設定で GitHub から取得する", value=False, key="decision_log_gh_enable")
+
+    folder_paths = [line for line in folder_text.splitlines() if line.strip()]
+
+    col1, col2, col3 = st.columns(3)
+    min_occurrences = col1.number_input(
+        "最小出現回数（未満は様子見）", min_value=1, value=3, step=1,
+        key="decision_log_min_occurrences")
+    confirm_rate = col2.slider(
+        "確定パターン候補とする採用率の下限", min_value=0.5, max_value=1.0,
+        value=1.0, step=0.05, key="decision_log_confirm_rate")
+    exclude_rate = col3.slider(
+        "除外パターン候補とする非採用率の下限", min_value=0.5, max_value=1.0,
+        value=1.0, step=0.05, key="decision_log_exclude_rate")
+
+    if st.button("判断ログを集計する", type="primary"):
+        sources = _iter_input_sources(uploaded_logs, folder_paths, glob_pattern, recursive)
+
+        if fetch_from_github:
+            if not gh_repo:
+                st.warning("GitHub から取得するにはリポジトリ（owner/repo）を指定してください。")
+            else:
+                token = gh_token or None
+                if not token:
+                    try:
+                        token = st.secrets.get('github', {}).get('token')
+                    except Exception:
+                        token = None
+                if not token:
+                    st.warning("トークンが指定されておらず、st.secrets['github']['token'] も"
+                               "見つかりません。")
+                else:
+                    try:
+                        with st.spinner(f"GitHub（{gh_repo}）から取得中..."):
+                            text = dlog.fetch_log_text(
+                                token=token, repo=gh_repo,
+                                path=gh_path or dlog.DEFAULT_GITHUB_PATH,
+                                branch=gh_branch or dlog.DEFAULT_GITHUB_BRANCH,
+                            )
+                        if text:
+                            sources.append((f"GitHub:{gh_repo}", text))
+                        else:
+                            st.info(f"GitHub（{gh_repo}）にログファイルがまだありません。")
+                    except Exception as e:
+                        st.warning(f"GitHub からの取得に失敗しました: {e}")
+
+        if not sources:
+            st.warning("入力ログがありません。アップロード・フォルダ指定・GitHub取得の"
+                       "いずれかを行ってください。")
+        else:
+            with st.spinner(f"{len(sources)} 個のログソースを処理中..."):
+                agg, per_source_stats = aggregate_decision_log(sources)
+                suggestion_rows = build_decision_log_suggestions(
+                    agg, min_occurrences=min_occurrences,
+                    confirm_rate=confirm_rate, exclude_rate=exclude_rate)
+                excel_bytes = build_decision_log_workbook(suggestion_rows)
+
+            st.session_state['rda_decision_log_result'] = {
+                'excel_bytes': excel_bytes,
+                'sources': [name for name, _ in sources],
+                'per_source_stats': per_source_stats,
+                'rows': suggestion_rows,
+                'total_labels': len(agg),
+                'confirm_candidates': sum(
+                    1 for r in suggestion_rows if r['提案'] == '確定パターン候補'),
+                'exclude_candidates': sum(
+                    1 for r in suggestion_rows if r['提案'] == '除外パターン候補'),
+            }
+            st.rerun()
+
+    result = st.session_state.get('rda_decision_log_result')
+    if result:
+        st.subheader("結果")
+        st.success(f"{len(result['sources'])} 個のログソースを処理しました。")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("集計対象ラベル数", result['total_labels'])
+        m2.metric("確定パターン候補", result['confirm_candidates'])
+        m3.metric("除外パターン候補", result['exclude_candidates'])
+
+        with st.expander("📊 入力ソース別の内訳", expanded=False):
+            import pandas as pd
+            st.dataframe(pd.DataFrame(result['per_source_stats']), width='stretch', hide_index=True)
+
+        with st.expander("📊 提案一覧", expanded=True):
+            import pandas as pd
+            st.dataframe(pd.DataFrame(result['rows']), width='stretch', hide_index=True)
+
+        st.download_button(
+            label="Excelをダウンロード（DecisionLogSummary）",
+            data=result['excel_bytes'],
+            file_name="decision_log_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            key="decision_log_download",
+        )
+
+        if st.button("🔄 リセット", key="decision_log_reset"):
+            del st.session_state['rda_decision_log_result']
+            st.rerun()
+
+
+def app():
+    st.title("Reference Designator 抽出検討ツール")
+    tab1, tab2 = st.tabs(["extracted_labels 集計", "判断ログ分析（v1.7.0）"])
+    with tab1:
+        _app_extracted_labels()
+    with tab2:
+        _app_decision_log()
 
 
 if __name__ == "__main__":

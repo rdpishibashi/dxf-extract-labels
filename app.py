@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import tempfile
 import sys
 from pathlib import Path
 import pandas as pd
@@ -10,14 +9,15 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 utils_path = os.path.join(current_dir, 'utils')
 sys.path.insert(0, utils_path)
 
-from utils.extract_labels import (
-    extract_labels, get_layers_from_dxf, process_multiple_dxf_files,
-)
+from utils.extract_labels import extract_labels, process_multiple_dxf_files
 from utils.region_detector import (
     analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
 )
-from utils.excel_output import create_excel_output, create_region_excel_output
+from utils.excel_output import (
+    create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
+)
 from utils.common_utils import save_uploadedfile, handle_error
+from utils import ref_designator
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -26,19 +26,17 @@ st.set_page_config(
 )
 
 
-@st.cache_data
-def _get_layers_cached(file_bytes: bytes) -> list:
-    """DXFファイルのレイヤー一覧を取得してキャッシュする（同一ファイルは再処理しない）。"""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.dxf') as f:
-        f.write(file_bytes)
-        tmp_path = f.name
-    try:
-        return get_layers_from_dxf(tmp_path)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+def _gather_name_selections(fname, analysis):
+    """領域確認UIのチェックボックス状態から、この図面の名称選択を集める。"""
+    name_selections = {}
+    for reg in analysis.get('regions', []):
+        chosen = []
+        for i, (_d, t) in enumerate(reg['name_candidates']):
+            if st.session_state.get(f"rc_{fname}_{reg['id']}_{i}"):
+                chosen.append(t)
+        if chosen:
+            name_selections[(fname, reg['id'])] = chosen
+    return name_selections
 
 
 def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
@@ -183,12 +181,13 @@ def app():
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」で矩形領域を検出し、各領域の名称を確認・選択します",
             "4. 「ラベルを抽出」ボタンで処理を実行します",
+            "5. （既定モード）「未確定ラベル」でReference Designatorとして採用する"
+            "ラベルにチェックを入れ、「選択完了」を押します",
             "",
             "**Excelファイルの内容：**",
             "- Summaryシート：全ファイルの抽出結果概要",
             "- 各ファイルシート：個別ファイルの抽出ラベル一覧（領域検出時は「領域」列付き）",
             "- 領域一覧シート（領域検出時）：検出領域の一覧",
-            "- Invalidシート（機器符号妥当性チェック有効時）：適合しない機器符号のリスト",
         ]))
 
     # ============================================================
@@ -210,9 +209,6 @@ def app():
 
     st.success(f"{len(uploaded_files)}個のファイルが選択されました")
 
-    # レイヤー一覧はキャッシュして再処理を防ぐ（ウィジェット操作ごとの遅延を解消）
-    available_layers = _get_layers_cached(bytes(uploaded_files[0].getbuffer()))
-
     # ============================================================
     # オプション
     # ============================================================
@@ -220,49 +216,24 @@ def app():
     col_left, col_right = st.columns(2)
 
     with col_left:
-        # a) レイヤー選択
-        layer_selection_enabled = st.checkbox(
-            "特定のレイヤーのみを処理する",
-            value=False,
-            help="チェックを入れると、選択したレイヤーのみを処理対象とします"
-        )
-        selected_layers = None
-        if layer_selection_enabled and available_layers:
-            selected_layers = st.multiselect(
-                "処理対象とするレイヤーを選択してください",
-                options=available_layers,
-                default=available_layers,
-                help="複数選択可能です。デフォルトでは全レイヤーが選択されています。"
-            )
-            if selected_layers:
-                st.info(f"{len(selected_layers)}個のレイヤーが選択されています")
-
-        # b) 機器符号以外も抽出（デフォルト OFF = 機器符号のみ）
+        # a) 機器符号（候補）以外も抽出（デフォルト OFF = 機器符号（候補）のみ）
         also_extract_non_circuit = st.checkbox(
             "機器符号（候補）以外も抽出",
             value=False,
-            help="チェックなし（既定）：機器符号パターンに一致するラベルのみ抽出します。\n"
-                 "チェックあり：機器符号以外のラベルも含めてすべて抽出します。\n\n"
+            help="チェックなし（既定）：図面枠内・図面情報欄外のラベルのうち、機器符号\n"
+                 "（Reference Designator）パターンに一致し除外パターンに該当しないものを\n"
+                 "「機器符号（候補）」として抽出します。パターンに一致しないラベルは\n"
+                 "「未確定ラベル」として一覧表示し、採用するものを選択できます。\n\n"
+                 "チェックあり：図面枠外・図面情報欄内も含め、すべてのラベルを"
+                 "そのまま抽出します（機器符号（候補）の判定・未確定ラベルの選択は行いません）。\n\n"
                  "【機器符号パターン例】\n"
                  "• 英文字のみ: CNCNT, FB\n"
-                 "• 英文字+数字: R10, CN3, PSW1\n"
-                 "• 英文字+数字+英文字: X14A, RMSS2A\n"
-                 "• 括弧付き: FB(), MSS(MOTOR), R10(2.2K)"
+                 "• 英文字+数字+ハイフン任意: R10, CN3, AAC1B4-07\n"
+                 "• 英字-英字+数字: CN-IF2-1\n"
+                 "• 括弧付き（括弧より前で判定）: FB(), MSS(MOTOR), R10(2.2K)"
         )
-        filter_non_parts = not also_extract_non_circuit
 
-        # c) 機器符号妥当性チェック（機器符号のみモードのときのみ表示）
-        validate_ref_designators = False
-        if not also_extract_non_circuit:
-            validate_ref_designators = st.checkbox(
-                "機器符号妥当性チェック",
-                value=False,
-                help="抽出された機器符号がフォーマットに適合するかチェックします。\n"
-                     "適合しない機器符号のリストを別シートに出力します。\n"
-                     "（例：CBnnn, ELB(CB)nnn, R, Annn等の標準フォーマット）"
-            )
-
-        # d) 図面番号・タイトル・サブタイトルを抽出（統合）
+        # b) 図面番号・タイトル・サブタイトルを抽出（統合）
         extract_all_option = st.checkbox(
             "図面番号・タイトル・サブタイトルを抽出",
             value=False,
@@ -504,86 +475,147 @@ def app():
     # ============================================================
     # ラベルを抽出
     # ============================================================
-    extract_btn_type = "secondary" if st.session_state.get('excel_result') else "primary"
+    has_results = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
+    extract_btn_type = "secondary" if has_results else "primary"
     if st.button("ラベルを抽出", type=extract_btn_type):
         try:
+            frame_lineweight = int(region_cfg['frame_lineweight'])
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
+                # 前回の結果・未確定ラベル選択状態をクリアする
+                for k in ['excel_result', 'is_region_mode', 'region_results_summary',
+                          'ref_pending', 'ref_pending_mode', 'ref_results_summary']:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                for k in list(st.session_state.keys()):
+                    if isinstance(k, str) and k.startswith('unclassified_editor_'):
+                        del st.session_state[k]
+
                 if 'region_analyses' in st.session_state:
                     # 領域付きモード
                     analyses = st.session_state['region_analyses']
-                    name_selections = {}
-                    for fname, analysis in analyses.items():
-                        for reg in analysis.get('regions', []):
-                            chosen = []
-                            for i, (_d, t) in enumerate(reg['name_candidates']):
-                                if st.session_state.get(f"rc_{fname}_{reg['id']}_{i}"):
-                                    chosen.append(t)
-                            if chosen:
-                                name_selections[(fname, reg['id'])] = chosen
 
-                    region_results = build_region_results(
-                        analyses, name_selections, sort_value,
-                        filter_circuit_only=filter_non_parts)
+                    if also_extract_non_circuit:
+                        # 図面枠制限・機器符号フィルタなしで全ラベルを対象にする
+                        name_selections = {}
+                        for fname, analysis in analyses.items():
+                            name_selections.update(_gather_name_selections(fname, analysis))
+                        region_results = build_region_results(
+                            analyses, name_selections, sort_value, filter_circuit_only=False)
 
-                    st.session_state.excel_result = create_region_excel_output(region_results)
-                    st.session_state.output_filename = output_filename
-                    st.session_state['is_region_mode'] = True
-                    st.session_state['region_results_summary'] = {
-                        f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
-                        for f, d in region_results.items()
-                    }
-                    st.session_state.processing_settings = {
-                        'filter_option': filter_non_parts,
-                        'extract_drawing_numbers': extract_drawing_numbers_option,
-                        'extract_title': extract_title_option,
-                    }
+                        st.session_state.excel_result = create_region_excel_output(region_results)
+                        st.session_state.output_filename = output_filename
+                        st.session_state['is_region_mode'] = True
+                        st.session_state['region_results_summary'] = {
+                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
+                            for f, d in region_results.items()
+                        }
+                        st.session_state.processing_settings = {
+                            'also_extract_non_circuit': True,
+                            'extract_drawing_numbers': extract_drawing_numbers_option,
+                            'extract_title': extract_title_option,
+                        }
+                    else:
+                        # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
+                        ref_pending = {}
+                        for fname, analysis in analyses.items():
+                            uf = next(f for f in uploaded_files if f.name == fname)
+                            tmp = save_uploadedfile(uf)
+                            try:
+                                data = ref_designator.extract_ref_designator_data(
+                                    tmp, frame_lineweight=frame_lineweight, original_filename=fname)
+                            finally:
+                                try:
+                                    os.unlink(tmp)
+                                except OSError:
+                                    pass
+                            data['main_drawing_number'] = analysis.get('main_drawing_number')
+                            data['source_drawing_number'] = analysis.get('source_drawing_number')
+                            data['title'] = analysis.get('title')
+                            data['subtitle'] = analysis.get('subtitle')
+                            ref_pending[fname] = data
+                        st.session_state['ref_pending'] = ref_pending
+                        st.session_state['ref_pending_mode'] = 'region'
+                        st.session_state.output_filename = output_filename
+                        st.session_state.processing_settings = {
+                            'also_extract_non_circuit': False,
+                            'extract_drawing_numbers': extract_drawing_numbers_option,
+                            'extract_title': extract_title_option,
+                        }
 
                 else:
                     # 通常モード
-                    temp_files = []
-                    original_filenames = []
-                    for uploaded_file in uploaded_files:
-                        temp_file = save_uploadedfile(uploaded_file)
-                        temp_files.append(temp_file)
-                        original_filenames.append(uploaded_file.name)
+                    if also_extract_non_circuit:
+                        temp_files = []
+                        original_filenames = []
+                        for uploaded_file in uploaded_files:
+                            temp_file = save_uploadedfile(uploaded_file)
+                            temp_files.append(temp_file)
+                            original_filenames.append(uploaded_file.name)
 
-                    results_temp = process_multiple_dxf_files(
-                        temp_files,
-                        filter_non_parts=filter_non_parts,
-                        sort_order=sort_value,
-                        debug=False,
-                        selected_layers=selected_layers,
-                        validate_ref_designators=validate_ref_designators,
-                        extract_drawing_numbers_option=extract_drawing_numbers_option,
-                        extract_title_option=extract_title_option,
-                        original_filenames=original_filenames
-                    )
+                        results_temp = process_multiple_dxf_files(
+                            temp_files,
+                            sort_order=sort_value,
+                            extract_drawing_numbers_option=extract_drawing_numbers_option,
+                            extract_title_option=extract_title_option,
+                            original_filenames=original_filenames,
+                        )
 
-                    results = {}
-                    for temp_file, original_name in zip(temp_files, original_filenames):
-                        if temp_file in results_temp:
-                            labels, info = results_temp[temp_file]
-                            info['filename'] = original_name
-                            results[original_name] = (labels, info)
+                        results = {}
+                        for temp_file, original_name in zip(temp_files, original_filenames):
+                            if temp_file in results_temp:
+                                labels, info = results_temp[temp_file]
+                                info['filename'] = original_name
+                                results[original_name] = (labels, info)
 
-                    st.session_state.excel_result = create_excel_output(
-                        results, filter_non_parts, sort_value, validate_ref_designators)
-                    st.session_state.output_filename = output_filename
-                    st.session_state['is_region_mode'] = False
-                    st.session_state.results = results
-                    st.session_state.processing_settings = {
-                        'filter_option': filter_non_parts,
-                        'validate_ref_designators': validate_ref_designators,
-                        'sort_order': sort_value,
-                        'extract_drawing_numbers': extract_drawing_numbers_option,
-                        'extract_title': extract_title_option
-                    }
+                        st.session_state.excel_result = create_excel_output(results, sort_value)
+                        st.session_state.output_filename = output_filename
+                        st.session_state['is_region_mode'] = False
+                        st.session_state.results = results
+                        st.session_state.processing_settings = {
+                            'also_extract_non_circuit': True,
+                            'extract_drawing_numbers': extract_drawing_numbers_option,
+                            'extract_title': extract_title_option,
+                        }
 
-                    for temp_file in temp_files:
-                        try:
-                            os.unlink(temp_file)
-                        except Exception:
-                            pass
+                        for temp_file in temp_files:
+                            try:
+                                os.unlink(temp_file)
+                            except Exception:
+                                pass
+                    else:
+                        # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
+                        ref_pending = {}
+                        for uploaded_file in uploaded_files:
+                            tmp = save_uploadedfile(uploaded_file)
+                            try:
+                                data = ref_designator.extract_ref_designator_data(
+                                    tmp, frame_lineweight=frame_lineweight,
+                                    original_filename=uploaded_file.name)
+                                if extract_all_option:
+                                    _, dn_info = extract_labels(
+                                        tmp,
+                                        extract_drawing_numbers_option=True,
+                                        extract_title_option=True,
+                                        original_filename=uploaded_file.name,
+                                    )
+                                    data['main_drawing_number'] = dn_info.get('main_drawing_number')
+                                    data['source_drawing_number'] = dn_info.get('source_drawing_number')
+                                    data['title'] = dn_info.get('title')
+                                    data['subtitle'] = dn_info.get('subtitle')
+                            finally:
+                                try:
+                                    os.unlink(tmp)
+                                except OSError:
+                                    pass
+                            ref_pending[uploaded_file.name] = data
+                        st.session_state['ref_pending'] = ref_pending
+                        st.session_state['ref_pending_mode'] = 'normal'
+                        st.session_state.output_filename = output_filename
+                        st.session_state.processing_settings = {
+                            'also_extract_non_circuit': False,
+                            'extract_drawing_numbers': extract_drawing_numbers_option,
+                            'extract_title': extract_title_option,
+                        }
 
                 st.session_state['download_done'] = False
 
@@ -592,14 +624,141 @@ def app():
             handle_error(e)
 
     # ============================================================
+    # 未確定ラベル（機器符号（候補）パイプラインのみ、選択完了までの間表示）
+    # ============================================================
+    if st.session_state.get('ref_pending'):
+        ref_pending = st.session_state['ref_pending']
+        st.subheader("未確定ラベル")
+        st.caption(
+            "機器符号（候補）パターンに一致しなかったラベルです。"
+            "Reference Designator として採用するものにチェックを入れ、"
+            "「選択完了」を押してください。"
+        )
+
+        edited_frames = {}
+        for file_idx, (fname, data) in enumerate(ref_pending.items()):
+            if file_idx > 0:
+                st.divider()
+            st.markdown(f"### {fname}")
+            if data.get('warning'):
+                st.warning(data['warning'])
+            unclassified_rows = ref_designator.build_labeled_rows(data['unclassified_labels'])
+            st.caption(
+                f"図面枠内ラベル数 {data['total_in_frame']}　/　"
+                f"機器符号（候補） {len(data['candidate_labels'])}　/　"
+                f"未確定ラベル {len(unclassified_rows)} 種"
+            )
+            if not unclassified_rows:
+                st.caption("　　（未確定ラベルなし）")
+                continue
+
+            df = pd.DataFrame(unclassified_rows)
+            df.insert(0, '採用', False)
+            edited_frames[fname] = st.data_editor(
+                df,
+                key=f"unclassified_editor_{fname}",
+                column_config={
+                    '採用': st.column_config.CheckboxColumn('採用', default=False),
+                    'ラベル': st.column_config.TextColumn('ラベル', disabled=True),
+                    '個数': st.column_config.NumberColumn('個数', disabled=True),
+                },
+                hide_index=True,
+                width='stretch',
+            )
+
+        if st.button("選択完了", type="primary"):
+            try:
+                with st.spinner("選択内容を反映しています..."):
+                    approved_by_file = {}
+                    for fname in ref_pending:
+                        edited_df = edited_frames.get(fname)
+                        approved = set()
+                        if edited_df is not None:
+                            approved = set(edited_df.loc[edited_df['採用'] == True, 'ラベル'])
+                        approved_by_file[fname] = approved
+
+                    if st.session_state.get('ref_pending_mode') == 'region':
+                        analyses = st.session_state['region_analyses']
+                        region_results = {}
+                        for fname, data in ref_pending.items():
+                            approved = approved_by_file[fname]
+                            final_labels = list(data['candidate_labels']) + [
+                                item for item in data['unclassified_labels']
+                                if item[0] in approved
+                            ]
+                            analysis = analyses[fname]
+                            name_selections = _gather_name_selections(fname, analysis)
+                            named, _ = ref_designator.build_named_regions(
+                                analysis, name_selections, fname)
+                            out = ref_designator.build_region_output(final_labels, named, sort_value)
+                            unclassified_texts = {t for t, _x, _y in data['unclassified_labels']}
+                            region_results[fname] = {
+                                'rows': out['rows'],
+                                'named': out['named'],
+                                'frames': len(analysis.get('frames', [])),
+                                'regions_detected': len(analysis.get('regions', [])),
+                                'regions_named': len({r['id'] for r in named}),
+                                'total_in_frame': data['total_in_frame'],
+                                'filtered_count': len(unclassified_texts - approved),
+                                'final_count': len(final_labels),
+                                'in_region_count': out['in_region_count'],
+                                'drawing_number': analysis.get('main_drawing_number') or '',
+                                'region_label_counts': out['region_label_counts'],
+                            }
+                        st.session_state.excel_result = create_region_excel_output(region_results)
+                        st.session_state['is_region_mode'] = True
+                        st.session_state['region_results_summary'] = {
+                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
+                            for f, d in region_results.items()
+                        }
+                    else:
+                        ref_final = {}
+                        for fname, data in ref_pending.items():
+                            approved = approved_by_file[fname]
+                            final_labels = list(data['candidate_labels']) + [
+                                item for item in data['unclassified_labels']
+                                if item[0] in approved
+                            ]
+                            rows = ref_designator.build_labeled_rows(final_labels)
+                            if sort_value == 'desc':
+                                rows.sort(key=lambda r: r['ラベル'], reverse=True)
+                            unclassified_texts = {t for t, _x, _y in data['unclassified_labels']}
+                            ref_final[fname] = {
+                                'rows': rows,
+                                'total_in_frame': data['total_in_frame'],
+                                'unclassified_count': len(unclassified_texts - approved),
+                                'warning': data.get('warning'),
+                                'main_drawing_number': data.get('main_drawing_number'),
+                                'source_drawing_number': data.get('source_drawing_number'),
+                                'title': data.get('title'),
+                                'subtitle': data.get('subtitle'),
+                            }
+                        st.session_state.excel_result = create_ref_designator_excel_output(
+                            ref_final, sort_value)
+                        st.session_state['is_region_mode'] = False
+                        st.session_state['ref_results_summary'] = ref_final
+
+                    del st.session_state['ref_pending']
+                    st.session_state.pop('ref_pending_mode', None)
+                    st.session_state['download_done'] = False
+                st.rerun()
+            except Exception as e:
+                handle_error(e)
+
+    # ============================================================
     # 抽出結果
     # ============================================================
     if st.session_state.get('excel_result'):
         is_region_mode = st.session_state.get('is_region_mode', False)
+        settings = st.session_state.get('processing_settings', {})
+        candidate_mode = not settings.get('also_extract_non_circuit', False)
 
         if is_region_mode:
             summ = st.session_state.get('region_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルからラベル抽出が完了しました（領域付き）")
+        elif candidate_mode:
+            summ = st.session_state.get('ref_results_summary', {})
+            st.success(f"{len(summ)}個のDXFファイルから機器符号（候補）の抽出が完了しました")
         else:
             results = st.session_state.get('results', {})
             st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
@@ -621,8 +780,25 @@ def app():
                             '領域内ラベル数': d.get('in_region_count', 0),
                         })
                     st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+            elif candidate_mode:
+                summ = st.session_state.get('ref_results_summary', {})
+                rows = []
+                for f, d in summ.items():
+                    row = {
+                        'ファイル名': f,
+                        '図面枠内ラベル数': d.get('total_in_frame', 0),
+                        '機器符号（候補）数': sum(r['個数'] for r in d.get('rows', [])),
+                        '未確定ラベル数（未採用）': d.get('unclassified_count', 0),
+                    }
+                    if settings.get('extract_drawing_numbers'):
+                        row['図番'] = d.get('main_drawing_number', '') or ''
+                        row['流用元図番'] = d.get('source_drawing_number', '') or ''
+                    if settings.get('extract_title'):
+                        row['タイトル'] = d.get('title', '') or ''
+                        row['サブタイトル'] = d.get('subtitle', '') or ''
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
             else:
-                settings = st.session_state.get('processing_settings', {})
                 results = st.session_state.get('results', {})
                 rows = []
                 for file_path, (labels, info) in results.items():
@@ -630,12 +806,7 @@ def app():
                     row = {
                         'ファイル名': filename,
                         '総抽出ラベル数': info.get('total_extracted', 0),
-                        '除外ラベル数': info.get('filtered_count', 0),
                         '最終ラベル数': info.get('final_count', 0),
-                        'レイヤー数': (
-                            f"{info.get('processed_layers', 0)}"
-                            f"/{info.get('total_layers', 0)}"
-                        ),
                     }
                     if settings.get('extract_drawing_numbers'):
                         row['図番'] = info.get('main_drawing_number', '')
@@ -664,11 +835,12 @@ def app():
                      type="primary" if download_done else "secondary"):
             for key in ['excel_result', 'output_filename', 'processing_settings',
                         'results', 'is_region_mode', 'region_analyses',
-                        'region_results_summary', 'download_done']:
+                        'region_results_summary', 'ref_pending', 'ref_pending_mode',
+                        'ref_results_summary', 'download_done']:
                 if key in st.session_state:
                     del st.session_state[key]
             for k in list(st.session_state.keys()):
-                if isinstance(k, str) and k.startswith('rc_'):
+                if isinstance(k, str) and (k.startswith('rc_') or k.startswith('unclassified_editor_')):
                     del st.session_state[k]
             st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()

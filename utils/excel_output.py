@@ -10,17 +10,18 @@ region_detector モジュールに実装されている。
 import os
 import pandas as pd
 from io import BytesIO
-from collections import Counter, defaultdict
+from collections import Counter
 
 from .common_utils import normalize_width
 from .region_detector import build_region_label_summary
 
 
-def create_excel_output(results, filter_non_parts, sort_option, validate_ref_designators):
-    """通常モードの Excel を生成する。
+def create_excel_output(results, sort_option):
+    """通常モード（「機器符号（候補）以外も抽出」ON）の Excel を生成する。
 
     ラベルは半角へ正規化してから集計するため、図面上の表記が半角/全角どちら
-    でも同じ語は同じ行（同じ個数）にまとまる。
+    でも同じ語は同じ行（同じ個数）にまとまる。フィルタなし（全ラベル）で
+    抽出された `results` をそのまま集計する。
     """
     output = BytesIO()
 
@@ -38,18 +39,13 @@ def create_excel_output(results, filter_non_parts, sort_option, validate_ref_des
         })
 
         summary_data = []
-        invalid_by_symbol = defaultdict(lambda: {'count': 0, 'files': []})
         total_counter = Counter()
 
         for file_path, (labels, info) in results.items():
             filename = info.get('filename', os.path.basename(file_path))
             summary_data.append({
                 'ファイル名': filename,
-                '総抽出ラベル数': info.get('total_extracted', 0),
-                '除外ラベル数': info.get('filtered_count', 0),
-                '最終ラベル数': info.get('final_count', 0),
-                '処理レイヤー数': info.get('processed_layers', 0),
-                '全レイヤー数': info.get('total_layers', 0),
+                '総ラベル数': info.get('final_count', 0),
                 '図番': info.get('main_drawing_number', ''),
                 '流用元図番': info.get('source_drawing_number', ''),
                 'タイトル': info.get('title', ''),
@@ -57,13 +53,6 @@ def create_excel_output(results, filter_non_parts, sort_option, validate_ref_des
             })
 
             total_counter.update(Counter(normalize_width(l) for l in labels))
-
-            if validate_ref_designators and info.get('invalid_ref_designators'):
-                for symbol in info['invalid_ref_designators']:
-                    symbol = normalize_width(symbol)
-                    invalid_by_symbol[symbol]['count'] += 1
-                    if filename not in invalid_by_symbol[symbol]['files']:
-                        invalid_by_symbol[symbol]['files'].append(filename)
 
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
@@ -110,23 +99,84 @@ def create_excel_output(results, filter_non_parts, sort_option, validate_ref_des
                 worksheet.set_column('A:A', 25)
                 worksheet.set_column('B:B', 10)
 
-        if invalid_by_symbol:
-            invalid_data = [
-                {
-                    '機器符号': sym,
-                    '個数': data['count'],
-                    'ファイル名': ', '.join(data['files'])
-                }
-                for sym, data in sorted(invalid_by_symbol.items())
-            ]
-            invalid_df = pd.DataFrame(invalid_data)
-            invalid_df.to_excel(writer, sheet_name='Invalid', index=False)
-            invalid_worksheet = writer.sheets['Invalid']
-            for col_num, value in enumerate(invalid_df.columns.values):
-                invalid_worksheet.write(0, col_num, value, header_format)
-            invalid_worksheet.set_column('A:A', 20)
-            invalid_worksheet.set_column('B:B', 8)
-            invalid_worksheet.set_column('C:C', 60)
+    output.seek(0)
+    return output.getvalue()
+
+
+def create_ref_designator_excel_output(results, sort_option):
+    """通常モード（既定＝「機器符号（候補）以外も抽出」OFF）の Excel を生成する。
+
+    `results`: {fname: {...}}（キーは各値の意味）
+      'rows': [{'ラベル':str,'個数':int}]  ユーザーが確定した機器符号（候補）
+      'total_in_frame': int  図面枠内の総ラベル数
+      'unclassified_count': int  未採用のまま残った未確定ラベルの種類数
+      'warning': str | None
+      'main_drawing_number' / 'source_drawing_number' / 'title' / 'subtitle':
+          図番・タイトル抽出オプション有効時のみ値が入る
+
+    'rows' はラベルの正規化（NFKC・前後空白除去）済みで渡される想定
+    （`utils/ref_designator.py` 側で実施済み）。
+    """
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+        link_format = workbook.add_format({'color': 'blue', 'underline': 1})
+
+        summary_data = []
+        total_counter = Counter()
+        for fname, data in results.items():
+            row = {
+                'ファイル名': fname,
+                '図面枠内ラベル数': data.get('total_in_frame', 0),
+                '機器符号（候補）数': sum(r['個数'] for r in data.get('rows', [])),
+                '未確定ラベル数（未採用）': data.get('unclassified_count', 0),
+            }
+            if data.get('main_drawing_number') is not None or data.get('title') is not None:
+                row['図番'] = data.get('main_drawing_number', '') or ''
+                row['流用元図番'] = data.get('source_drawing_number', '') or ''
+                row['タイトル'] = data.get('title', '') or ''
+                row['サブタイトル'] = data.get('subtitle', '') or ''
+            summary_data.append(row)
+            for r in data.get('rows', []):
+                total_counter[r['ラベル']] += r['個数']
+
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        summary_ws = writer.sheets['Summary']
+        for col_num, value in enumerate(summary_df.columns.values):
+            summary_ws.write(0, col_num, value, header_format)
+        for row_num, fname in enumerate(results.keys(), start=1):
+            sheet_name = os.path.splitext(fname)[0][:31]
+            summary_ws.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, fname)
+        summary_ws.set_column('A:A', 28)
+
+        total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
+        if total_data:
+            total_df = pd.DataFrame(total_data)
+            total_df.to_excel(writer, sheet_name='Total', index=False)
+            total_ws = writer.sheets['Total']
+            total_ws.write(0, 0, 'ラベル', header_format)
+            total_ws.write(0, 1, '個数', header_format)
+            total_ws.set_column('A:A', 25)
+            total_ws.set_column('B:B', 10)
+
+        for fname, data in results.items():
+            sheet_name = os.path.splitext(fname)[0][:31]
+            rows = list(data.get('rows', []))
+            if sort_option == 'asc':
+                rows.sort(key=lambda r: r['ラベル'])
+            elif sort_option == 'desc':
+                rows.sort(key=lambda r: r['ラベル'], reverse=True)
+            if rows:
+                df = pd.DataFrame(rows, columns=['ラベル', '個数'])
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                ws = writer.sheets[sheet_name]
+                ws.write(0, 0, 'ラベル', header_format)
+                ws.write(0, 1, '個数', header_format)
+                ws.set_column('A:A', 25)
+                ws.set_column('B:B', 10)
 
     output.seek(0)
     return output.getvalue()

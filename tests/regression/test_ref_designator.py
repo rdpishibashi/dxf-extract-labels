@@ -126,19 +126,20 @@ def test_normalize_label_nfkc_and_strip():
 
 
 def test_split_candidates():
-    candidates, unclassified = ref_designator.split_candidates(
-        ['R10', 'GND', 'CN3', 'TITLE'])
+    """候補（＝未確定ラベルUIでのレビュー対象）は Patterns 一致・除外非該当のみ。
+    除外パターン該当（GND・TITLE）は結果に含まれない
+    （2026-07-10 ユーザー指摘: RemainingUnclassified シートの中身を実データで
+    再確認し、GND/TITLE等は除外カテゴリ付与済み＝候補に含まれないことを確定）。"""
+    candidates = ref_designator.split_candidates(['R10', 'GND', 'CN3', 'TITLE'])
     assert candidates == ['R10', 'CN3']
-    assert unclassified == ['GND', 'TITLE']
 
 
 def test_split_candidates_drops_non_pattern_matches():
-    """3パターン（Patterns シート）のいずれにも一致しない文字列（説明文・記号等）は
-    候補にも未確定ラベルにも分類されない（2026-07-10 ユーザー指摘のバグ修正）。"""
-    candidates, unclassified = ref_designator.split_candidates(
+    """3パターン（Patterns シート）のいずれにも一致しない文字列（説明文・記号等）も
+    結果に含まれない。"""
+    candidates = ref_designator.split_candidates(
         ['R10', 'GND', '(2/5)', '(-039-01)2/3', 'これは説明文'])
     assert candidates == ['R10']
-    assert unclassified == ['GND']
 
 
 def test_summarize_labels_counts_and_sorts():
@@ -215,8 +216,8 @@ def test_build_region_output_counts_and_sorts():
     'EE6097-039-06C.dxf',   # 3図面
 ])
 def test_titleblock_content_excluded_from_real_sample(sample_name):
-    """図面情報欄内のラベル（TITLE/DATE/REVISION/人名等）が、機器符号候補・
-    未確定ラベルのどちらにも一切現れないこと（構造的除外の検証）。"""
+    """図面情報欄内のラベル（TITLE/DATE/REVISION/人名等）が機器符号候補
+    （＝未確定ラベルUIでのレビュー対象）に一切現れないこと（構造的除外の検証）。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
@@ -224,8 +225,7 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
     assert data['warning'] is None
-    all_texts = {t for t, _x, _y in data['candidate_labels']} | \
-        {t for t, _x, _y in data['unclassified_labels']}
+    all_texts = {t for t, _x, _y in data['candidate_labels']}
 
     titleblock_leakage = {'TITLE', 'DATE', 'REVISION', 'APPRV', 'CHECK', 'DESIG',
                            'DRAW', 'MARK', 'REMARKS', 'SCALE', 'NAME',
@@ -238,20 +238,25 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     'EE6868-500-01C.dxf',
     'EE6097-039-06C.dxf',
 ])
-def test_unclassified_labels_all_match_base_pattern(sample_name):
-    """未確定ラベルは Patterns（3パターン）に一致したものだけ。パターンに一致しない
-    説明文・注記（例 `(2/5)`、`(-039-01)2/3`）は候補にも未確定にも現れない
-    （2026-07-10 ユーザー指摘のバグ修正の回帰検証）。"""
+def test_candidate_labels_all_match_base_pattern_and_exclude_known_words(sample_name):
+    """機器符号（候補）＝未確定ラベルUIでのレビュー対象は (1) Patterns（3パターン）に
+    一致したものだけで (2) 除外パターン該当（GND・INPUT・TITLE等）は一切含まれない
+    （2026-07-10 ユーザー指摘のバグ修正の回帰検証。実データで RemainingUnclassified
+    シートの中身を再確認し、GND/INPUT/TITLE等には除外カテゴリが付与されている＝
+    候補に含まれないのが正しい動作と確定）。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
 
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
-    for text, _x, _y in data['unclassified_labels']:
+    excluded_words = {'GND', 'INPUT', 'OUTPUT', 'TITLE', 'POWER', 'ALARM'}
+    for text, _x, _y in data['candidate_labels']:
         judgment = ref_designator._judgment_text(text)
         assert ref_designator.CANDIDATE_PATTERN.match(judgment), (
-            f'{text!r} in unclassified_labels does not match CANDIDATE_PATTERN')
+            f'{text!r} in candidate_labels does not match CANDIDATE_PATTERN')
+        assert text not in excluded_words, (
+            f'{text!r} matches ExclusionPatterns but leaked into candidate_labels')
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
@@ -277,7 +282,6 @@ def test_extract_ref_designator_rows_end_to_end():
     assert result['filename'] == 'EE6491-039-04A.dxf'
     assert result['warning'] is None
     assert len(result['candidate_rows']) > 0
-    assert len(result['unclassified_rows']) > 0
     # 行データは {'ラベル': str, '個数': int} の形
     sample = result['candidate_rows'][0]
     assert set(sample.keys()) == {'ラベル', '個数'}

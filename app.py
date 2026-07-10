@@ -222,8 +222,8 @@ def app():
             value=False,
             help="チェックなし（既定）：図面枠内・図面情報欄外のラベルのうち、機器符号\n"
                  "（Reference Designator）パターンに一致し除外パターンに該当しないものを\n"
-                 "「機器符号（候補）」として抽出します。パターンに一致しないラベルは\n"
-                 "「未確定ラベル」として一覧表示し、採用するものを選択できます。\n\n"
+                 "「未確定ラベル」として一覧表示します。チェックして採用したものだけが\n"
+                 "最終的に機器符号（候補）として出力されます（自動確定ではありません）。\n\n"
                  "チェックあり：図面枠外・図面情報欄内も含め、すべてのラベルを"
                  "そのまま抽出します（機器符号（候補）の判定・未確定ラベルの選択は行いません）。\n\n"
                  "【機器符号パターン例】\n"
@@ -368,7 +368,9 @@ def app():
     # 領域を検出
     # ============================================================
     detect_done = 'region_analyses' in st.session_state
-    extract_done = bool(st.session_state.get('excel_result'))
+    # 「ラベルを抽出」が開始済み（未確定ラベルの選択待ち含む）なら、領域検出は
+    # もはやこの回の抽出には反映されないため「領域を検出」を白にする。
+    extract_done = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
     detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
     if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
         try:
@@ -630,9 +632,9 @@ def app():
         ref_pending = st.session_state['ref_pending']
         st.subheader("未確定ラベル")
         st.caption(
-            "機器符号（候補）パターンに一致しなかったラベルです。"
+            "機器符号（候補）パターンに一致し、除外パターンに該当しなかったラベルです。"
             "Reference Designator として採用するものにチェックを入れ、"
-            "「選択完了」を押してください。"
+            "「選択完了」を押してください（チェックしたものだけが出力されます）。"
         )
 
         edited_frames = {}
@@ -642,19 +644,18 @@ def app():
             st.markdown(f"### {fname}")
             if data.get('warning'):
                 st.warning(data['warning'])
-            unclassified_rows = ref_designator.build_labeled_rows(data['unclassified_labels'])
+            candidate_rows = ref_designator.build_labeled_rows(data['candidate_labels'])
             st.caption(
                 f"図面枠内ラベル数 {data['total_in_frame']}　/　"
-                f"機器符号（候補） {len(data['candidate_labels'])}　/　"
-                f"未確定ラベル {len(unclassified_rows)} 種"
+                f"未確定ラベル（要選択） {len(candidate_rows)} 種"
             )
-            if not unclassified_rows:
+            if not candidate_rows:
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
             # 余白を減らすため横2列（左右）に分けて表示する
-            half = (len(unclassified_rows) + 1) // 2
-            halves = [unclassified_rows[:half], unclassified_rows[half:]]
+            half = (len(candidate_rows) + 1) // 2
+            halves = [candidate_rows[:half], candidate_rows[half:]]
             cols = st.columns(2)
             dfs = []
             for suffix, (rows, col) in zip('LR', zip(halves, cols)):
@@ -692,8 +693,8 @@ def app():
                         region_results = {}
                         for fname, data in ref_pending.items():
                             approved = approved_by_file[fname]
-                            final_labels = list(data['candidate_labels']) + [
-                                item for item in data['unclassified_labels']
+                            final_labels = [
+                                item for item in data['candidate_labels']
                                 if item[0] in approved
                             ]
                             analysis = analyses[fname]
@@ -701,7 +702,7 @@ def app():
                             named, _ = ref_designator.build_named_regions(
                                 analysis, name_selections, fname)
                             out = ref_designator.build_region_output(final_labels, named, sort_value)
-                            unclassified_texts = {t for t, _x, _y in data['unclassified_labels']}
+                            candidate_texts = {t for t, _x, _y in data['candidate_labels']}
                             region_results[fname] = {
                                 'rows': out['rows'],
                                 'named': out['named'],
@@ -709,7 +710,7 @@ def app():
                                 'regions_detected': len(analysis.get('regions', [])),
                                 'regions_named': len({r['id'] for r in named}),
                                 'total_in_frame': data['total_in_frame'],
-                                'filtered_count': len(unclassified_texts - approved),
+                                'filtered_count': len(candidate_texts - approved),
                                 'final_count': len(final_labels),
                                 'in_region_count': out['in_region_count'],
                                 'drawing_number': analysis.get('main_drawing_number') or '',
@@ -725,18 +726,18 @@ def app():
                         ref_final = {}
                         for fname, data in ref_pending.items():
                             approved = approved_by_file[fname]
-                            final_labels = list(data['candidate_labels']) + [
-                                item for item in data['unclassified_labels']
+                            final_labels = [
+                                item for item in data['candidate_labels']
                                 if item[0] in approved
                             ]
                             rows = ref_designator.build_labeled_rows(final_labels)
                             if sort_value == 'desc':
                                 rows.sort(key=lambda r: r['ラベル'], reverse=True)
-                            unclassified_texts = {t for t, _x, _y in data['unclassified_labels']}
+                            candidate_texts = {t for t, _x, _y in data['candidate_labels']}
                             ref_final[fname] = {
                                 'rows': rows,
                                 'total_in_frame': data['total_in_frame'],
-                                'unclassified_count': len(unclassified_texts - approved),
+                                'unclassified_count': len(candidate_texts - approved),
                                 'warning': data.get('warning'),
                                 'main_drawing_number': data.get('main_drawing_number'),
                                 'source_drawing_number': data.get('source_drawing_number'),

@@ -57,7 +57,7 @@ DEFAULT_REGION_CONFIG = {
     'span_level_merge': False,  # 共線結合のレベルを「スパンを構成した線分だけ」の平均で
                                 # 算出する（既定はレベルクラスタ全体の平均）。レベル汚染
                                 # フォールバック（analyze_dxf_regions 4パス目）が True で使う。
-    'area_ratio': 0.20,         # 単独の領域の最小面積（枠面積比）
+    'area_ratio': 0.15,         # 単独の領域の最小面積（枠面積比）
     'group_area_ratio': 0.10,   # 同名複数ピースを合算した場合の最小合計面積（枠面積比）
     'min_face_ratio': 0.005,    # 個々の閉領域として残す最小面積（枠面積比、ノイズ除去）
     'name_max_dist': 10.0,      # 名称ラベルの境界からの最大距離
@@ -1456,6 +1456,55 @@ def _detect_union_parents(regions, tol=1.0, area_tol=1.0):
     return result
 
 
+def _force_include_union_children(cands_list, area_tol=1.0, corner_tol=1.0):
+    """面積フィルタ未適用の生候補リスト `cands_list` に対して合体親（union parent）を
+    検出し、子側候補のインデックス集合を返す（呼び出し側が面積閾値を問わず採用する
+    ために使う）。
+
+    通常の採用判定（単独面積>=20%、または同名2ピース合算>=10%）は、兄弟矩形が
+    互いに異なる名称を持ち、かつどちらも単独で閾値未満の場合（例:
+    `DE5434-563-03A.dxf` の `SB-1A(FX1)`/`CN I/F B.D TYPE3(CN-IF3-1A)`、各7.6-7.7%）
+    に対応できない。この2矩形を包む合体面（外側の閉領域。縦ギャップ橋渡しが両側の
+    仕切り線を橋渡しした結果生じる、実体のない面積34292.5の見かけ上の領域）が
+    偶然どちらか一方の兄弟と同名候補を共有すると、その兄弟だけが同名2ピース合算で
+    救済され、もう一方の兄弟は候補にすら残らず消えていた。
+
+    `_detect_union_parents` は面積一致・頂点包含・非重複という強い幾何学的根拠で
+    合体関係を判定するため、採用フィルタより前（全ての生候補が揃った時点）で
+    適用すれば、面積閾値に関わらず両方の子を正しく拾える。採用後は既存の
+    `_resolve_union_parents` が同じ合体親をあらためて検出し、子の名称を除いた
+    固有名が無ければ合体親自体を除去する（従来通り）。
+
+    **補完面ペアと競合する三つ組は除外する**: `_detect_complement_pairs`
+    （頂点数が非対称な大小2面のペア。`_resolve_complement_faces` が別途処理する）
+    に関与する候補が三つ組（親・子2つ）のいずれかに含まれる場合は force-include
+    の対象から外す。1つの面が2つの独立した仕組み（頂点差分による補完面カット出し／
+    面積一致による合体親分解）に同時に「取り合われる」と、同じ物理領域が異なる
+    形（カット出し後のサブポリゴン／生の面そのもの）で二重に採用されてしまう
+    （実例: `EE6313-545-01D.dxf` の B CHAMBER/FX CHAMBER。補完面〔78.2%〕は
+    B CHAMBER〔63.64%、単独で閾値超のため本来 force-include 不要〕+ 小面
+    〔14.59%〕の合体としても幾何学的に成立してしまい、後者が
+    `_resolve_complement_faces` によるカット出し結果と別に、生の面のまま
+    二重採用され `B CHAMBER` が2件検出されるようになっていた。B CHAMBER は
+    既にこの補完面ペアの「小」側であるため、複合面パターンとして除外される）。
+    """
+    if len(cands_list) < 3:
+        return set()
+    enriched = [dict(cf, corners=_polygon_corners(cf['polygon'])) for cf in cands_list]
+    complement_involved = set()
+    for large_i, small_i in _detect_complement_pairs(enriched):
+        complement_involved.add(large_i)
+        complement_involved.add(small_i)
+    parent_to_children = _detect_union_parents(enriched, tol=corner_tol, area_tol=area_tol)
+    child_idx = set()
+    for i, (j, k) in parent_to_children.items():
+        if i in complement_involved or j in complement_involved or k in complement_involved:
+            continue
+        child_idx.add(j)
+        child_idx.add(k)
+    return child_idx
+
+
 def _name_union_parent(parent_region, child_regions, labels, cfg,
                         exclude_names=None):
     """合体親領域の名称候補を、子領域が未採用のラベルから探索して返す。
@@ -1725,7 +1774,8 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                     target_names.add(nm)
 
         # 3) 採用条件: 個別面積>=単独閾値(20%)、または 名称がターゲット（複数ピース合算で
-        #    第1図面が閾値超）。ターゲット名称は他図面でも面積に関係なく採用。
+        #    第1図面が閾値超）、または合体親（union parent）の子と確認された候補
+        #    （`_force_include_union_children`、面積閾値を問わず採用。後述）。
         #    行き止まり枝は、その取り付け点(attachment)が当該領域のポリゴン境界上に
         #    乗るものだけを、その領域の `dangling_edges` として絞り込む（無関係な
         #    部品・他領域の枝を混在させない）。
@@ -1734,9 +1784,11 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         rid = 0
         for fi, cands_list in enumerate(frame_cands):
             frame_dangling = dangling_by_frame[fi] if fi < len(dangling_by_frame) else []
-            for cf in cands_list:
+            force_idx = _force_include_union_children(cands_list)
+            for cidx, cf in enumerate(cands_list):
                 if not (cf['area'] >= single_thr
-                        or (cf['default_name'] and cf['default_name'] in target_names)):
+                        or (cf['default_name'] and cf['default_name'] in target_names)
+                        or cidx in force_idx):
                     continue
                 region_dangling = [
                     br for br in frame_dangling

@@ -37,7 +37,7 @@ from .region_detector import detect_drawing_frames, assign_region_labels
 # EXCLUSION_*_CATEGORIES / CONFIRMED_PATTERN_CATEGORIES）を変更したら上げる。
 # 判断ログ（utils/decision_log.py）の patterns_version 列に記録され、
 # 「パターン更新後もまだ手動判断され続けているラベル」の特定に使う。
-PATTERNS_VERSION = '1.6.4'
+PATTERNS_VERSION = '1.7.2'
 
 
 # ============================================================
@@ -71,7 +71,8 @@ def matched_pattern_name(judgment: str) -> Optional[str]:
 
 # ============================================================
 # 2. 除外パターン（ExclusionPatterns シートが正、2026-07-10 確定。
-#    circuit_description の「+数字1桁許容」は 2026-07-10 追加確定）
+#    circuit_description の「+数字1桁許容」は 2026-07-10 追加確定。
+#    wiring_digit_run（数字4桁以上連続）は 2026-07-11 追加確定）
 # ============================================================
 
 _COMMON_NOUNS = {
@@ -162,6 +163,9 @@ EXCLUSION_REGEX_CATEGORIES = [
      'X+英字（PLC/内部信号名。例 XRST,XMCON,XPBON。X+数字は除外対象外）'),
     ('circuit_description', _CIRCUIT_DESCRIPTION_REGEX,
      '回路の説明（電源・接地・信号系統名）+数字1桁まで許容（例 OUT2,IN1,COM3）'),
+    ('wiring_digit_run', re.compile(r'.*[0-9]{4,}'),
+     '数字が4桁以上連続する配線ラベル（例 W1234, CN2345。ハイフン等で分断された'
+     '数字は対象外。2026-07-11 ユーザー指定）'),
 ]
 
 

@@ -4,8 +4,8 @@
   - パターン: 英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ
   - 判定は括弧より前の部分に対して行う（R10(2.2K) → R10 で判定）
   - 除外: 単一英大文字・末尾+-・AWG・RACK*・図番・JIS/DWG*・A/B+数字・PE+数字・
-    L/N/P+数字・X+英字、および普通名詞/回路説明/ユニット名/ケーブル色/図面情報枠語の
-    完全一致リスト
+    L/N/P+数字・X+英字・数字4桁以上連続（配線ラベル、2026-07-11追加）、および
+    普通名詞/回路説明/ユニット名/ケーブル色/図面情報枠語の完全一致リスト
   - 図面枠 = lineweight=frame_lineweight かつ color=7（region_detector と同条件。
     lineweight単独では無関係な線分を拾い検出が壊れることを実データで確認済み）
   - 図面情報欄・枠外位置記号は、図面枠線を直接の子に持つ「フォーマットブロック」
@@ -96,6 +96,7 @@ def test_candidate_pattern_rejects(label):
     ('RD', 'cable_colors'),
     ('TITLE', 'titleblock_terms'),
     ('DATE', 'titleblock_terms'),
+    ('W1234', 'wiring_digit_run'),
 ])
 def test_exclusion_categories(label, reason):
     assert ref_designator.is_ref_designator_candidate(label) is False, (
@@ -158,6 +159,38 @@ def test_person_name_not_excluded_by_content_filter():
     """人名リストは実装に持たない（図面情報枠の構造的除外で対応する設計）ため、
     単体の is_ref_designator_candidate は人名を弾かない。"""
     assert ref_designator.is_ref_designator_candidate('KURIHARA') is True
+
+
+# ---------------------------------------------------------------------------
+# 除外パターン追加分（2026-07-11: wiring_digit_run＝数字4桁以上連続の配線ラベル）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label', [
+    'W1234', 'CN2345', 'D1000', 'R1000', 'AB1234-5', 'GND1234',
+])
+def test_wiring_digit_run_excludes_four_or_more_consecutive_digits(label):
+    assert ref_designator.classify_judgment_detailed(label) == (
+        'excluded', 'wiring_digit_run')
+
+
+@pytest.mark.parametrize('label', ['R100', 'D100', 'CN123', 'X999'])
+def test_wiring_digit_run_allows_up_to_three_consecutive_digits(label):
+    """数字3桁までは配線ラベル除外の対象外（候補として残る）。"""
+    status, _category = ref_designator.classify_judgment_detailed(label)
+    assert status != 'excluded'
+
+
+def test_wiring_digit_run_requires_digits_to_be_consecutive():
+    """ハイフン等で分断された数字は合算しない（連続4桁以上のみ対象）。
+    'AB12-34' は '12'・'34' がそれぞれ2桁ずつで、連続した4桁は存在しない。"""
+    status, _category = ref_designator.classify_judgment_detailed('AB12-34')
+    assert status != 'excluded'
+
+
+def test_wiring_digit_run_ignores_parenthetical_digits():
+    """括弧内の数字は判定対象外（括弧より前の判定用文字列のみで判定）。
+    'R10(1234)' は判定用文字列が 'R10' のため除外されない。"""
+    assert ref_designator.is_ref_designator_candidate('R10(1234)') is True
 
 
 # ---------------------------------------------------------------------------

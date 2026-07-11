@@ -20,7 +20,7 @@ from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
 
-APP_VERSION = '1.7.0'
+APP_VERSION = '1.7.1'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -490,7 +490,8 @@ def app():
                 # 前回の結果・未確定ラベル選択状態をクリアする
                 for k in ['excel_result', 'is_region_mode', 'region_results_summary',
                           'ref_pending', 'ref_pending_mode', 'ref_results_summary',
-                          'decision_log_result']:
+                          'decision_log_result',
+                          'unclassified_checked', 'unclassified_ver']:
                     if k in st.session_state:
                         del st.session_state[k]
                 for k in list(st.session_state.keys()):
@@ -656,7 +657,16 @@ def app():
             "確定パターン（レビュー不要で自動採用される形）に一致しなかったものです。"
             "Reference Designator として採用するものにチェックを入れ、"
             "「選択完了」を押してください（チェックしたものだけが出力されます）。"
+            "末尾の数字（1〜2桁）を除いた部分が同じラベル（例: CN1・CN2・CN10）は、"
+            "同一ファイル内で連動して採用/解除されます。"
         )
+
+        # チェック状態の正本。data_editor のウィジェット状態は直接書き換えず、
+        # この dict を更新して unclassified_ver（キーのバージョン）を上げることで
+        # 次の run で新しいウィジェットとして再生成する（生きているインスタンスの
+        # 状態書き換えはブラウザ/サーバー間の同期ループを起こすため行わない）。
+        checked_state = st.session_state.setdefault('unclassified_checked', {})
+        editor_ver = st.session_state.setdefault('unclassified_ver', 0)
 
         edited_frames = {}
         for file_idx, (fname, data) in enumerate(ref_pending.items()):
@@ -675,6 +685,10 @@ def app():
                 st.caption("　　（未確定ラベルなし）")
                 continue
 
+            file_checked = checked_state.setdefault(fname, {})
+            for row in review_rows:
+                file_checked.setdefault(row['ラベル'], False)
+
             # 固定幅・固定行数のテーブルに分けて表示する。st.container(horizontal=True)
             # によりブラウザー幅に収まる個数だけ横に並び、収まらない分は自動的に
             # 次の行へ折り返す（ブラウザーが広いほど多くのテーブルが横に並ぶ）。
@@ -688,10 +702,10 @@ def app():
                     if not rows:
                         continue
                     d = pd.DataFrame(rows)
-                    d.insert(0, '採用', False)
+                    d.insert(0, '採用', [file_checked[r['ラベル']] for r in rows])
                     edited = st.data_editor(
                         d,
-                        key=f"unclassified_editor_{fname}_{suffix}",
+                        key=f"unclassified_editor_{editor_ver}_{fname}_{suffix}",
                         column_config={
                             '採用': st.column_config.CheckboxColumn(
                                 '採用', default=False, width=UNCLASSIFIED_COL_WIDTH_APPROVE),
@@ -706,15 +720,31 @@ def app():
                     dfs.append(edited)
             edited_frames[fname] = dfs
 
+        # チェック変更の検出と兄弟ラベルへの連動（正本を更新→キー更新→再描画）。
+        # 差分がない run（再描画直後・選択完了クリック時）は何もしないため、
+        # 再実行が連鎖することはない。
+        deltas = []
+        for fname, dfs in edited_frames.items():
+            file_checked = checked_state.get(fname, {})
+            for edited_df in dfs:
+                for lbl, val in zip(edited_df['ラベル'], edited_df['採用']):
+                    if bool(val) != file_checked.get(lbl, False):
+                        deltas.append((fname, lbl, bool(val)))
+        if deltas:
+            for fname, lbl, val in deltas:
+                ref_designator.propagate_sibling_selection(
+                    checked_state[fname], lbl, val)
+            st.session_state['unclassified_ver'] = editor_ver + 1
+            st.rerun()
+
         if st.button("選択完了", type="primary"):
             try:
                 with st.spinner("選択内容を反映しています..."):
                     approved_by_file = {}
                     for fname in ref_pending:
-                        approved = set()
-                        for edited_df in edited_frames.get(fname, []):
-                            approved |= set(edited_df.loc[edited_df['採用'] == True, 'ラベル'])
-                        approved_by_file[fname] = approved
+                        approved_by_file[fname] = {
+                            lbl for lbl, v in checked_state.get(fname, {}).items() if v
+                        }
 
                     # 判断ログ: 未確定ラベルの採用/非採用をエントリ化する
                     # （記録自体は Excel 生成が成功した後に行う）

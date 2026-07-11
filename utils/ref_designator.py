@@ -239,6 +239,39 @@ def summarize_labels(labels: List[str]) -> List[Tuple[str, int]]:
     return [(lbl, counter[lbl]) for lbl in sorted(counter.keys())]
 
 
+# 兄弟ラベル（連動採用）: 末尾が数字1〜2桁で、その前の文字列が一致するラベル同士は
+# 「未確定ラベル」UI で採用/解除を連動させる（例: CN1・CN2・CN10）。
+# 末尾3桁以上（CB001）・末尾が数字でない（X14A）・数字のみ（10）は対象外。
+_SIBLING_RE = re.compile(r'^(.*\D)(\d{1,2})$')
+
+
+def sibling_key(label: str) -> Optional[str]:
+    """連動採用のグループキー（末尾数字1〜2桁を除いた前方文字列）を返す。
+
+    判定は NFKC 正規化後の文字列で行う（全角 `ＣＮ１` と半角 `CN10` も同一
+    グループになる）。連動対象外のラベルは None を返す。
+    """
+    m = _SIBLING_RE.match(normalize_label(label))
+    return m.group(1) if m else None
+
+
+def propagate_sibling_selection(
+    file_checked: Dict[str, bool], label: str, value: bool,
+) -> None:
+    """label の採用状態変更を file_checked（ラベル→採用）に反映し、兄弟にも伝播する。
+
+    file_checked は同一ファイル内の未確定ラベル全種のチェック状態（正本）。
+    label 自身を value に更新し、sibling_key が一致する他ラベルも value に揃える。
+    """
+    file_checked[label] = value
+    key = sibling_key(label)
+    if key is None:
+        return
+    for other in file_checked:
+        if other != label and sibling_key(other) == key:
+            file_checked[other] = value
+
+
 # ============================================================
 # 3. 確定パターン（機器符号（候補）のうち、レビュー不要で自動採用してよいもの）
 # ============================================================

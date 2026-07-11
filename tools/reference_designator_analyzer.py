@@ -685,6 +685,36 @@ def _app_decision_log():
 def app():
     st.title("Reference Designator 抽出検討ツール")
 
+    # 日本語の文字だけを英数字より小さく（94%）表示する。
+    # @font-face の unicode-range で日本語グリフ範囲だけ別フォント定義にし、
+    # size-adjust で縮小率を指定する（文字単位で自動的に使い分けられるため、
+    # ウィジェットごとのフォントサイズ指定は不要）。st.dataframe/Plotly の
+    # Canvas 描画部分には効かない場合がある。
+    st.markdown("""
+        <style>
+        /* 日本語グリフ専用のフォント定義: 94%縮小（ユーザー調整済み） */
+        @font-face {
+            font-family: "AppMixedFont";
+            src: local("Hiragino Kaku Gothic ProN"), local("Yu Gothic UI"),
+                 local("Yu Gothic"), local("Meiryo");
+            unicode-range: U+3000-303F,  /* 句読点・記号 */
+                           U+3040-30FF,  /* ひらがな・カタカナ */
+                           U+FF00-FFEF,  /* 全角英数・半角カナ */
+                           U+4E00-9FFF, U+3400-4DBF;  /* 漢字 */
+            size-adjust: 94%;
+        }
+        /* 上記範囲外（英数字）は通常サイズのフォントにフォールバック */
+        @font-face {
+            font-family: "AppMixedFont";
+            src: local("Source Sans Pro"), local("Helvetica Neue"), local("Arial");
+        }
+        .stApp, .stApp p, .stApp li, .stApp label, .stApp td, .stApp th,
+        .stApp h1, .stApp h2, .stApp h3, .stApp input, .stApp button {
+            font-family: "AppMixedFont", sans-serif !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # タブを箱型（┏━┓）デザインにし、ラベルを+2pt拡大して視認性を上げる
     # （WE-Dashboardと共通のタブスタイル。ライト/ダークテーマ両対応のため
     # 色は無彩色のrgbaを使う。詳細は ~/.claude/skills/streamlit/SKILL.md 参照）。

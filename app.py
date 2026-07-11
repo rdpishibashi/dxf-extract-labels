@@ -20,7 +20,7 @@ from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
 
-APP_VERSION = '1.7.3'
+APP_VERSION = '1.7.4'
 
 st.set_page_config(
     page_title="DXF Extract Labels",

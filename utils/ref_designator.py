@@ -613,6 +613,34 @@ def extract_ref_designator_data(
 # 7. 領域付きモード用: 領域名を付与した行データの構築
 # ============================================================
 
+def _aggregate_assigned_labels(assigned):
+    """`assign_region_labels()` の出力 `[(text,x,y,names), ...]` から集計辞書を
+    作る（`build_labeled_rows`〈named_regions 指定時〉と `build_region_output`
+    で共用する自己完結的な集計ロジック）。
+
+    戻り値: (cnt, region_of, in_region_count, label_count_per_region, region_label_counts)
+      cnt: {ラベル: 出現数}
+      region_of: {ラベル: {所属領域名, ...}}
+      in_region_count: いずれかの領域に所属するラベルの出現件数
+      label_count_per_region: {領域名: そのラベル出現数の合計}
+      region_label_counts: {領域名: Counter({ラベル: 出現数})}
+    """
+    cnt = Counter()
+    region_of = defaultdict(set)
+    in_region_count = 0
+    label_count_per_region = defaultdict(int)
+    region_label_counts = defaultdict(Counter)
+    for (text, _x, _y, names) in assigned:
+        cnt[text] += 1
+        if names:
+            in_region_count += 1
+        for n in names:
+            region_of[text].add(n)
+            label_count_per_region[n] += 1
+            region_label_counts[n][text] += 1
+    return cnt, region_of, in_region_count, label_count_per_region, region_label_counts
+
+
 def build_labeled_rows(
     labels: List[Tuple[str, float, float]],
     named_regions: Optional[List[dict]] = None,
@@ -624,12 +652,8 @@ def build_labeled_rows(
     """
     if named_regions is not None:
         assigned = assign_region_labels(labels, named_regions)
-        cnt = Counter()
-        region_of = defaultdict(set)
-        for (text, _x, _y, names) in assigned:
-            cnt[text] += 1
-            for n in names:
-                region_of[text].add(n)
+        cnt, region_of, _in_region_count, _label_count_per_region, _region_label_counts = \
+            _aggregate_assigned_labels(assigned)
         return [
             {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
             for t in sorted(cnt.keys())
@@ -712,19 +736,8 @@ def build_region_output(
       region_label_counts
     """
     assigned = assign_region_labels(labels, named)
-    cnt = Counter()
-    region_of = defaultdict(set)
-    in_region_count = 0
-    label_count_per_region = defaultdict(int)
-    region_label_counts = defaultdict(Counter)
-    for (text, _x, _y, names) in assigned:
-        cnt[text] += 1
-        if names:
-            in_region_count += 1
-        for n in names:
-            region_of[text].add(n)
-            label_count_per_region[n] += 1
-            region_label_counts[n][text] += 1
+    cnt, region_of, in_region_count, label_count_per_region, region_label_counts = \
+        _aggregate_assigned_labels(assigned)
 
     rows = [
         {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
@@ -744,3 +757,81 @@ def build_region_output(
         'in_region_count': in_region_count,
         'region_label_counts': {n: dict(c) for n, c in region_label_counts.items()},
     }
+
+
+def _approved_final_labels(data: dict, approved: set) -> list:
+    """`ref_pending[fname]`（確定分＋未確定ラベルUIレビュー対象）と、ユーザーが
+    採用したラベル文字列の集合から、最終的に出力する (text,x,y) リストを返す
+    （`build_region_results_from_pending`/`build_ref_final_from_pending` 共用）。"""
+    return list(data['confirmed_labels']) + [
+        item for item in data['review_labels'] if item[0] in approved
+    ]
+
+
+def build_region_results_from_pending(
+    ref_pending: dict,
+    region_analyses: dict,
+    name_selections_by_file: dict,
+    approved_by_file: dict,
+    sort_value: str = 'asc',
+) -> dict:
+    """「選択完了」時（領域付きモード）の集計。`ref_pending`（未確定ラベルUI
+    表示用データ）と `region_analyses`（領域検出結果）から、
+    `create_region_excel_output()` に渡せる region_results を構築する。
+
+    `name_selections_by_file`: `{fname: {(fname, reg_id): [name, ...]}}`
+      （`app.py` の `_gather_name_selections(fname, analysis)` の結果を
+      ファイルごとに集めたもの。チェックボックスの選択状態＝UI依存のため、
+      この関数自身は計算せず呼び出し側から受け取るだけ）。
+    `approved_by_file`: `{fname: {採用されたラベル文字列, ...}}`
+    """
+    region_results = {}
+    for fname, data in ref_pending.items():
+        approved = approved_by_file[fname]
+        final_labels = _approved_final_labels(data, approved)
+        analysis = region_analyses[fname]
+        named, _ = build_named_regions(analysis, name_selections_by_file[fname], fname)
+        out = build_region_output(final_labels, named, sort_value)
+        review_texts = {t for t, _x, _y in data['review_labels']}
+        region_results[fname] = {
+            'rows': out['rows'],
+            'named': out['named'],
+            'frames': len(analysis.get('frames', [])),
+            'regions_detected': len(analysis.get('regions', [])),
+            'regions_named': len({r['id'] for r in named}),
+            'total_in_frame': data['total_in_frame'],
+            'filtered_count': len(review_texts - approved),
+            'final_count': len(final_labels),
+            'in_region_count': out['in_region_count'],
+            'drawing_number': analysis.get('main_drawing_number') or '',
+            'region_label_counts': out['region_label_counts'],
+        }
+    return region_results
+
+
+def build_ref_final_from_pending(
+    ref_pending: dict,
+    approved_by_file: dict,
+    sort_value: str = 'asc',
+) -> dict:
+    """「選択完了」時（通常モード）の集計。`ref_pending` から
+    `create_ref_designator_excel_output()` に渡せる ref_final を構築する。"""
+    ref_final = {}
+    for fname, data in ref_pending.items():
+        approved = approved_by_file[fname]
+        final_labels = _approved_final_labels(data, approved)
+        rows = build_labeled_rows(final_labels)
+        if sort_value == 'desc':
+            rows.sort(key=lambda r: r['ラベル'], reverse=True)
+        review_texts = {t for t, _x, _y in data['review_labels']}
+        ref_final[fname] = {
+            'rows': rows,
+            'total_in_frame': data['total_in_frame'],
+            'unclassified_count': len(review_texts - approved),
+            'warning': data.get('warning'),
+            'main_drawing_number': data.get('main_drawing_number'),
+            'source_drawing_number': data.get('source_drawing_number'),
+            'title': data.get('title'),
+            'subtitle': data.get('subtitle'),
+        }
+    return ref_final

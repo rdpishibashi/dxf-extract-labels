@@ -16,6 +16,47 @@ from .common_utils import normalize_width
 from .region_detector import build_region_label_summary
 
 
+def _add_standard_formats(workbook):
+    """全シート共通のヘッダー書式・ハイパーリンク書式を返す。"""
+    header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+    link_format = workbook.add_format({'color': 'blue', 'underline': 1})
+    return header_format, link_format
+
+
+def _write_header_row(ws, columns, header_format):
+    """ヘッダー行（1行目）の各セルに書式を適用する。"""
+    for col_num, value in enumerate(columns):
+        ws.write(0, col_num, value, header_format)
+
+
+def _write_summary_hyperlinks(ws, filenames, link_format, col=0, start_row=1):
+    """Summary シートの各行から、対応するファイルシート（先頭31文字）への
+    内部ハイパーリンクを書き込む。"""
+    for row_num, fname in enumerate(filenames, start=start_row):
+        sheet_name = os.path.splitext(fname)[0][:31]
+        ws.write_url(row_num, col, f"internal:'{sheet_name}'!A1", link_format, fname)
+
+
+def _write_label_count_sheet(writer, sheet_name, rows, header_format,
+                              columns=('ラベル', '個数'), col_widths=(25, 10),
+                              skip_if_empty=True):
+    """`[{列名: 値, ...}, ...]` 形式の行データを、ヘッダー書式付きでシートに
+    書き込む（Total・各ファイルのラベル一覧シート共通の書式）。`rows` が空の
+    場合、`skip_if_empty=True`（既定）なら何もしない（シートを作らない）。
+    `skip_if_empty=False` はヘッダー行のみの空シートを作る（`create_region_excel_output`
+    の各ファイルシートが、領域内ラベルが0件でもシート自体は必ず作る従来挙動のため）。"""
+    if not rows and skip_if_empty:
+        return None
+    df = pd.DataFrame(rows, columns=list(columns))
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    ws = writer.sheets[sheet_name]
+    _write_header_row(ws, columns, header_format)
+    for i, width in enumerate(col_widths):
+        letter = chr(ord('A') + i)
+        ws.set_column(f'{letter}:{letter}', width)
+    return ws
+
+
 def create_excel_output(results, sort_option):
     """通常モード（「機器符号（候補）以外も抽出」ON）の Excel を生成する。
 
@@ -27,16 +68,7 @@ def create_excel_output(results, sort_option):
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-
-        header_format = workbook.add_format({
-            'bold': True,
-            'bg_color': '#D3D3D3',
-            'border': 1
-        })
-        link_format = workbook.add_format({
-            'color': 'blue',
-            'underline': 1
-        })
+        header_format, link_format = _add_standard_formats(workbook)
 
         summary_data = []
         total_counter = Counter()
@@ -58,27 +90,17 @@ def create_excel_output(results, sort_option):
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
         summary_worksheet = writer.sheets['Summary']
-        for col_num, value in enumerate(summary_df.columns.values):
-            summary_worksheet.write(0, col_num, value, header_format)
+        _write_header_row(summary_worksheet, summary_df.columns.values, header_format)
 
-        for row_num, (file_path, (labels, info)) in enumerate(results.items(), start=1):
-            filename = info.get('filename', os.path.basename(file_path))
-            sheet_name = os.path.splitext(filename)[0][:31]
-            summary_worksheet.write_url(
-                row_num, 0, f"internal:'{sheet_name}'!A1", link_format, filename)
+        filenames = [info.get('filename', os.path.basename(fp))
+                    for fp, (_labels, info) in results.items()]
+        _write_summary_hyperlinks(summary_worksheet, filenames, link_format)
 
         total_data = [
             {'ラベル': lbl, '個数': total_counter[lbl]}
             for lbl in sorted(total_counter.keys())
         ]
-        if total_data:
-            total_df = pd.DataFrame(total_data)
-            total_df.to_excel(writer, sheet_name='Total', index=False)
-            total_worksheet = writer.sheets['Total']
-            total_worksheet.write(0, 0, 'ラベル', header_format)
-            total_worksheet.write(0, 1, '個数', header_format)
-            total_worksheet.set_column('A:A', 25)
-            total_worksheet.set_column('B:B', 10)
+        _write_label_count_sheet(writer, 'Total', total_data, header_format)
 
         for file_path, (labels, info) in results.items():
             filename = info.get('filename', os.path.basename(file_path))
@@ -89,15 +111,7 @@ def create_excel_output(results, sort_option):
                 {'ラベル': lbl, '個数': counter[lbl]}
                 for lbl in sorted(counter.keys())
             ]
-
-            if label_data:
-                labels_df = pd.DataFrame(label_data)
-                labels_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                worksheet = writer.sheets[sheet_name]
-                worksheet.write(0, 0, 'ラベル', header_format)
-                worksheet.write(0, 1, '個数', header_format)
-                worksheet.set_column('A:A', 25)
-                worksheet.set_column('B:B', 10)
+            _write_label_count_sheet(writer, sheet_name, label_data, header_format)
 
     output.seek(0)
     return output.getvalue()
@@ -121,8 +135,7 @@ def create_ref_designator_excel_output(results, sort_option):
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
-        link_format = workbook.add_format({'color': 'blue', 'underline': 1})
+        header_format, link_format = _add_standard_formats(workbook)
 
         summary_data = []
         total_counter = Counter()
@@ -145,22 +158,12 @@ def create_ref_designator_excel_output(results, sort_option):
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         summary_ws = writer.sheets['Summary']
-        for col_num, value in enumerate(summary_df.columns.values):
-            summary_ws.write(0, col_num, value, header_format)
-        for row_num, fname in enumerate(results.keys(), start=1):
-            sheet_name = os.path.splitext(fname)[0][:31]
-            summary_ws.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, fname)
+        _write_header_row(summary_ws, summary_df.columns.values, header_format)
+        _write_summary_hyperlinks(summary_ws, list(results.keys()), link_format)
         summary_ws.set_column('A:A', 28)
 
         total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
-        if total_data:
-            total_df = pd.DataFrame(total_data)
-            total_df.to_excel(writer, sheet_name='Total', index=False)
-            total_ws = writer.sheets['Total']
-            total_ws.write(0, 0, 'ラベル', header_format)
-            total_ws.write(0, 1, '個数', header_format)
-            total_ws.set_column('A:A', 25)
-            total_ws.set_column('B:B', 10)
+        _write_label_count_sheet(writer, 'Total', total_data, header_format)
 
         for fname, data in results.items():
             sheet_name = os.path.splitext(fname)[0][:31]
@@ -169,14 +172,7 @@ def create_ref_designator_excel_output(results, sort_option):
                 rows.sort(key=lambda r: r['ラベル'])
             elif sort_option == 'desc':
                 rows.sort(key=lambda r: r['ラベル'], reverse=True)
-            if rows:
-                df = pd.DataFrame(rows, columns=['ラベル', '個数'])
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-                ws = writer.sheets[sheet_name]
-                ws.write(0, 0, 'ラベル', header_format)
-                ws.write(0, 1, '個数', header_format)
-                ws.set_column('A:A', 25)
-                ws.set_column('B:B', 10)
+            _write_label_count_sheet(writer, sheet_name, rows, header_format)
 
     output.seek(0)
     return output.getvalue()
@@ -187,8 +183,7 @@ def create_region_excel_output(region_results):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
-        link_format = workbook.add_format({'color': 'blue', 'underline': 1})
+        header_format, link_format = _add_standard_formats(workbook)
 
         summary_data = []
         for fname, data in region_results.items():
@@ -205,11 +200,8 @@ def create_region_excel_output(region_results):
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         summary_ws = writer.sheets['Summary']
-        for col_num, value in enumerate(summary_df.columns.values):
-            summary_ws.write(0, col_num, value, header_format)
-        for row_num, (fname, _data) in enumerate(region_results.items(), start=1):
-            sheet_name = os.path.splitext(fname)[0][:31]
-            summary_ws.write_url(row_num, 0, f"internal:'{sheet_name}'!A1", link_format, fname)
+        _write_header_row(summary_ws, summary_df.columns.values, header_format)
+        _write_summary_hyperlinks(summary_ws, list(region_results.keys()), link_format)
         summary_ws.set_column('A:A', 28)
 
         reg_rows = []
@@ -226,8 +218,7 @@ def create_region_excel_output(region_results):
             reg_df = pd.DataFrame(reg_rows)
             reg_df.to_excel(writer, sheet_name='領域一覧', index=False)
             reg_ws = writer.sheets['領域一覧']
-            for col_num, value in enumerate(reg_df.columns.values):
-                reg_ws.write(0, col_num, value, header_format)
+            _write_header_row(reg_ws, reg_df.columns.values, header_format)
             reg_ws.set_column('A:A', 28)
             reg_ws.set_column('C:C', 22)
 
@@ -263,14 +254,10 @@ def create_region_excel_output(region_results):
 
         for fname, data in region_results.items():
             sheet_name = os.path.splitext(fname)[0][:31]
-            df = pd.DataFrame(data['rows'], columns=['ラベル', '個数', '領域'])
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-            ws = writer.sheets[sheet_name]
-            for col_num, value in enumerate(['ラベル', '個数', '領域']):
-                ws.write(0, col_num, value, header_format)
-            ws.set_column('A:A', 25)
-            ws.set_column('B:B', 8)
-            ws.set_column('C:C', 40)
+            _write_label_count_sheet(
+                writer, sheet_name, data['rows'], header_format,
+                columns=('ラベル', '個数', '領域'), col_widths=(25, 8, 40),
+                skip_if_empty=False)
 
     output.seek(0)
     return output.getvalue()

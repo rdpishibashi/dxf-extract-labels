@@ -730,7 +730,7 @@ def _resolve_dangling_handles(dangling_branches, raw_lines, tol=0.5):
     return results
 
 
-def _detect_regions(RH, RV, frame, frame_area, cfg, labels=None, circles=None, raw_lines=None):
+def _detect_regions(RH, RV, frame, frame_area, cfg, circles=None, raw_lines=None):
     """1つの図面枠内で、面積>=枠面積×area_ratio の閉領域を検出する。
 
     戻り値: (regions, dangling) のタプル。dangling は `_resolve_dangling_handles`
@@ -849,30 +849,29 @@ def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
     return True
 
 
-def _bottom_edges(polygon, level_tol=2.0):
-    """ポリゴンの下端（最小y）にある横エッジ群 [(x0,x1,y), ...] を返す。"""
-    min_y = min(p[1] for p in polygon)
+def _horizontal_edges_at_extreme(polygon, side, level_tol=2.0):
+    """ポリゴンの下端(side='bottom')または上端(side='top')にある横エッジ群
+    [(x0,x1,y), ...] を返す（`_vertical_edges_at_extreme` の横版）。"""
+    ys = [p[1] for p in polygon]
+    target_y = min(ys) if side == 'bottom' else max(ys)
     segs = []
     n = len(polygon)
     for i in range(n):
         x1, y1 = polygon[i]
         x2, y2 = polygon[(i + 1) % n]
-        if abs(y1 - y2) < 0.5 and abs(y1 - min_y) <= level_tol:
+        if abs(y1 - y2) < 0.5 and abs(y1 - target_y) <= level_tol:
             segs.append((min(x1, x2), max(x1, x2), y1))
     return segs
+
+
+def _bottom_edges(polygon, level_tol=2.0):
+    """ポリゴンの下端（最小y）にある横エッジ群 [(x0,x1,y), ...] を返す。"""
+    return _horizontal_edges_at_extreme(polygon, 'bottom', level_tol)
 
 
 def _top_edges(polygon, level_tol=2.0):
     """ポリゴンの上端（最大y）にある横エッジ群 [(x0,x1,y), ...] を返す（`_bottom_edges`の上端版）。"""
-    max_y = max(p[1] for p in polygon)
-    segs = []
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        if abs(y1 - y2) < 0.5 and abs(y1 - max_y) <= level_tol:
-            segs.append((min(x1, x2), max(x1, x2), y1))
-    return segs
+    return _horizontal_edges_at_extreme(polygon, 'top', level_tol)
 
 
 def _notch_bottom_edges(polygon, level_tol=2.0, probe=0.5):
@@ -922,30 +921,31 @@ def _vertical_edges_at_extreme(polygon, side, level_tol=2.0):
     return segs
 
 
-def _dist_to_bottom_edge(pt, bottom_segs):
-    """点から下端横エッジ群までの最短距離。"""
-    x, y = pt
+def _dist_to_edge_segments(pt, segs, axis='y'):
+    """点からエッジ群までの最短距離。`axis='y'`（既定）は横エッジ群
+    `[(x0,x1,y), ...]` への距離（`_dist_to_bottom_edge` 相当）、`axis='x'` は
+    縦エッジ群 `[(y0,y1,x), ...]` への距離（`_dist_to_vertical_edge` 相当）。
+    縦版は点・エッジとも (主軸, 固定軸) の順に座標を入れ替えて同じ計算式を流用する。
+    """
+    a, b = pt if axis == 'y' else pt[::-1]
     best = float('inf')
-    for (x0, x1, ey) in bottom_segs:
-        if x0 <= x <= x1:
-            d = abs(y - ey)
+    for (a0, a1, eb) in segs:
+        if a0 <= a <= a1:
+            d = abs(b - eb)
         else:
-            d = math.hypot(x - (x0 if x < x0 else x1), y - ey)
+            d = math.hypot(a - (a0 if a < a0 else a1), b - eb)
         best = min(best, d)
     return best
+
+
+def _dist_to_bottom_edge(pt, bottom_segs):
+    """点から下端横エッジ群までの最短距離。"""
+    return _dist_to_edge_segments(pt, bottom_segs, axis='y')
 
 
 def _dist_to_vertical_edge(pt, vertical_segs):
     """点から縦エッジ群までの最短距離（_dist_to_bottom_edge の縦版）。"""
-    x, y = pt
-    best = float('inf')
-    for (y0, y1, ex) in vertical_segs:
-        if y0 <= y <= y1:
-            d = abs(x - ex)
-        else:
-            d = math.hypot(x - ex, y - (y0 if y < y0 else y1))
-        best = min(best, d)
-    return best
+    return _dist_to_edge_segments(pt, vertical_segs, axis='x')
 
 
 def region_name_candidates(
@@ -1177,7 +1177,7 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
     for fi, frame in enumerate(frames):
         cands_list = []
         det_regions, det_dangling = _detect_regions(
-            RH, RV, frame, frame_area, det_cfg, frame_labels,
+            RH, RV, frame, frame_area, det_cfg,
             connection_points, raw_lines=lines)
         for reg in det_regions:
             if det_cfg['exclude_titleblock'] and _is_titleblock_region(reg['polygon'], frame_labels):

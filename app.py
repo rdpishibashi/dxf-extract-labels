@@ -1,9 +1,8 @@
 import streamlit as st
 import os
 import sys
-from pathlib import Path
+import contextlib
 import pandas as pd
-from io import BytesIO
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 utils_path = os.path.join(current_dir, 'utils')
@@ -20,13 +19,50 @@ from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
 
-APP_VERSION = '1.7.7'
+APP_VERSION = '1.7.8'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
     page_icon="📝",
     layout="wide",
 )
+
+
+@contextlib.contextmanager
+def _temp_dxf_file(uploaded_file):
+    """アップロードされたファイルを一時ファイルに保存し、処理後に削除する。"""
+    tmp = save_uploadedfile(uploaded_file)
+    try:
+        yield tmp
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _set_processing_settings(also_extract_non_circuit, extract_drawing_numbers_option,
+                              extract_title_option):
+    """「ラベルを抽出」実行時のオプション設定を session_state に記録する
+    （結果表示セクションでの再現・ダウンロード時のファイル名等に使う）。"""
+    st.session_state.processing_settings = {
+        'also_extract_non_circuit': also_extract_non_circuit,
+        'extract_drawing_numbers': extract_drawing_numbers_option,
+        'extract_title': extract_title_option,
+    }
+
+
+def _clear_session_keys(keys=(), prefixes=()):
+    """指定した session_state キー（完全一致）とキー接頭辞（前方一致）をまとめて
+    削除する（「領域を検出」「ラベルを抽出」「新しい抽出を開始」各ハンドラの
+    前回結果クリア処理で共用）。存在しないキーは無視する。"""
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    if prefixes:
+        for k in list(st.session_state.keys()):
+            if isinstance(k, str) and k.startswith(prefixes):
+                del st.session_state[k]
 
 
 def _gather_name_selections(fname, analysis):
@@ -412,8 +448,7 @@ def app():
             with st.spinner('図面枠と矩形領域を検出中...'):
                 analyses = {}
                 for uf in uploaded_files:
-                    tmp = save_uploadedfile(uf)
-                    try:
+                    with _temp_dxf_file(uf) as tmp:
                         analysis = analyze_dxf_regions(tmp, region_cfg)
                         if extract_all_option:
                             _, dn_info = extract_labels(
@@ -426,18 +461,10 @@ def app():
                             analysis['title'] = dn_info.get('title')
                             analysis['subtitle'] = dn_info.get('subtitle')
                         analyses[uf.name] = analysis
-                    finally:
-                        try:
-                            os.unlink(tmp)
-                        except OSError:
-                            pass
                 st.session_state['region_analyses'] = analyses
-                for k in list(st.session_state.keys()):
-                    if isinstance(k, str) and k.startswith('rc_'):
-                        del st.session_state[k]
-                for k in ['excel_result', 'is_region_mode', 'region_results_summary']:
-                    if k in st.session_state:
-                        del st.session_state[k]
+                _clear_session_keys(
+                    keys=['excel_result', 'is_region_mode', 'region_results_summary'],
+                    prefixes=('rc_',))
             st.rerun()
         except Exception as e:
             handle_error(e)
@@ -519,15 +546,11 @@ def app():
             frame_lineweight = int(region_cfg['frame_lineweight'])
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 # 前回の結果・未確定ラベル選択状態をクリアする
-                for k in ['excel_result', 'is_region_mode', 'region_results_summary',
+                _clear_session_keys(
+                    keys=['excel_result', 'is_region_mode', 'region_results_summary',
                           'ref_pending', 'ref_pending_mode', 'ref_results_summary',
-                          'decision_log_result',
-                          'unclassified_checked', 'unclassified_ver']:
-                    if k in st.session_state:
-                        del st.session_state[k]
-                for k in list(st.session_state.keys()):
-                    if isinstance(k, str) and k.startswith('unclassified_editor_'):
-                        del st.session_state[k]
+                          'decision_log_result', 'unclassified_checked', 'unclassified_ver'],
+                    prefixes=('unclassified_editor_',))
 
                 if 'region_analyses' in st.session_state:
                     # 領域付きモード
@@ -548,85 +571,56 @@ def app():
                             f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
                             for f, d in region_results.items()
                         }
-                        st.session_state.processing_settings = {
-                            'also_extract_non_circuit': True,
-                            'extract_drawing_numbers': extract_drawing_numbers_option,
-                            'extract_title': extract_title_option,
-                        }
+                        _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
                     else:
                         # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
                         ref_pending = {}
                         for fname, analysis in analyses.items():
                             uf = next(f for f in uploaded_files if f.name == fname)
-                            tmp = save_uploadedfile(uf)
-                            try:
+                            with _temp_dxf_file(uf) as tmp:
                                 data = ref_designator.extract_ref_designator_data(
                                     tmp, frame_lineweight=frame_lineweight, original_filename=fname)
-                            finally:
-                                try:
-                                    os.unlink(tmp)
-                                except OSError:
-                                    pass
                             data['main_drawing_number'] = analysis.get('main_drawing_number')
-                            data['source_drawing_number'] = analysis.get('source_drawing_number')
                             data['title'] = analysis.get('title')
                             data['subtitle'] = analysis.get('subtitle')
                             ref_pending[fname] = data
                         st.session_state['ref_pending'] = ref_pending
                         st.session_state['ref_pending_mode'] = 'region'
                         st.session_state.output_filename = output_filename
-                        st.session_state.processing_settings = {
-                            'also_extract_non_circuit': False,
-                            'extract_drawing_numbers': extract_drawing_numbers_option,
-                            'extract_title': extract_title_option,
-                        }
+                        _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
 
                 else:
                     # 通常モード
                     if also_extract_non_circuit:
-                        temp_files = []
-                        original_filenames = []
-                        for uploaded_file in uploaded_files:
-                            temp_file = save_uploadedfile(uploaded_file)
-                            temp_files.append(temp_file)
-                            original_filenames.append(uploaded_file.name)
+                        original_filenames = [f.name for f in uploaded_files]
+                        with contextlib.ExitStack() as stack:
+                            temp_files = [stack.enter_context(_temp_dxf_file(f))
+                                         for f in uploaded_files]
+                            results_temp = process_multiple_dxf_files(
+                                temp_files,
+                                sort_order=sort_value,
+                                extract_drawing_numbers_option=extract_drawing_numbers_option,
+                                extract_title_option=extract_title_option,
+                                original_filenames=original_filenames,
+                            )
 
-                        results_temp = process_multiple_dxf_files(
-                            temp_files,
-                            sort_order=sort_value,
-                            extract_drawing_numbers_option=extract_drawing_numbers_option,
-                            extract_title_option=extract_title_option,
-                            original_filenames=original_filenames,
-                        )
-
-                        results = {}
-                        for temp_file, original_name in zip(temp_files, original_filenames):
-                            if temp_file in results_temp:
-                                labels, info = results_temp[temp_file]
-                                info['filename'] = original_name
-                                results[original_name] = (labels, info)
+                            results = {}
+                            for temp_file, original_name in zip(temp_files, original_filenames):
+                                if temp_file in results_temp:
+                                    labels, info = results_temp[temp_file]
+                                    info['filename'] = original_name
+                                    results[original_name] = (labels, info)
 
                         st.session_state.excel_result = create_excel_output(results, sort_value)
                         st.session_state.output_filename = output_filename
                         st.session_state['is_region_mode'] = False
                         st.session_state.results = results
-                        st.session_state.processing_settings = {
-                            'also_extract_non_circuit': True,
-                            'extract_drawing_numbers': extract_drawing_numbers_option,
-                            'extract_title': extract_title_option,
-                        }
-
-                        for temp_file in temp_files:
-                            try:
-                                os.unlink(temp_file)
-                            except Exception:
-                                pass
+                        _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
                     else:
                         # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
                         ref_pending = {}
                         for uploaded_file in uploaded_files:
-                            tmp = save_uploadedfile(uploaded_file)
-                            try:
+                            with _temp_dxf_file(uploaded_file) as tmp:
                                 data = ref_designator.extract_ref_designator_data(
                                     tmp, frame_lineweight=frame_lineweight,
                                     original_filename=uploaded_file.name)
@@ -641,20 +635,11 @@ def app():
                                     data['source_drawing_number'] = dn_info.get('source_drawing_number')
                                     data['title'] = dn_info.get('title')
                                     data['subtitle'] = dn_info.get('subtitle')
-                            finally:
-                                try:
-                                    os.unlink(tmp)
-                                except OSError:
-                                    pass
                             ref_pending[uploaded_file.name] = data
                         st.session_state['ref_pending'] = ref_pending
                         st.session_state['ref_pending_mode'] = 'normal'
                         st.session_state.output_filename = output_filename
-                        st.session_state.processing_settings = {
-                            'also_extract_non_circuit': False,
-                            'extract_drawing_numbers': extract_drawing_numbers_option,
-                            'extract_title': extract_title_option,
-                        }
+                        _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
 
                 st.session_state['download_done'] = False
 
@@ -791,32 +776,13 @@ def app():
 
                     if st.session_state.get('ref_pending_mode') == 'region':
                         analyses = st.session_state['region_analyses']
-                        region_results = {}
-                        for fname, data in ref_pending.items():
-                            approved = approved_by_file[fname]
-                            final_labels = list(data['confirmed_labels']) + [
-                                item for item in data['review_labels']
-                                if item[0] in approved
-                            ]
-                            analysis = analyses[fname]
-                            name_selections = _gather_name_selections(fname, analysis)
-                            named, _ = ref_designator.build_named_regions(
-                                analysis, name_selections, fname)
-                            out = ref_designator.build_region_output(final_labels, named, sort_value)
-                            review_texts = {t for t, _x, _y in data['review_labels']}
-                            region_results[fname] = {
-                                'rows': out['rows'],
-                                'named': out['named'],
-                                'frames': len(analysis.get('frames', [])),
-                                'regions_detected': len(analysis.get('regions', [])),
-                                'regions_named': len({r['id'] for r in named}),
-                                'total_in_frame': data['total_in_frame'],
-                                'filtered_count': len(review_texts - approved),
-                                'final_count': len(final_labels),
-                                'in_region_count': out['in_region_count'],
-                                'drawing_number': analysis.get('main_drawing_number') or '',
-                                'region_label_counts': out['region_label_counts'],
-                            }
+                        name_selections_by_file = {
+                            fname: _gather_name_selections(fname, analyses[fname])
+                            for fname in ref_pending
+                        }
+                        region_results = ref_designator.build_region_results_from_pending(
+                            ref_pending, analyses, name_selections_by_file,
+                            approved_by_file, sort_value)
                         st.session_state.excel_result = create_region_excel_output(region_results)
                         st.session_state['is_region_mode'] = True
                         st.session_state['region_results_summary'] = {
@@ -824,27 +790,8 @@ def app():
                             for f, d in region_results.items()
                         }
                     else:
-                        ref_final = {}
-                        for fname, data in ref_pending.items():
-                            approved = approved_by_file[fname]
-                            final_labels = list(data['confirmed_labels']) + [
-                                item for item in data['review_labels']
-                                if item[0] in approved
-                            ]
-                            rows = ref_designator.build_labeled_rows(final_labels)
-                            if sort_value == 'desc':
-                                rows.sort(key=lambda r: r['ラベル'], reverse=True)
-                            review_texts = {t for t, _x, _y in data['review_labels']}
-                            ref_final[fname] = {
-                                'rows': rows,
-                                'total_in_frame': data['total_in_frame'],
-                                'unclassified_count': len(review_texts - approved),
-                                'warning': data.get('warning'),
-                                'main_drawing_number': data.get('main_drawing_number'),
-                                'source_drawing_number': data.get('source_drawing_number'),
-                                'title': data.get('title'),
-                                'subtitle': data.get('subtitle'),
-                            }
+                        ref_final = ref_designator.build_ref_final_from_pending(
+                            ref_pending, approved_by_file, sort_value)
                         st.session_state.excel_result = create_ref_designator_excel_output(
                             ref_final, sort_value)
                         st.session_state['is_region_mode'] = False
@@ -972,15 +919,12 @@ def app():
 
         if st.button("🔄 新しい抽出を開始", key="restart_button",
                      type="primary" if download_done else "secondary"):
-            for key in ['excel_result', 'output_filename', 'processing_settings',
-                        'results', 'is_region_mode', 'region_analyses',
-                        'region_results_summary', 'ref_pending', 'ref_pending_mode',
-                        'ref_results_summary', 'download_done', 'decision_log_result']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            for k in list(st.session_state.keys()):
-                if isinstance(k, str) and (k.startswith('rc_') or k.startswith('unclassified_editor_')):
-                    del st.session_state[k]
+            _clear_session_keys(
+                keys=['excel_result', 'output_filename', 'processing_settings',
+                      'results', 'is_region_mode', 'region_analyses',
+                      'region_results_summary', 'ref_pending', 'ref_pending_mode',
+                      'ref_results_summary', 'download_done', 'decision_log_result'],
+                prefixes=('rc_', 'unclassified_editor_'))
             st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()
 

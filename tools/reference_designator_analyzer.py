@@ -19,6 +19,7 @@ from collections import Counter, defaultdict
 from io import BytesIO, StringIO
 
 import openpyxl
+import pandas as pd
 import streamlit as st
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -509,11 +510,9 @@ def _app_extracted_labels():
         m5.metric("未分類（要検討）", result['remaining'])
 
         with st.expander("📊 入力ファイル別の内訳", expanded=False):
-            import pandas as pd
             st.dataframe(pd.DataFrame(result['per_source_stats']), width='stretch', hide_index=True)
 
         with st.expander("📊 除外カテゴリ別の内訳", expanded=False):
-            import pandas as pd
             rows = [
                 {'カテゴリ': name, '該当ラベル数': imp['labels'], '該当個数合計': imp['count']}
                 for name, imp in sorted(result['exclusion_impact'].items(),
@@ -522,7 +521,6 @@ def _app_extracted_labels():
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
         with st.expander("📊 確定パターン別の内訳", expanded=False):
-            import pandas as pd
             rows = [
                 {'カテゴリ': name, '該当ラベル数': imp['labels'], '該当個数合計': imp['count']}
                 for name, imp in sorted(result['confirmed_impact'].items(),
@@ -661,11 +659,9 @@ def _app_decision_log():
         m3.metric("除外パターン候補", result['exclude_candidates'])
 
         with st.expander("📊 入力ソース別の内訳", expanded=False):
-            import pandas as pd
             st.dataframe(pd.DataFrame(result['per_source_stats']), width='stretch', hide_index=True)
 
         with st.expander("📊 提案一覧", expanded=True):
-            import pandas as pd
             st.dataframe(pd.DataFrame(result['rows']), width='stretch', hide_index=True)
 
         st.download_button(

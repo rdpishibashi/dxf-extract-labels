@@ -14,7 +14,9 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.excel_output import create_excel_output, create_region_excel_output  # noqa: E402
+from utils.excel_output import (  # noqa: E402
+    create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,62 @@ def test_create_excel_output_empty_results():
     data = create_excel_output({}, 'asc')
     wb = _load_wb(data)
     assert 'Summary' in wb.sheetnames
+
+
+# ---------------------------------------------------------------------------
+# create_ref_designator_excel_output
+# ---------------------------------------------------------------------------
+
+def _make_ref_designator_results():
+    return {
+        'fileA.dxf': {
+            'rows': [{'ラベル': 'CN1', '個数': 2}, {'ラベル': 'R10', '個数': 1}],
+            'total_in_frame': 10,
+            'unclassified_count': 3,
+            'main_drawing_number': 'EE1234-500-01A',
+            'source_drawing_number': 'EE0001-500-01A',
+            'title': 'TITLE A',
+            'subtitle': 'SUB A',
+        },
+        'fileB.dxf': {
+            'rows': [],
+            'total_in_frame': 5,
+            'unclassified_count': 0,
+            'main_drawing_number': None,
+            'source_drawing_number': None,
+            'title': None,
+            'subtitle': None,
+        },
+    }
+
+
+def test_create_ref_designator_excel_output_returns_bytes():
+    data = create_ref_designator_excel_output(_make_ref_designator_results(), 'asc')
+    assert isinstance(data, bytes)
+    assert len(data) > 0
+
+
+def test_create_ref_designator_excel_output_sheet_and_values():
+    """機器符号（候補）0件のファイル（fileB）はシートを作らない
+    （`rows` が空のファイルシートはスキップする従来挙動を固定する）。"""
+    wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'asc'))
+    assert wb.sheetnames == ['Summary', 'Total', 'fileA']
+
+    summary = wb['Summary']
+    header = [c.value for c in summary[1]]
+    assert header == ['ファイル名', '図面枠内ラベル数', '機器符号（候補）数',
+                      '未確定ラベル数（未採用）', '図番', '流用元図番', 'タイトル', 'サブタイトル']
+    row_a = [c.value for c in summary[2]]
+    assert row_a == ['fileA.dxf', 10, 3, 3, 'EE1234-500-01A', 'EE0001-500-01A', 'TITLE A', 'SUB A']
+
+    total_rows = [(c[0].value, c[1].value) for c in wb['Total'].iter_rows(min_row=2)]
+    assert total_rows == [('CN1', 2), ('R10', 1)]
+
+
+def test_create_ref_designator_excel_output_sort_desc():
+    wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'desc'))
+    labels = [row[0].value for row in wb['fileA'].iter_rows(min_row=2)]
+    assert labels == ['R10', 'CN1']
 
 
 # ---------------------------------------------------------------------------

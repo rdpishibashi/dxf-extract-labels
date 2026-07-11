@@ -451,14 +451,17 @@ def test_tier1_candidate_must_be_inside_the_region():
     """Tier1/2 候補は領域の内側にあるラベルに限定する（ユーザー報告: DXF-viewer の
     Search Boundary で最上位候補のみ照合するよう変更した際に発覚）。
 
-    `DE5434-553-10B.dxf` の領域（id 3、回転図面で下端相当=右端の縦エッジ近傍）は、
-    領域の外側にあるラベル `EFEM UPPER`（右端から距離3.9）と、領域の内側にある
+    `DE5434-553-10B.dxf` の領域（回転図面で下端相当=右端の縦エッジ近傍、面積比約41.5%）
+    は、領域の外側にあるラベル `EFEM UPPER`（右端から距離3.9）と、領域の内側にある
     ラベル `CONTROL BOX CORE FX`（右端から距離5.2）の両方を右端エッジ近傍に持つ。
     領域外のラベルは別の箱・別の注記等を指している可能性が高く、単純な距離比較
-    だけでは領域内側の正しいラベルより誤って優先されてしまっていた。"""
+    だけでは領域内側の正しいラベルより誤って優先されてしまっていた。
+
+    `id` は検出順に振られる連番であり、他の領域の増減（合体親分解等）で該当領域の
+    id がずれ得るため、面積比で対象領域を特定する（id を固定参照しない）。"""
     a = analyze_dxf_regions(ROTATED)
     assert a['error'] is None
-    region = next(r for r in a['regions'] if r['id'] == 3)
+    region = next(r for r in a['regions'] if round(r['area_pct'], 1) == 41.5)
     assert region['default_name'] == 'CONTROL BOX CORE FX'
     assert region['default_name_tier'] == 1
     # 領域外のラベルは Tier1/2 から除外され、候補に現れない。
@@ -618,3 +621,45 @@ def test_lshape_notch_bottom_edge_label_is_candidate():
     # ネストされた HEATER CTRL B.D 領域の保持（従来挙動の維持）
     assert 'HEATER CTRL B.D-5A(HCBD)' in by_name
     assert len(a['regions']) == 2
+
+
+UNDER_THRESHOLD_SIBLINGS = _find_sample('DE5434-563-03A.dxf')  # 単独面積<閾値の異名兄弟矩形
+
+
+@pytest.mark.skipif(not os.path.exists(UNDER_THRESHOLD_SIBLINGS), reason='サンプル DXF が無い')
+def test_under_threshold_named_siblings_both_recovered_via_union_parent():
+    """単独面積が閾値未満で、かつ互いに異なる名称を持つ兄弟矩形が、フィルタ前の
+    合体親検出（`_force_include_union_children`）により両方とも正しく検出される
+    こと。
+
+    `DE5434-563-03A.dxf` の x:32〜139.5, y:83〜402（図面枠0）には、上下端付近の
+    短いティックマーク（handle 10CF/10D0）だけで仕切られた `SB-1A(FX1)`
+    （面積比7.7%）・`CN I/F B.D TYPE3 (CN-IF3-1A)`（7.63%）の2領域が並ぶ。
+    中央約300単位に仕切り線が無いため、縦ギャップ橋渡しが両者を包む合体面
+    （15.3%。この2領域を内包する実在の `FX CHAMBER` チャンバー自体を表す、
+    `_name_union_parent` が既存ロジックで固有名を発見・保持する正当な領域）を
+    生成する。
+
+    修正前は、合体面と `SB-1A(FX1)` がたまたま同じ名称候補（合体面の底辺全体に
+    対する最短距離探索が偶然 `SB-1A(FX1)` を拾っていた）を最寄りに選び、同名
+    2ピース合算（10%閾値）で両方採用される一方、`CN I/F B.D TYPE3` は単独名称の
+    ため2ピース合算の対象にならず、単独面積（7.63%）も閾値未満のため検出結果
+    から消えていた（ユーザー報告）。"""
+    a = analyze_dxf_regions(UNDER_THRESHOLD_SIBLINGS)
+    assert a['error'] is None
+    frame0_names = sorted(
+        r['default_name'] for r in a['regions'] if r['frame'] == 0)
+    assert 'SB-1A(FX1)' in frame0_names
+    assert 'CN I/F B.D TYPE3 (CN-IF3-1A)' in frame0_names
+    # 2領域は互いに重ならない兄弟（同一物理領域の二重検出ではない）
+    sb = next(r for r in a['regions']
+              if r['frame'] == 0 and r['default_name'] == 'SB-1A(FX1)')
+    cn = next(r for r in a['regions']
+              if r['frame'] == 0 and r['default_name'] == 'CN I/F B.D TYPE3 (CN-IF3-1A)')
+    assert not regions_overlap(sb['polygon'], cn['polygon'])
+    # 合体面自身は 'FX CHAMBER' として固有名を保持し、子とは別領域として残る
+    # （物理的に実在する外側チャンバーであり、除去対象ではない）
+    fx = next(r for r in a['regions']
+              if r['frame'] == 0 and r['default_name'] == 'FX CHAMBER')
+    assert regions_overlap(fx['polygon'], sb['polygon'])
+    assert regions_overlap(fx['polygon'], cn['polygon'])

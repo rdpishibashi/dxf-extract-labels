@@ -1,10 +1,11 @@
-"""utils/ref_designator.py の兄弟ラベル連動（sibling_key / propagate_sibling_selection）の単体テスト。
+"""utils/ref_designator.py の兄弟ラベル連動（sibling_key / propagate_selection_all_files）の単体テスト。
 
 組み合わせ表:
   - sibling_key: 末尾数字1桁/2桁（対象）、3桁以上・末尾英字・数字のみ・括弧付き（対象外）、
     全角/半角（NFKC正規化で同一キー）
-  - propagate_sibling_selection: 採用の連動（ON伝播）、解除の連動（OFF伝播＝逆方向）、
-    連動対象外ラベルの非干渉、全角/半角混在での連動、プレフィックス不一致の非連動
+  - propagate_selection_all_files: 採用の連動（ON伝播）、解除の連動（OFF伝播＝逆方向）、
+    連動対象外ラベルの非干渉、全角/半角混在での連動、プレフィックス不一致の非連動、
+    全ファイル横断の連動（兄弟・同一ラベル）、他ファイルに無いラベルを追加しないこと
 """
 import os
 import sys
@@ -50,40 +51,86 @@ class TestSiblingKey(unittest.TestCase):
             ref_designator.sibling_key('ＣＮ１'), ref_designator.sibling_key('CN10'))
 
 
-class TestPropagateSiblingSelection(unittest.TestCase):
+class TestPropagateSelectionAllFiles(unittest.TestCase):
     def test_adopt_propagates_to_siblings(self):
-        checked = {'CN1': False, 'CN2': False, 'CN10': False, 'X14A': False}
-        ref_designator.propagate_sibling_selection(checked, 'CN1', True)
+        state = {'a.dxf': {'CN1': False, 'CN2': False, 'CN10': False, 'X14A': False}}
+        ref_designator.propagate_selection_all_files(state, 'CN1', True)
         self.assertEqual(
-            checked, {'CN1': True, 'CN2': True, 'CN10': True, 'X14A': False})
+            state['a.dxf'],
+            {'CN1': True, 'CN2': True, 'CN10': True, 'X14A': False})
 
     def test_unadopt_propagates_to_siblings(self):
         # 逆方向: 1つ解除すると兄弟も解除される
-        checked = {'CN1': True, 'CN2': True, 'CN10': True, 'X14A': True}
-        ref_designator.propagate_sibling_selection(checked, 'CN10', False)
+        state = {'a.dxf': {'CN1': True, 'CN2': True, 'CN10': True, 'X14A': True}}
+        ref_designator.propagate_selection_all_files(state, 'CN10', False)
         self.assertEqual(
-            checked, {'CN1': False, 'CN2': False, 'CN10': False, 'X14A': True})
+            state['a.dxf'],
+            {'CN1': False, 'CN2': False, 'CN10': False, 'X14A': True})
 
     def test_non_sibling_label_toggles_alone(self):
-        checked = {'CN1': False, 'X14A': False, 'CB001': False, 'CB002': False}
-        ref_designator.propagate_sibling_selection(checked, 'X14A', True)
+        state = {'a.dxf': {'CN1': False, 'X14A': False, 'CB001': False, 'CB002': False}}
+        ref_designator.propagate_selection_all_files(state, 'X14A', True)
         self.assertEqual(
-            checked, {'CN1': False, 'X14A': True, 'CB001': False, 'CB002': False})
+            state['a.dxf'],
+            {'CN1': False, 'X14A': True, 'CB001': False, 'CB002': False})
         # 末尾3桁は sibling_key=None → CB001 を採用しても CB002 は連動しない
-        ref_designator.propagate_sibling_selection(checked, 'CB001', True)
+        ref_designator.propagate_selection_all_files(state, 'CB001', True)
         self.assertEqual(
-            checked, {'CN1': False, 'X14A': True, 'CB001': True, 'CB002': False})
+            state['a.dxf'],
+            {'CN1': False, 'X14A': True, 'CB001': True, 'CB002': False})
 
     def test_prefix_mismatch_not_propagated(self):
-        checked = {'R5': False, 'RA5': False, 'R12': False}
-        ref_designator.propagate_sibling_selection(checked, 'R5', True)
-        self.assertEqual(checked, {'R5': True, 'RA5': False, 'R12': True})
+        state = {'a.dxf': {'R5': False, 'RA5': False, 'R12': False}}
+        ref_designator.propagate_selection_all_files(state, 'R5', True)
+        self.assertEqual(state['a.dxf'], {'R5': True, 'RA5': False, 'R12': True})
 
     def test_fullwidth_and_halfwidth_linked(self):
         # 全角表記のラベルも半角の兄弟と連動する（表示テキストは原文のまま）
-        checked = {'ＣＮ１': False, 'CN10': False}
-        ref_designator.propagate_sibling_selection(checked, 'CN10', True)
-        self.assertEqual(checked, {'ＣＮ１': True, 'CN10': True})
+        state = {'a.dxf': {'ＣＮ１': False, 'CN10': False}}
+        ref_designator.propagate_selection_all_files(state, 'CN10', True)
+        self.assertEqual(state['a.dxf'], {'ＣＮ１': True, 'CN10': True})
+
+    def test_siblings_propagate_across_files(self):
+        # 兄弟連動はファイルを跨いで全ファイルに伝播する
+        state = {
+            'a.dxf': {'CN1': False, 'X14A': False},
+            'b.dxf': {'CN2': False, 'CN10': False, 'R5': False},
+        }
+        ref_designator.propagate_selection_all_files(state, 'CN1', True)
+        self.assertEqual(state['a.dxf'], {'CN1': True, 'X14A': False})
+        self.assertEqual(state['b.dxf'], {'CN2': True, 'CN10': True, 'R5': False})
+
+    def test_same_label_syncs_across_files_even_without_sibling_key(self):
+        # sibling_key=None のラベルでも、同一ラベルは全ファイルで同期する
+        state = {
+            'a.dxf': {'X14A': False, 'CN1': False},
+            'b.dxf': {'X14A': False, 'CB001': False},
+        }
+        ref_designator.propagate_selection_all_files(state, 'X14A', True)
+        self.assertEqual(state['a.dxf'], {'X14A': True, 'CN1': False})
+        self.assertEqual(state['b.dxf'], {'X14A': True, 'CB001': False})
+        # 解除も同期する
+        ref_designator.propagate_selection_all_files(state, 'X14A', False)
+        self.assertEqual(state['a.dxf']['X14A'], False)
+        self.assertEqual(state['b.dxf']['X14A'], False)
+
+    def test_fullwidth_same_label_syncs_across_files(self):
+        # 別ファイルの全角表記の同一ラベルも同期する
+        state = {
+            'a.dxf': {'X14A': False},
+            'b.dxf': {'Ｘ１４Ａ': False},
+        }
+        ref_designator.propagate_selection_all_files(state, 'X14A', True)
+        self.assertEqual(state['b.dxf'], {'Ｘ１４Ａ': True})
+
+    def test_absent_label_not_added_to_other_files(self):
+        # 他ファイルに存在しないラベルは追加されない
+        state = {
+            'a.dxf': {'CN1': False},
+            'b.dxf': {'R5': False},
+        }
+        ref_designator.propagate_selection_all_files(state, 'CN1', True)
+        self.assertEqual(state['b.dxf'], {'R5': False})
 
 
 if __name__ == '__main__':

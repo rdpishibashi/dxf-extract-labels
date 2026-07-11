@@ -255,21 +255,22 @@ def sibling_key(label: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def propagate_sibling_selection(
-    file_checked: Dict[str, bool], label: str, value: bool,
+def propagate_selection_all_files(
+    checked_by_file: Dict[str, Dict[str, bool]], label: str, value: bool,
 ) -> None:
-    """label の採用状態変更を file_checked（ラベル→採用）に反映し、兄弟にも伝播する。
+    """label の採用状態変更を全ファイルのチェック状態（正本）に伝播する。
 
-    file_checked は同一ファイル内の未確定ラベル全種のチェック状態（正本）。
-    label 自身を value に更新し、sibling_key が一致する他ラベルも value に揃える。
+    checked_by_file はファイル名→（ラベル→採用）のチェック状態。すべての
+    ファイルにわたり、同一ラベル（NFKC正規化後に一致）と兄弟ラベル
+    （sibling_key 一致）を value に揃える。存在しないラベルは追加しない。
     """
-    file_checked[label] = value
+    norm = normalize_label(label)
     key = sibling_key(label)
-    if key is None:
-        return
-    for other in file_checked:
-        if other != label and sibling_key(other) == key:
-            file_checked[other] = value
+    for file_checked in checked_by_file.values():
+        for other in file_checked:
+            if normalize_label(other) == norm or (
+                    key is not None and sibling_key(other) == key):
+                file_checked[other] = value
 
 
 # ============================================================

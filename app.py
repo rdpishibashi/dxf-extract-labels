@@ -657,8 +657,8 @@ def app():
             "確定パターン（レビュー不要で自動採用される形）に一致しなかったものです。"
             "Reference Designator として採用するものにチェックを入れ、"
             "「選択完了」を押してください（チェックしたものだけが出力されます）。"
-            "末尾の数字（1〜2桁）を除いた部分が同じラベル（例: CN1・CN2・CN10）は、"
-            "同一ファイル内で連動して採用/解除されます。"
+            "末尾の数字（1〜2桁）を除いた部分が同じラベル（例: CN1・CN2・CN10）と"
+            "同一ラベルは、すべてのファイルにわたり連動して採用/解除されます。"
         )
 
         # チェック状態の正本。data_editor のウィジェット状態は直接書き換えず、
@@ -731,9 +731,8 @@ def app():
                     if bool(val) != file_checked.get(lbl, False):
                         deltas.append((fname, lbl, bool(val)))
         if deltas:
-            for fname, lbl, val in deltas:
-                ref_designator.propagate_sibling_selection(
-                    checked_state[fname], lbl, val)
+            for _fname, lbl, val in deltas:
+                ref_designator.propagate_selection_all_files(checked_state, lbl, val)
             st.session_state['unclassified_ver'] = editor_ver + 1
             st.rerun()
 

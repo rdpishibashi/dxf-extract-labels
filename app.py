@@ -20,7 +20,7 @@ from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
 
-APP_VERSION = '1.7.6'
+APP_VERSION = '1.7.7'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -700,7 +700,7 @@ def app():
         editor_ver = st.session_state.setdefault('unclassified_ver', 0)
 
         edited_frames = {}
-        for file_idx, (fname, data) in enumerate(ref_pending.items()):
+        for file_idx, (fname, data) in enumerate(sorted(ref_pending.items())):
             if file_idx > 0:
                 st.divider()
             st.markdown(f"### {fname}")

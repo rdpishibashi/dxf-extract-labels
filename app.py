@@ -20,7 +20,7 @@ from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
 
-APP_VERSION = '1.7.5'
+APP_VERSION = '1.7.6'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -449,7 +449,7 @@ def app():
         analyses = st.session_state['region_analyses']
         st.subheader("領域の確認")
 
-        for file_idx, (fname, analysis) in enumerate(analyses.items()):
+        for file_idx, (fname, analysis) in enumerate(sorted(analyses.items())):
             if file_idx > 0:
                 st.divider()
             st.markdown(f"### {fname}")

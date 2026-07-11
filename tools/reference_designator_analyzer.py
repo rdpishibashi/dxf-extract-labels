@@ -39,7 +39,7 @@ st.set_page_config(
 # 入力ファイルの収集・読み込み
 # ============================================================
 
-def _iter_input_sources(uploaded_files, folder_paths, glob_pattern, recursive):
+def _iter_input_sources(uploaded_files, folder_paths=(), glob_pattern='*', recursive=False):
     """(表示名, バイト列 or ローカルパス) のリストを返す。"""
     sources = []
     for uf in uploaded_files or []:
@@ -327,7 +327,8 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
 # DXF-extract-labels 本体アプリの「未確定ラベル」UI でユーザーが行った採用/非採用の
 # 判断（utils/decision_log.py が記録）を集計し、確定パターン・除外パターンの
 # 候補を機械的に提案する。GitHub 上のログ専用リポジトリから直接取得するか、
-# ローカル/Dropbox の decision_log.csv をアップロード・フォルダ指定で読み込む。
+# ローカル/Dropbox の decision_log.csv をアップロード（フォルダのドラッグ&ドロップ
+# 可）で読み込む。
 
 def _read_decision_log_rows(name, source):
     """(表示名, バイト列・パス・テキストのいずれか) から判断ログの行（dict）を読む。"""
@@ -461,29 +462,16 @@ def _app_extracted_labels():
         )
 
     st.subheader("入力")
-    col_left, col_right = st.columns(2)
-    with col_left:
-        uploaded_files = st.file_uploader(
-            "extracted_labels*.xlsx をアップロード（複数可）",
-            type="xlsx",
-            accept_multiple_files=True,
-        )
-    with col_right:
-        folder_text = st.text_area(
-            "フォルダパス（1行に1つ、ローカルのフルパス）",
-            value="",
-            help="このマシン上のディレクトリを指定すると、配下の xlsx ファイルも"
-                 "対象に加えます。アップロードと併用できます。",
-        )
-        glob_pattern = st.text_input("検索パターン（glob）", value="extracted_labels*.xlsx")
-        recursive = st.checkbox("サブフォルダも検索する", value=True)
-
-    folder_paths = [line for line in folder_text.splitlines() if line.strip()]
+    uploaded_files = st.file_uploader(
+        "extracted_labels*.xlsx をアップロード（複数可・フォルダのドラッグ&ドロップ可）",
+        type="xlsx",
+        accept_multiple_files=True,
+    )
 
     if st.button("候補を抽出", type="primary"):
-        sources = _iter_input_sources(uploaded_files, folder_paths, glob_pattern, recursive)
+        sources = _iter_input_sources(uploaded_files)
         if not sources:
-            st.warning("入力ファイルがありません。アップロードするか、フォルダを指定してください。")
+            st.warning("入力ファイルがありません。extracted_labels*.xlsx をアップロードしてください。")
         else:
             with st.spinner(f"{len(sources)} 個のファイルを処理中..."):
                 agg, per_source_stats = aggregate_labels(sources)
@@ -573,26 +561,12 @@ def _app_decision_log():
         )
 
     st.subheader("入力")
-    col_left, col_right = st.columns(2)
-    with col_left:
-        uploaded_logs = st.file_uploader(
-            "decision_log.csv をアップロード（複数可）",
-            type="csv",
-            accept_multiple_files=True,
-            key="decision_log_uploader",
-        )
-    with col_right:
-        folder_text = st.text_area(
-            "フォルダパス（1行に1つ、ローカル/Dropbox のフルパス）",
-            value="",
-            help="ローカル・Windows アプリの decision_log.csv を配置しているフォルダを"
-                 "指定すると、配下のログファイルも対象に加えます。",
-            key="decision_log_folder_text",
-        )
-        glob_pattern = st.text_input(
-            "検索パターン（glob）", value="decision_log*.csv", key="decision_log_glob")
-        recursive = st.checkbox(
-            "サブフォルダも検索する", value=True, key="decision_log_recursive")
+    uploaded_logs = st.file_uploader(
+        "decision_log.csv をアップロード（複数可・フォルダのドラッグ&ドロップ可）",
+        type="csv",
+        accept_multiple_files=True,
+        key="decision_log_uploader",
+    )
 
     with st.expander("☁️ GitHub のログ専用リポジトリから直接取得（Streamlit Cloud）", expanded=False):
         st.caption(
@@ -610,8 +584,6 @@ def _app_decision_log():
         fetch_from_github = st.checkbox(
             "この設定で GitHub から取得する", value=False, key="decision_log_gh_enable")
 
-    folder_paths = [line for line in folder_text.splitlines() if line.strip()]
-
     col1, col2, col3 = st.columns(3)
     min_occurrences = col1.number_input(
         "最小出現回数（未満は様子見）", min_value=1, value=3, step=1,
@@ -624,7 +596,7 @@ def _app_decision_log():
         value=1.0, step=0.05, key="decision_log_exclude_rate")
 
     if st.button("判断ログを集計する", type="primary"):
-        sources = _iter_input_sources(uploaded_logs, folder_paths, glob_pattern, recursive)
+        sources = _iter_input_sources(uploaded_logs)
 
         if fetch_from_github:
             if not gh_repo:
@@ -655,7 +627,7 @@ def _app_decision_log():
                         st.warning(f"GitHub からの取得に失敗しました: {e}")
 
         if not sources:
-            st.warning("入力ログがありません。アップロード・フォルダ指定・GitHub取得の"
+            st.warning("入力ログがありません。アップロードまたはGitHub取得の"
                        "いずれかを行ってください。")
         else:
             with st.spinner(f"{len(sources)} 個のログソースを処理中..."):
@@ -712,6 +684,36 @@ def _app_decision_log():
 
 def app():
     st.title("Reference Designator 抽出検討ツール")
+
+    # タブを箱型（┏━┓）デザインにし、ラベルを+2pt拡大して視認性を上げる
+    # （WE-Dashboardと共通のタブスタイル。ライト/ダークテーマ両対応のため
+    # 色は無彩色のrgbaを使う。詳細は ~/.claude/skills/streamlit/SKILL.md 参照）。
+    st.markdown("""
+        <style>
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 6px;
+            align-items: flex-end;
+        }
+        .stTabs button[data-baseweb="tab"] {
+            border: 1px solid rgba(128, 128, 128, 0.5);
+            border-bottom: none;
+            border-radius: 10px 10px 0 0;
+            padding: 4px 20px;
+            background: rgba(128, 128, 128, 0.12);
+        }
+        .stTabs button[data-baseweb="tab"][aria-selected="true"] {
+            background: transparent;
+        }
+        /* タブ文字: 既定 14px + 2pt(≒2.7px) */
+        .stTabs button[data-baseweb="tab"] [data-testid="stMarkdownContainer"] p {
+            font-size: 16.7px;
+        }
+        .stTabs button[data-baseweb="tab"][aria-selected="true"] [data-testid="stMarkdownContainer"] p {
+            font-weight: 700;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     tab1, tab2 = st.tabs(["extracted_labels 集計", "判断ログ分析（v1.7.0）"])
     with tab1:
         _app_extracted_labels()

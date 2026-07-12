@@ -185,12 +185,30 @@ def is_single_uppercase_letter(text: str) -> bool:
 
 
 def extract_title_and_subtitle(
-    all_labels: List[Tuple[str, Tuple[float, float]]],
-    drawing_numbers: Optional[List[Tuple[str, Tuple[float, float]]]],
+    all_labels: List[Tuple],
+    drawing_numbers: Optional[List[Tuple]],
+    main_drawing_group=None,
 ) -> Dict[str, Optional[str]]:
-    """テキストラベルの位置関係からタイトルとサブタイトルを抽出する"""
+    """テキストラベルの位置関係からタイトルとサブタイトルを抽出する。
+
+    各ラベルは `(テキスト, 座標)` または `(テキスト, 座標, グループキー)`。
+    main_drawing_group（図番が属するタイトルブロックのグループキー）が指定され、
+    かつ同一グループ内に TITLE ラベルが存在する場合は、そのグループのラベルだけを
+    候補にする。旧・現行のタイトルブロックが同一座標に重なっている図面で、
+    旧ブロック由来のサブタイトルが混入するのを防ぐ（図番判別と同じ方式）。
+    グループ内に TITLE が無い場合（タイトルブロックがブロック化されず直接
+    配置されている図面等）は従来どおり全ラベルで判定する。
+    """
     if not all_labels:
         return {'title': None, 'subtitle': None}
+
+    # ラベルを (テキスト, 座標, グループ) に正規化（グループ未指定は None）
+    norm = [(item[0], item[1], item[2] if len(item) >= 3 else None) for item in all_labels]
+    if main_drawing_group is not None:
+        same_group = [item for item in norm if item[2] == main_drawing_group]
+        if any(label.upper().strip() == 'TITLE' for label, _c, _g in same_group):
+            norm = same_group
+    all_labels = [(label, coords) for label, coords, _g in norm]
 
     title_text = None
     subtitle_text = None
@@ -285,7 +303,13 @@ def extract_title_and_subtitle(
     max_y = max(avg_y for _, _, avg_y in groups_with_min_x)
     y_threshold = 10.0
     top_groups = [(g, mx, ay) for g, mx, ay in groups_with_min_x if ay >= max_y - y_threshold]
-    title_group = min(top_groups, key=lambda x: x[1])[0]
+    # X座標最小のグループを選ぶ。min_x が実質同一（許容誤差内）のグループが
+    # 複数ある場合、浮動小数点ノイズの大小で直下のサブタイトル行が選ばれて
+    # しまわないよう、Y座標が最も高いグループ（最上段の行）を採用する。
+    leftmost_x = min(mx for _, mx, _ in top_groups)
+    x_tie_tolerance = 1.0
+    leftmost_groups = [(g, mx, ay) for g, mx, ay in top_groups if mx <= leftmost_x + x_tie_tolerance]
+    title_group = max(leftmost_groups, key=lambda x: x[2])[0]
 
     title_group_sorted = sorted(title_group, key=lambda x: x[1][0])
     title_text = ' '.join(label for label, _ in title_group_sorted)
@@ -328,15 +352,20 @@ def determine_drawing_number_types(
     座標に重なっているケースで「図番と流用元図番が同じブロックに属する」ことを
     判定するために使う。図番がファイル名等で確定したら、**同じグループ内**で
     流用元図番を判定し、別ブロック（旧版）の図番を誤って拾わないようにする。
+
+    戻り値の 'main_group' は図番が属するグループキー（不明な場合は None）。
+    タイトル抽出（extract_title_and_subtitle）で同一ブロック内に候補を絞る
+    ために使う。all_labels の各要素は `(テキスト, 座標)` または
+    `(テキスト, 座標, グループキー)`。
     """
     if len(drawing_numbers) == 0:
-        return {'main_drawing': None, 'source_drawing': None}
+        return {'main_drawing': None, 'source_drawing': None, 'main_group': None}
 
     # 候補を (図番, 座標, グループ) に正規化（グループ未指定は None）
     norm = [(item[0], item[1], item[2] if len(item) >= 3 else None) for item in drawing_numbers]
 
     if len(norm) == 1:
-        return {'main_drawing': norm[0][0], 'source_drawing': None}
+        return {'main_drawing': norm[0][0], 'source_drawing': None, 'main_group': norm[0][2]}
 
     main_drawing = None
     main_group = None
@@ -354,12 +383,13 @@ def determine_drawing_number_types(
 
     # 2. ラベルベースの判別
     if all_labels:
+        label_pairs = [(item[0], item[1]) for item in all_labels]
         source_label_positions = [
-            coords for label, coords in all_labels
+            coords for label, coords in label_pairs
             if '流用元図番' in label or '流用元' in label
         ]
         dwg_label_positions = [
-            coords for label, coords in all_labels
+            coords for label, coords in label_pairs
             if ('DWG' in label.upper().replace('\n', '').replace('\r', '').replace(' ', '')
                 and 'NO' in label.upper().replace('\n', '').replace('\r', '').replace(' ', ''))
         ]
@@ -433,7 +463,7 @@ def determine_drawing_number_types(
     if source_drawing and source_drawing == main_drawing:
         source_drawing = None
 
-    return {'main_drawing': main_drawing, 'source_drawing': source_drawing}
+    return {'main_drawing': main_drawing, 'source_drawing': source_drawing, 'main_group': main_group}
 
 
 def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=False,
@@ -557,7 +587,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
 
                 if clean_text:
                     if extract_drawing_numbers_option or extract_title_option:
-                        all_labels_with_coords.append((clean_text, coordinates))
+                        all_labels_with_coords.append((clean_text, coordinates, group_key))
 
                     if extract_drawing_numbers_option:
                         for dn in extract_drawing_numbers(clean_text):
@@ -569,6 +599,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
         info["total_extracted"] = len(labels)
 
         # 図面番号の判別
+        main_drawing_group = None
         if extract_drawing_numbers_option and drawing_number_candidates:
             filename_for_matching = original_filename if original_filename else dxf_file
             drawing_info = determine_drawing_number_types(
@@ -579,12 +610,14 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
             info["main_drawing_number"] = drawing_info['main_drawing']
             info["source_drawing_number"] = drawing_info['source_drawing']
             info["all_drawing_numbers"] = [dn[0] for dn in drawing_number_candidates]
+            main_drawing_group = drawing_info['main_group']
 
         # タイトル・サブタイトルの抽出
         if extract_title_option and all_labels_with_coords:
             title_info = extract_title_and_subtitle(
                 all_labels_with_coords,
                 drawing_numbers=drawing_number_candidates if extract_drawing_numbers_option else None,
+                main_drawing_group=main_drawing_group,
             )
             info["title"] = title_info['title']
             info["subtitle"] = title_info['subtitle']

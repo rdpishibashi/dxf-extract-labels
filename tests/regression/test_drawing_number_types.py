@@ -65,11 +65,22 @@ def test_backward_compatible_two_tuples():
 
 def test_single_candidate():
     result = determine_drawing_number_types([('EE6888-602-01A', (770.0, 25.5), 'G')])
-    assert result == {'main_drawing': 'EE6888-602-01A', 'source_drawing': None}
+    assert result == {'main_drawing': 'EE6888-602-01A', 'source_drawing': None, 'main_group': 'G'}
 
 
 def test_empty():
-    assert determine_drawing_number_types([]) == {'main_drawing': None, 'source_drawing': None}
+    assert determine_drawing_number_types([]) == {'main_drawing': None, 'source_drawing': None,
+                                                  'main_group': None}
+
+
+def test_main_group_returned():
+    """図番が確定したとき、その所属グループキーが main_group として返る。"""
+    candidates = [
+        ('EE3273-602-01B', (770.0, 25.5), 'OLD'),
+        ('EE6888-602-01A', (770.0, 25.5), 'NEW'),
+    ]
+    result = determine_drawing_number_types(candidates, all_labels=LABELS, filename='EE6888-602-01A.dxf')
+    assert result['main_group'] == 'NEW', result
 
 
 def test_source_equals_main_becomes_none():

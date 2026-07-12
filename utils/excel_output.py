@@ -63,8 +63,15 @@ def create_excel_output(results, sort_option):
     ラベルは半角へ正規化してから集計するため、図面上の表記が半角/全角どちら
     でも同じ語は同じ行（同じ個数）にまとまる。フィルタなし（全ラベル）で
     抽出された `results` をそのまま集計する。
+
+    Summary シート・各ファイルシートともファイル名昇順で出力する。
     """
     output = BytesIO()
+
+    sorted_items = sorted(
+        results.items(),
+        key=lambda kv: kv[1][1].get('filename', os.path.basename(kv[0])),
+    )
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -73,7 +80,7 @@ def create_excel_output(results, sort_option):
         summary_data = []
         total_counter = Counter()
 
-        for file_path, (labels, info) in results.items():
+        for file_path, (labels, info) in sorted_items:
             filename = info.get('filename', os.path.basename(file_path))
             summary_data.append({
                 'ファイル名': filename,
@@ -93,7 +100,7 @@ def create_excel_output(results, sort_option):
         _write_header_row(summary_worksheet, summary_df.columns.values, header_format)
 
         filenames = [info.get('filename', os.path.basename(fp))
-                    for fp, (_labels, info) in results.items()]
+                    for fp, (_labels, info) in sorted_items]
         _write_summary_hyperlinks(summary_worksheet, filenames, link_format)
 
         total_data = [
@@ -102,7 +109,7 @@ def create_excel_output(results, sort_option):
         ]
         _write_label_count_sheet(writer, 'Total', total_data, header_format)
 
-        for file_path, (labels, info) in results.items():
+        for file_path, (labels, info) in sorted_items:
             filename = info.get('filename', os.path.basename(file_path))
             sheet_name = os.path.splitext(filename)[0][:31]
 
@@ -130,8 +137,12 @@ def create_ref_designator_excel_output(results, sort_option):
 
     'rows' はラベルの正規化（NFKC・前後空白除去）済みで渡される想定
     （`utils/ref_designator.py` 側で実施済み）。
+
+    Summary シート・各ファイルシートともファイル名昇順で出力する。
     """
     output = BytesIO()
+
+    sorted_items = sorted(results.items(), key=lambda kv: kv[0])
 
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
@@ -139,7 +150,7 @@ def create_ref_designator_excel_output(results, sort_option):
 
         summary_data = []
         total_counter = Counter()
-        for fname, data in results.items():
+        for fname, data in sorted_items:
             row = {
                 'ファイル名': fname,
                 '図面枠内ラベル数': data.get('total_in_frame', 0),
@@ -159,13 +170,13 @@ def create_ref_designator_excel_output(results, sort_option):
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         summary_ws = writer.sheets['Summary']
         _write_header_row(summary_ws, summary_df.columns.values, header_format)
-        _write_summary_hyperlinks(summary_ws, list(results.keys()), link_format)
+        _write_summary_hyperlinks(summary_ws, [fname for fname, _data in sorted_items], link_format)
         summary_ws.set_column('A:A', 28)
 
         total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
         _write_label_count_sheet(writer, 'Total', total_data, header_format)
 
-        for fname, data in results.items():
+        for fname, data in sorted_items:
             sheet_name = os.path.splitext(fname)[0][:31]
             rows = list(data.get('rows', []))
             if sort_option == 'asc':
@@ -179,7 +190,13 @@ def create_ref_designator_excel_output(results, sort_option):
 
 
 def create_region_excel_output(region_results):
-    """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。"""
+    """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。
+
+    Summary シート・各ファイルシートともファイル名昇順で出力する
+    （region_results をソート済み dict に差し替えることで、領域別ラベル
+    一覧のファイル列順にも一括で反映される）。
+    """
+    region_results = dict(sorted(region_results.items(), key=lambda kv: kv[0]))
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book

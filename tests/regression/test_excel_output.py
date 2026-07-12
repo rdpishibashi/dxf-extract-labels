@@ -88,6 +88,27 @@ def test_create_excel_output_empty_results():
     assert 'Summary' in wb.sheetnames
 
 
+def test_create_excel_output_sorted_by_filename():
+    """Summary の行順・ファイルシートの並びとも、投入順ではなくファイル名昇順になる。"""
+    results = {
+        '/tmp/z.dxf': (['R10'], {'filename': 'z_file.dxf', 'final_count': 1,
+                                 'main_drawing_number': '', 'source_drawing_number': '',
+                                 'title': '', 'subtitle': ''}),
+        '/tmp/a.dxf': (['CN1'], {'filename': 'a_file.dxf', 'final_count': 1,
+                                 'main_drawing_number': '', 'source_drawing_number': '',
+                                 'title': '', 'subtitle': ''}),
+        '/tmp/m.dxf': (['GND'], {'filename': 'm_file.dxf', 'final_count': 1,
+                                 'main_drawing_number': '', 'source_drawing_number': '',
+                                 'title': '', 'subtitle': ''}),
+    }
+    wb = _load_wb(create_excel_output(results, 'asc'))
+    summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
+    assert summary_filenames == ['a_file.dxf', 'm_file.dxf', 'z_file.dxf']
+
+    data_sheets = [n for n in wb.sheetnames if n not in ('Summary', 'Total')]
+    assert data_sheets == ['a_file', 'm_file', 'z_file']
+
+
 # ---------------------------------------------------------------------------
 # create_ref_designator_excel_output
 # ---------------------------------------------------------------------------
@@ -144,6 +165,23 @@ def test_create_ref_designator_excel_output_sort_desc():
     assert labels == ['R10', 'CN1']
 
 
+def test_create_ref_designator_excel_output_sorted_by_filename():
+    """Summary の行順がファイル名昇順になる（投入順が逆でも並び替わる）。"""
+    results = {
+        'zzz.dxf': {'rows': [{'ラベル': 'R1', '個数': 1}], 'total_in_frame': 1,
+                    'unclassified_count': 0, 'main_drawing_number': None,
+                    'source_drawing_number': None, 'title': None, 'subtitle': None},
+        'aaa.dxf': {'rows': [{'ラベル': 'R2', '個数': 1}], 'total_in_frame': 1,
+                    'unclassified_count': 0, 'main_drawing_number': None,
+                    'source_drawing_number': None, 'title': None, 'subtitle': None},
+    }
+    wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
+    summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
+    assert summary_filenames == ['aaa.dxf', 'zzz.dxf']
+    data_sheets = [n for n in wb.sheetnames if n not in ('Summary', 'Total')]
+    assert data_sheets == ['aaa', 'zzz']
+
+
 # ---------------------------------------------------------------------------
 # create_region_excel_output
 # ---------------------------------------------------------------------------
@@ -196,6 +234,19 @@ def test_create_region_excel_output_empty():
     data = create_region_excel_output({})
     wb = _load_wb(data)
     assert 'Summary' in wb.sheetnames
+
+
+def test_create_region_excel_output_sorted_by_filename():
+    """Summary の行順・ファイルシートの並びともファイル名昇順になる。"""
+    results = {}
+    results.update(_make_region_results('zzz.dxf'))
+    results.update(_make_region_results('aaa.dxf'))
+    wb = _load_wb(create_region_excel_output(results))
+    summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
+    assert summary_filenames == ['aaa.dxf', 'zzz.dxf']
+    data_sheets = [n for n in wb.sheetnames
+                  if n not in ('Summary', '領域一覧', '領域別ラベル一覧')]
+    assert data_sheets == ['aaa', 'zzz']
 
 
 # ---------------------------------------------------------------------------

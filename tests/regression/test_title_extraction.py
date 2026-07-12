@@ -14,6 +14,18 @@
     ② 図番の所属グループ（main_drawing_group）内に TITLE がある場合は
        同一グループのラベルのみを候補にする（図番判別と同じグループキー方式）
 
+    v1.7.12: 電気回路図以外（機構部品図等）で、図面枠外に置かれた位置記号
+    （F/L/H 等）がタイトル末尾に混入し、図番横の頁数「1/1」（数字のみの
+    ラベルが2つ）が誤ってサブタイトルとして採用される不具合を修正。
+    対策:
+    ③ タイトルブロック（INSERT）内の図面枠（lineweight=100・color=7 の LINE、
+       機器符号抽出と同じ識別キー）を検出し、その外側にあるラベルを候補から
+       除外（`_titleblock_frame_bbox`）。枠を検出できない図面は従来どおり
+       内容ベースの判定にフォールバック。
+    ④ 数字のみのラベルは常に候補から除外（`_is_titleblock_noise_label`）。
+    ⑤ タイトルとサブタイトルが同一内容になった場合はサブタイトルなしとする
+       安全策を追加。
+
 実行:
     cd DXF-extract-labels
     python -m tests.regression.test_title_extraction
@@ -98,11 +110,44 @@ def test_no_title_label_returns_none():
     assert result == {'title': None, 'subtitle': None}
 
 
+def test_numeric_only_candidate_excluded_from_subtitle():
+    """数字のみのラベル（頁数「1/1」等が別々のTEXTに分かれたもの）はサブタイトル候補にしない。
+
+    背景（v1.7.12）: 図番横の頁数表示（例:「1」「1」の2ラベルが斜線を挟んで
+    フラクション状に配置）が、他に候補が無い場合にそのままサブタイトルとして
+    採用されてしまっていた（EE2685-335-01D.dxf 等、実データ94件中39件で確認）。
+    """
+    labels = [
+        ('TITLE', (338.8, 43.9)),
+        ('REVISION', (373.0, 48.5)),
+        ('BLANK PANEL', (373.0, 36.6)),
+        ('1', (400.0, 20.0)),
+        ('1', (404.0, 16.0)),
+    ]
+    result = extract_title_and_subtitle(labels, None)
+    assert result['title'] == 'BLANK PANEL', result
+    assert result['subtitle'] is None, result
+
+
+def test_title_equal_subtitle_becomes_none():
+    """タイトルとサブタイトルが同一内容になった場合はサブタイトルなしとみなす（安全策）。"""
+    labels = [
+        ('TITLE', (338.8, 43.9)),
+        ('REVISION', (373.0, 48.5)),
+        ('SYSTEM BOX', (373.0, 37.0)),
+        ('SYSTEM BOX', (373.0, 27.0)),  # 同一内容の行が別グループとして混入
+    ]
+    result = extract_title_and_subtitle(labels, None)
+    assert result['title'] == 'SYSTEM BOX', result
+    assert result['subtitle'] is None, result
+
+
 def _find_local(name):
-    """ローカル実データ（sample-dxf/ または 405_展開接続図/）を探す。"""
+    """ローカル実データ（sample-dxf/・405_展開接続図/・339_Unit内結線図/）を探す。"""
     base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     for root in (os.path.join(base, 'sample-dxf'),
-                 os.path.expanduser('~/Dropbox/Workspace/405_展開接続図')):
+                 os.path.expanduser('~/Dropbox/Workspace/405_展開接続図'),
+                 os.path.expanduser('~/Dropbox/Workspace/339_Unit内結線図')):
         if not os.path.isdir(root):
             continue
         for dirpath, _dirnames, filenames in os.walk(root):
@@ -117,6 +162,11 @@ def test_integration_real_dxf_if_present():
     expectations = [
         ('EE6888-637-01A.dxf', 'ELECTRICAL SCHEMATIC DIAGRAM', 'ＳＥＮＳＯＲ ＬＩＮＥ'),
         ('EE6892-617-01B.dxf', 'ELECTRICAL SCHEMATIC DIAGRAM', 'ＣＨＩＬＬＥＲ Ｒ１'),
+        # v1.7.12: 図面枠外の位置記号（F/L/H）がタイトル末尾に混入し、
+        # 頁数「1/1」がサブタイトルとして誤採用されていた不具合の回帰確認
+        ('EE2685-335-01D.dxf', 'Ｄ－ＳＵＢ９Ｐ用ブランクパネル', None),
+        ('EE2685-475-96A.dxf', 'ア－スバ－（２５×３２０ｍｍ）', None),
+        ('EE5322-455-01B.dxf', 'ＳＹＳＴＥＭ＿Ｉ／Ｆ＿ＢＯＸ＿本体（ＢＫ）', None),
     ]
     for name, exp_title, exp_subtitle in expectations:
         dxf = _find_local(name)

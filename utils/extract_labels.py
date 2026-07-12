@@ -184,10 +184,67 @@ def is_single_uppercase_letter(text: str) -> bool:
     return False
 
 
+def _titleblock_frame_bbox(doc, group_handle, frame_lineweight=100, frame_color=7, margin=1.0):
+    """タイトルブロック（INSERT）が持つ図面枠のバウンディングボックスを返す。
+
+    機器符号抽出（ref_designator.py）と同じ識別キー（lineweight=100 かつ color=7 の
+    LINE）で図面枠を検出する。group_handle で指定した INSERT の内部（virtual_entities()
+    で展開・ワールド座標変換済み）のみを見るため、同一座標に重なった旧・現行の
+    タイトルブロックがあっても自身の枠だけを対象にできる。検出できない場合は None
+    （呼び出し側は枠外判定をスキップし、従来どおり内容ベースの判定にフォールバックする）。
+    """
+    if doc is None or not group_handle:
+        return None
+    try:
+        insert_entity = None
+        for layout in doc.layouts:
+            for e in layout:
+                if e.dxftype() == 'INSERT' and getattr(e.dxf, 'handle', None) == group_handle:
+                    insert_entity = e
+                    break
+            if insert_entity is not None:
+                break
+        if insert_entity is None:
+            return None
+
+        xs, ys = [], []
+        for v in insert_entity.virtual_entities():
+            if v.dxftype() == 'LINE':
+                if getattr(v.dxf, 'lineweight', None) == frame_lineweight and getattr(v.dxf, 'color', None) == frame_color:
+                    xs.extend([v.dxf.start[0], v.dxf.end[0]])
+                    ys.extend([v.dxf.start[1], v.dxf.end[1]])
+        if not xs:
+            return None
+        return (min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin)
+    except Exception:
+        return None
+
+
+def _is_titleblock_noise_label(text: str, coords: Tuple[float, float], frame_bbox) -> bool:
+    """タイトル・サブタイトル候補から除外すべきノイズラベルかどうかを判定する。
+
+    - 数字のみのラベル（半角・全角とも）は常に除外する（例: 図番横の頁数「1/1」が
+      別々の TEXT/MTEXT に分かれて「1」「1」のように候補へ混入するケース）。
+    - frame_bbox（同一タイトルブロック内の図面枠バウンディングボックス）が判明して
+      いる場合は、その外側にあるラベルも除外する（枠外に置かれる位置記号 F/L/H
+      やグリッド参照番号）。frame_bbox が None（枠を検出できない図面）の場合は
+      この条件を適用しない＝従来どおり内容ベースの判定のみで安全側にフォールバック。
+    """
+    stripped = text.strip()
+    if stripped and stripped.isdigit():
+        return True
+    if frame_bbox is not None:
+        x0, x1, y0, y1 = frame_bbox
+        if not (x0 <= coords[0] <= x1 and y0 <= coords[1] <= y1):
+            return True
+    return False
+
+
 def extract_title_and_subtitle(
     all_labels: List[Tuple],
     drawing_numbers: Optional[List[Tuple]],
     main_drawing_group=None,
+    doc=None,
 ) -> Dict[str, Optional[str]]:
     """テキストラベルの位置関係からタイトルとサブタイトルを抽出する。
 
@@ -198,6 +255,13 @@ def extract_title_and_subtitle(
     旧ブロック由来のサブタイトルが混入するのを防ぐ（図番判別と同じ方式）。
     グループ内に TITLE が無い場合（タイトルブロックがブロック化されず直接
     配置されている図面等）は従来どおり全ラベルで判定する。
+
+    doc（ezdxf Document）を渡すと、main_drawing_group が指すタイトルブロック
+    INSERT 内の図面枠（lineweight=100・color=7 の LINE）を検出し、その外側に
+    ある位置記号（F/L/H 等）・グリッド参照番号をタイトル／サブタイトル候補から
+    除外する（`_is_titleblock_noise_label`）。doc 省略時・枠検出不能時は枠外
+    判定を行わず、数字のみラベルの除外のみ行う（内容ベースの判定に安全側で
+    フォールバック）。
     """
     if not all_labels:
         return {'title': None, 'subtitle': None}
@@ -233,12 +297,15 @@ def extract_title_and_subtitle(
     # タイトル候補を収集（TITLE の右側かつ REVISION より下）
     title_proximity_x = extraction_config.TITLE_PROXIMITY_X
     title_candidates = []
+    frame_bbox = _titleblock_frame_bbox(doc, main_drawing_group)
 
     for label, coords in all_labels:
         label_upper = label.upper().strip()
         if label_upper in ['TITLE', 'REVISION']:
             continue
         if drawing_numbers and any(dn == label for dn, *_ in drawing_numbers):
+            continue
+        if _is_titleblock_noise_label(label, coords, frame_bbox):
             continue
 
         x_diff = coords[0] - title_label_pos[0]
@@ -336,6 +403,11 @@ def extract_title_and_subtitle(
             subtitle_labels = subtitle_labels[:-1]
 
         subtitle_text = ' '.join(subtitle_labels)
+
+    # タイトルとサブタイトルが同一内容の場合はサブタイトルなしとみなす
+    # （重なったタイトルブロックの残骸など、同じ行が二重に候補化された場合の安全策）
+    if subtitle_text is not None and subtitle_text == title_text:
+        subtitle_text = None
 
     return {'title': title_text, 'subtitle': subtitle_text}
 
@@ -618,6 +690,7 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
                 all_labels_with_coords,
                 drawing_numbers=drawing_number_candidates if extract_drawing_numbers_option else None,
                 main_drawing_group=main_drawing_group,
+                doc=doc,
             )
             info["title"] = title_info['title']
             info["subtitle"] = title_info['subtitle']

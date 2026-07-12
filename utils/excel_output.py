@@ -79,6 +79,7 @@ def create_excel_output(results, sort_option):
 
         summary_data = []
         total_counter = Counter()
+        label_drawing_numbers = {}
 
         for file_path, (labels, info) in sorted_items:
             filename = info.get('filename', os.path.basename(file_path))
@@ -93,6 +94,10 @@ def create_excel_output(results, sort_option):
 
             total_counter.update(Counter(normalize_width(l) for l in labels))
 
+            ident = info.get('main_drawing_number') or os.path.splitext(filename)[0]
+            for l in labels:
+                label_drawing_numbers.setdefault(normalize_width(l), set()).add(ident)
+
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
@@ -104,10 +109,12 @@ def create_excel_output(results, sort_option):
         _write_summary_hyperlinks(summary_worksheet, filenames, link_format)
 
         total_data = [
-            {'ラベル': lbl, '個数': total_counter[lbl]}
+            {'ラベル': lbl, '個数': total_counter[lbl],
+             '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
             for lbl in sorted(total_counter.keys())
         ]
-        _write_label_count_sheet(writer, 'Total', total_data, header_format)
+        _write_label_count_sheet(writer, 'Total', total_data, header_format,
+                                 columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
         for file_path, (labels, info) in sorted_items:
             filename = info.get('filename', os.path.basename(file_path))
@@ -150,6 +157,7 @@ def create_ref_designator_excel_output(results, sort_option):
 
         summary_data = []
         total_counter = Counter()
+        label_drawing_numbers = {}
         for fname, data in sorted_items:
             row = {
                 'ファイル名': fname,
@@ -163,8 +171,11 @@ def create_ref_designator_excel_output(results, sort_option):
                 row['タイトル'] = data.get('title', '') or ''
                 row['サブタイトル'] = data.get('subtitle', '') or ''
             summary_data.append(row)
+
+            ident = data.get('main_drawing_number') or os.path.splitext(fname)[0]
             for r in data.get('rows', []):
                 total_counter[r['ラベル']] += r['個数']
+                label_drawing_numbers.setdefault(r['ラベル'], set()).add(ident)
 
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
@@ -173,8 +184,13 @@ def create_ref_designator_excel_output(results, sort_option):
         _write_summary_hyperlinks(summary_ws, [fname for fname, _data in sorted_items], link_format)
         summary_ws.set_column('A:A', 28)
 
-        total_data = [{'ラベル': lbl, '個数': total_counter[lbl]} for lbl in sorted(total_counter.keys())]
-        _write_label_count_sheet(writer, 'Total', total_data, header_format)
+        total_data = [
+            {'ラベル': lbl, '個数': total_counter[lbl],
+             '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
+            for lbl in sorted(total_counter.keys())
+        ]
+        _write_label_count_sheet(writer, 'Total', total_data, header_format,
+                                 columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
         for fname, data in sorted_items:
             sheet_name = os.path.splitext(fname)[0][:31]

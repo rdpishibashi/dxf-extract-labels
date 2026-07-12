@@ -109,6 +109,38 @@ def test_create_excel_output_sorted_by_filename():
     assert data_sheets == ['a_file', 'm_file', 'z_file']
 
 
+def test_create_excel_output_total_sheet_has_drawing_number_column():
+    """Total シートの C 列に、そのラベルが登場する図番一覧が入る。
+    複数図番にまたがるラベルは ', ' 区切り・ソート済みで結合される。
+    図番未抽出のファイルはファイル名（拡張子なし）にフォールバックする。"""
+    results = {
+        '/tmp/a.dxf': (['CN1', 'GND'], {
+            'filename': 'a.dxf', 'final_count': 2,
+            'main_drawing_number': 'EE5678-600-02B', 'source_drawing_number': '',
+            'title': '', 'subtitle': '',
+        }),
+        '/tmp/b.dxf': (['CN1'], {
+            'filename': 'b.dxf', 'final_count': 1,
+            'main_drawing_number': 'EE1234-500-01A', 'source_drawing_number': '',
+            'title': '', 'subtitle': '',
+        }),
+        '/tmp/c.dxf': (['R10'], {
+            'filename': 'c.dxf', 'final_count': 1,
+            'main_drawing_number': '', 'source_drawing_number': '',
+            'title': '', 'subtitle': '',
+        }),
+    }
+    wb = _load_wb(create_excel_output(results, 'asc'))
+    ws = wb['Total']
+    header = [c.value for c in ws[1]]
+    assert header == ['ラベル', '個数', '図番']
+
+    rows = {row[0].value: row[2].value for row in ws.iter_rows(min_row=2)}
+    assert rows['CN1'] == 'EE1234-500-01A, EE5678-600-02B'   # 2図番、ソート済み
+    assert rows['GND'] == 'EE5678-600-02B'
+    assert rows['R10'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
+
+
 # ---------------------------------------------------------------------------
 # create_ref_designator_excel_output
 # ---------------------------------------------------------------------------
@@ -157,6 +189,37 @@ def test_create_ref_designator_excel_output_sheet_and_values():
 
     total_rows = [(c[0].value, c[1].value) for c in wb['Total'].iter_rows(min_row=2)]
     assert total_rows == [('CN1', 2), ('R10', 1)]
+
+    total_header = [c.value for c in wb['Total'][1]]
+    assert total_header == ['ラベル', '個数', '図番']
+    total_drawing_numbers = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    assert total_drawing_numbers == {'CN1': 'EE1234-500-01A', 'R10': 'EE1234-500-01A'}
+
+
+def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_and_merge():
+    """Total シートの図番列: 複数図番にまたがるラベルは ', ' 区切り・ソート済み、
+    図番未抽出のファイルはファイル名（拡張子なし）にフォールバックする。"""
+    results = {
+        'a.dxf': {
+            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'unclassified_count': 0, 'main_drawing_number': 'EE5678-600-02B',
+            'source_drawing_number': None, 'title': None, 'subtitle': None,
+        },
+        'b.dxf': {
+            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'unclassified_count': 0, 'main_drawing_number': 'EE1234-500-01A',
+            'source_drawing_number': None, 'title': None, 'subtitle': None,
+        },
+        'c.dxf': {
+            'rows': [{'ラベル': 'R10', '個数': 1}], 'total_in_frame': 1,
+            'unclassified_count': 0, 'main_drawing_number': None,
+            'source_drawing_number': None, 'title': None, 'subtitle': None,
+        },
+    }
+    wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
+    rows = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    assert rows['CN1'] == 'EE1234-500-01A, EE5678-600-02B'
+    assert rows['R10'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
 
 
 def test_create_ref_designator_excel_output_sort_desc():

@@ -1208,14 +1208,6 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
     return fc, dangling_by_frame
 
 
-def _count_threshold_hits(frame_cands, single_thr):
-    """`frame_cands`（`_run_region_detection` の戻り値の1番目）のうち、面積が
-    `single_thr` 以上の候補数を返す。`analyze_dxf_regions` の3パス検出で、十分な
-    候補が見つかったか（＝次のフォールバックパスへ進む必要があるか）の判定に使う。
-    """
-    return sum(1 for cl in frame_cands for cf in cl if cf['area'] >= single_thr)
-
-
 def _remove_overlap_claimed_candidates(regions):
     """重なる領域同士で、同じ名称候補テキストをより近い側（小さい距離）の領域
     だけに残し、遠い側からは取り除く（`regions_overlap()` が True の領域間のみ）。
@@ -1704,30 +1696,54 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
             lines_for_detection, cfg, frames, frame_area, frame_labels,
             connection_points, rotated_edge_roles)
 
-        # LINE だけで閾値超え候補がゼロで LWPOLYLINE 境界線もある場合、
-        # LWPOLYLINE を追加して再検出する（例: EE6888-631-01A.dxf など境界が
-        # LWPOLYLINE で描かれた図面への対応）。
-        # LINE でも十分な候補がある図面では LWPOLYLINE を追加しない
-        # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせる）。
-        if _count_threshold_hits(frame_cands, single_thr) == 0 and region_lines_lp:
-            lines_for_detection = region_lines + region_lines_lp
-            frame_cands, dangling_by_frame = _run_region_detection(
-                lines_for_detection, cfg, frames, frame_area, frame_labels,
-                connection_points, rotated_edge_roles)
+        def _zero_hit_frame_indices(cands):
+            return [fi for fi, cl in enumerate(cands)
+                    if not any(cf['area'] >= single_thr for cf in cl)]
 
-        # それでも閾値超え候補がゼロ、かつラベルの過半数が90°回転している（=図面全体が
-        # 90°回転して描かれている）場合のみ、横線分のギャップ橋渡しを有効にして再検出する
-        # （安全条件＝縦線分の端点とのコーナー一致無し・CIRCLE無し、は橋渡し縦線分と同じ）。
-        # 回転判定を条件に加えるのは、通常向きの図面で「単に検出ゼロ件だったから」を
-        # トリガーに横線分も橋渡ししてしまうと、無関係な隣接矩形を誤って結合する副作用が
-        # あるため（`_is_globally_rotated` 参照）。
+        # LINE だけで閾値超え候補がゼロだった図面枠に限り、LWPOLYLINE を追加して
+        # 再検出する（例: EE6888-631-01A.dxf など境界が LWPOLYLINE で描かれた図面
+        # への対応）。判定・再検出とも図面枠単位（zero_fis のみ）で行う——ファイル
+        # 全体で1件でも候補があれば以降のパスを丸ごとスキップする実装だと、同じ
+        # ファイル内の「別の図面枠がたまたま先に見つかる」だけで、本来
+        # LWPOLYLINE/回転対応が必要な図面枠が永久に救済されないバグがあった
+        # （`DE5434-553-10B.dxf` の `CONTROL BOX CORE FX`/`RX` で確認。area_ratio を
+        # 10%→15% に変えるだけで検出有無が反転するという閾値依存の非単調な挙動が
+        # 発覚の手がかりだった。2026-07-12 修正）。
+        # LINE でも十分な候補がある図面枠には LWPOLYLINE を追加しない
+        # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせるため）。
+        zero_fis = _zero_hit_frame_indices(frame_cands)
+        if zero_fis and region_lines_lp:
+            lines_for_detection = region_lines + region_lines_lp
+            sub_frames = [frames[fi] for fi in zero_fis]
+            fc2, dg2 = _run_region_detection(
+                lines_for_detection, cfg, sub_frames, frame_area, frame_labels,
+                connection_points, rotated_edge_roles)
+            for j, fi in enumerate(zero_fis):
+                frame_cands[fi] = fc2[j]
+                dangling_by_frame[fi] = dg2[j]
+
+        # それでも閾値超え候補がゼロだった図面枠に限り、かつラベルの過半数が90°回転
+        # している（=図面全体が90°回転して描かれている）場合のみ、横線分のギャップ
+        # 橋渡しを有効にして再検出する（安全条件＝縦線分の端点とのコーナー一致無し・
+        # CIRCLE無し、は橋渡し縦線分と同じ）。判定・再検出とも図面枠単位（zero_fis の
+        # み）で行う理由は上記 LWPOLYLINE パスと同じ（1ファイル内の一部の図面枠だけが
+        # 回転コンテンツを持つケースを取りこぼさない）。
+        # 回転判定（`rotated`）はファイル全体のラベル集計に基づく既存の判定のまま
+        # 維持する——通常向きの図面枠で「単に検出ゼロ件だったから」をトリガーに横線分
+        # も橋渡ししてしまうと、無関係な隣接矩形を誤って結合する副作用があるため
+        # （`_is_globally_rotated` 参照）。
         det_cfg = cfg
-        if _count_threshold_hits(frame_cands, single_thr) == 0 and rotated:
+        zero_fis = _zero_hit_frame_indices(frame_cands)
+        if zero_fis and rotated:
             det_cfg = dict(cfg)
             det_cfg['bridge_horizontal_gaps'] = True
-            frame_cands, dangling_by_frame = _run_region_detection(
-                lines_for_detection, det_cfg, frames, frame_area, frame_labels,
+            sub_frames = [frames[fi] for fi in zero_fis]
+            fc3, dg3 = _run_region_detection(
+                lines_for_detection, det_cfg, sub_frames, frame_area, frame_labels,
                 connection_points, rotated_edge_roles)
+            for j, fi in enumerate(zero_fis):
+                frame_cands[fi] = fc3[j]
+                dangling_by_frame[fi] = dg3[j]
 
         # 4パス目（レベル汚染フォールバック・図面枠単位）: 領域境界線と同属性の無関係な
         # 近接線分（例: 境界線 y=122.00 の 0.37 上のコネクタ箱底辺 y=122.37）が共線結合の

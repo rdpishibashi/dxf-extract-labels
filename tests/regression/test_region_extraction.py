@@ -198,6 +198,35 @@ def test_rotated_drawing_horizontal_gap_bridging_closes_large_box():
 
 
 @pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
+def test_rotated_drawing_fallback_gate_is_per_frame_not_whole_file():
+    """`DE5434-553-10B.dxf`（5図面枠）は、90°回転コンテンツを持つ図面2/3
+    （CONTROL BOX CORE FX/RX）以外に、回転対応なしで普通に検出できる図面枠
+    （LA/LB CHAMBER 等）も含む。
+
+    かつて `analyze_dxf_regions()` の LWPOLYLINE 追加・横線分ギャップ橋渡し
+    フォールバックは「ファイル全体で1件でも閾値超え候補があるか」を発動条件に
+    していたため、area_ratio を下げるとファイル内の別の図面枠（本来この
+    フォールバックを必要としない図面枠）がその低い閾値をたまたま超えてしまい、
+    ファイル全体では「候補あり」と判定されて、CONTROL BOX CORE FX/RX が実際に
+    必要としているフォールバックが一度も発動しなくなっていた——
+    「area_ratio を10%→15%に変えるだけで検出の有無が反転する」という閾値依存の
+    非単調な挙動が発覚のきっかけ（DXF-viewer の Search Boundary は 10% を既定値に
+    使っており、そこでこの不具合が顕在化した）。
+
+    修正後は各フォールバックの発動判定・再検出を図面枠単位（zero_fis）で行うため、
+    面積閾値の値に関わらず（10%でも15%でも20%でも）CONTROL BOX CORE FX/RX の
+    両方が検出されるはずである。"""
+    for area_ratio in (0.10, 0.15, 0.20):
+        a = analyze_dxf_regions(ROTATED, config={'area_ratio': area_ratio})
+        assert a['error'] is None
+        names = {r['default_name'] for r in a['regions']}
+        assert 'CONTROL BOX CORE FX' in names, (
+            f"area_ratio={area_ratio} で CONTROL BOX CORE FX が検出されなかった")
+        assert 'CONTROL BOX CORE RX' in names, (
+            f"area_ratio={area_ratio} で CONTROL BOX CORE RX が検出されなかった")
+
+
+@pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
 def test_rotated_drawing_on_line_label_excluded_and_does_not_hide_real_name():
     """境界線上(d=0、min_dist=1.0未満)に偶然乗った無関係なラベル（コネクタ符号
     CN24POW04/05）はフォールバックでも候補に含めない（min_dist はフォールバックでも

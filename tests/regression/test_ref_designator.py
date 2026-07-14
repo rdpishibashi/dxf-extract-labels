@@ -436,6 +436,53 @@ def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
     assert len(result['frames']) == 13
 
 
+@pytest.mark.parametrize('sample_name', [
+    'EE5322-455-01B.dxf',   # 図面枠(JZB_0001)はPaper Space("ICADSX Layout")のみ、
+    'EE5322-455-07A.dxf',   # 実ジオメトリはModel Space（frameとcontentが別レイアウト）
+])
+def test_frame_absent_in_model_space_falls_back_without_losing_labels(sample_name):
+    """図面枠を含む内容一式が Model Space ではなく Paper Space レイアウトに
+    配置されている一方、実際のラベル・図形は Model Space にある図面
+    （frame と content がレイアウト的に分離した構造）では、Paper Space 側の
+    図面枠を Model Space のラベルに適用してはならない（Model/Paper Space は
+    独立した座標系のため、座標が対応せず正しいラベルの大半が「枠外」と
+    誤判定される。実際に `EE6892-455B.dxf` で `CB001` 等が出力から消える
+    不具合が発生した。2026-07-14 ユーザー報告により発覚）。
+
+    このため、Model Space に何らかのラベルがある場合は Model Space のみを
+    対象にする方針とし、Model Space に図面枠が無ければ「図面枠が見つかりま
+    せんでした」という警告付きで図面枠フィルタなしの全ラベル抽出にフォール
+    バックする（Paper Space の図面枠を誤って適用しない代わりに、警告が出る
+    のは許容する）。"""
+    path = _find_sample(sample_name)
+    if not path:
+        pytest.skip(f'sample DXF not found: {sample_name}')
+    data = ref_designator.extract_ref_designator_data(
+        path, frame_lineweight=100, original_filename=sample_name)
+    assert data['warning'] is not None
+    # 図面枠フィルタなしのフォールバックで、Model Space の実ラベルが
+    # ちゃんと収集されている（座標系不一致でほぼ全滅していない）こと。
+    assert data['total_in_frame'] > 20
+
+
+def test_cb001_not_dropped_by_paper_space_frame_coordinate_mismatch():
+    """ユーザー報告の具体的な再現ケース: `EE6892-455B.dxf` は図面枠が
+    Paper Space（`ICADSX Layout`）のみに存在し、実際の機器符号ラベル
+    （`CB001`等）は Model Space にある。Paper Space 由来の図面枠bboxを
+    Model Space のラベルに誤って適用すると、座標系が対応せず`CB001`等の
+    大半が「枠外」と誤判定されて出力から消える不具合が発生した
+    （2026-07-14、修正前は 60件→6件に激減していた）。"""
+    path = _find_sample('EE6892-455B.dxf')
+    if not path:
+        pytest.skip('sample DXF not found: EE6892-455B.dxf')
+    data = ref_designator.extract_ref_designator_data(
+        path, frame_lineweight=100, original_filename='EE6892-455B.dxf')
+    all_labels = {t for t, _x, _y in data['confirmed_labels']} | \
+        {t for t, _x, _y in data['review_labels']}
+    assert 'CB001' in all_labels
+    assert len(all_labels) > 50
+
+
 def test_extract_ref_designator_rows_end_to_end():
     """通常モード用トップレベル関数が実DXFに対し例外なく行データを返す。"""
     path = _find_sample('EE6491-039-04A.dxf')

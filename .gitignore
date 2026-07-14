@@ -193,6 +193,8 @@ log*.txt
 *.pdf
 *.png
 *.gif
+*.exe
+*.zip
 # Symlink to the cross-project shared sample DXF pool (Tools/sample-dxf/) —
 # local-machine convenience, not portable across clones.
 /sample-dxf

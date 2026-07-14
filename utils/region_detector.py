@@ -102,19 +102,32 @@ def _is_continuous_linetype(e, doc):
     return lt == 'CONTINUOUS'
 
 
-def _collect_region_geometry(msp, cfg):
-    """msp を1回走査し、INSERT も展開して、図面枠線・領域境界線・テキスト・
-    接続点（CIRCLE を含むブロックの INSERT 位置）を収集する。"""
-    frame_lines = []
-    region_lines = []
-    label_entities = []
-    connection_points = []
+def _collect_region_geometry(doc, cfg):
+    """Model Space を基本に、図面枠線・領域境界線・テキスト・接続点（CIRCLE を
+    含むブロックの INSERT 位置）を収集する。Model Space に何の内容も無い場合に
+    限り、Model 以外のレイアウト（Paper Space等）を順に試す。**同一レイアウト
+    内の収集結果のみを組み合わせて返す**（レイアウトをまたいで混在させない）。
+
+    Model Space と Paper Space は完全に独立した座標系であり、一方のレイアウト
+    で見つけた図面枠のbboxを、別レイアウトのラベル・線分に対する「図面枠内か」
+    の判定に使うと、座標が対応せず正しい要素が誤って除外される
+    （`EE6892-455B.dxf`: 図面枠は Paper Space〈`ICADSX Layout`〉のみに存在する
+    一方、実際の図形・ラベルは Model Space にあり、Paper Space 由来の枠bboxで
+    Model Space側をフィルタすると大半が「枠外」と誤判定される不具合が
+    `ref_designator.py` 側で発生した。2026-07-14 ユーザー報告により発覚。
+    `region_detector.py` にも同根のリスクがあるため同じ方針で修正）。
+
+    Model Space に何らかの内容（5つの戻り値リストのいずれか）がある場合は
+    常に Model Space の結果をそのまま返す（枠が見つからなくても、呼び出し元の
+    「枠なし」エラー処理に委ねる）。Model Space が完全に空の場合のみ、他の
+    レイアウトを順に試し、最初に何らかの内容が見つかったレイアウト自身の
+    収集結果を返す。
+    """
     flw = cfg['frame_lineweight']
     fcol = cfg['frame_color']
     rlw = cfg['region_lineweight']
     rcol = cfg['region_color']
 
-    doc = getattr(msp, 'doc', None)
     _circle_block = {}
 
     def block_has_circle(name):
@@ -129,65 +142,87 @@ def _collect_region_geometry(msp, cfg):
             _circle_block[name] = has
         return _circle_block[name]
 
-    def handle_line(e, owner_handle=None):
-        lw = getattr(e.dxf, 'lineweight', None)
-        col = getattr(e.dxf, 'color', None)
-        if lw == flw and col == fcol:
-            frame_lines.append((e.dxf.start, e.dxf.end))
-        elif (lw == rlw and col == rcol
-              and _is_continuous_linetype(e, doc)):
-            # 領域境界線のみ handle を保持する（行き止まり枝の報告用。virtual_entities()
-            # 由来（INSERT 展開）は handle が None になるため、所属 INSERT の handle で代替）。
-            region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
+    def collect_from_layout(layout):
+        frame_lines = []
+        region_lines = []
+        region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
+        label_entities = []
+        connection_points = []
 
-    region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
+        def handle_line(e, owner_handle=None):
+            lw = getattr(e.dxf, 'lineweight', None)
+            col = getattr(e.dxf, 'color', None)
+            if lw == flw and col == fcol:
+                frame_lines.append((e.dxf.start, e.dxf.end))
+            elif (lw == rlw and col == rcol
+                  and _is_continuous_linetype(e, doc)):
+                # 領域境界線のみ handle を保持する（行き止まり枝の報告用。
+                # virtual_entities() 由来（INSERT 展開）は handle が None に
+                # なるため、所属 INSERT の handle で代替）。
+                region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
 
-    def handle_lwpolyline_lp(e, owner_handle=None):
-        """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
-        lw = getattr(e.dxf, 'lineweight', None)
-        if (lw != rlw or getattr(e.dxf, 'color', None) != rcol
-                or not _is_continuous_linetype(e, doc)):
-            return
-        try:
-            pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)
-        except Exception:
-            return
-        n = len(pts)
-        if n < 2:
-            return
-        handle = e.dxf.handle or owner_handle
-        close_range = n if e.closed else n - 1
-        for i in range(close_range):
-            p0 = pts[i]
-            p1 = pts[(i + 1) % n]
-            if abs(p0[2]) > 1e-6:
-                continue
-            region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1]), handle))
-
-    for e in msp:
-        t = e.dxftype()
-        if t == 'LINE':
-            handle_line(e)
-        elif t == 'LWPOLYLINE':
-            handle_lwpolyline_lp(e)
-        elif t in ('TEXT', 'MTEXT'):
-            label_entities.append(e)
-        elif t == 'INSERT':
-            if block_has_circle(e.dxf.name):
-                ins = e.dxf.insert
-                connection_points.append((ins[0], ins[1]))
+        def handle_lwpolyline_lp(e, owner_handle=None):
+            """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
+            lw = getattr(e.dxf, 'lineweight', None)
+            if (lw != rlw or getattr(e.dxf, 'color', None) != rcol
+                    or not _is_continuous_linetype(e, doc)):
+                return
             try:
-                for v in e.virtual_entities():
-                    vt = v.dxftype()
-                    if vt == 'LINE':
-                        handle_line(v, owner_handle=e.dxf.handle)
-                    elif vt == 'LWPOLYLINE':
-                        handle_lwpolyline_lp(v, owner_handle=e.dxf.handle)
-                    elif vt in ('TEXT', 'MTEXT'):
-                        label_entities.append(v)
+                pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)
             except Exception:
-                pass
-    return frame_lines, region_lines, region_lines_lp, label_entities, connection_points
+                return
+            n = len(pts)
+            if n < 2:
+                return
+            handle = e.dxf.handle or owner_handle
+            close_range = n if e.closed else n - 1
+            for i in range(close_range):
+                p0 = pts[i]
+                p1 = pts[(i + 1) % n]
+                if abs(p0[2]) > 1e-6:
+                    continue
+                region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1]), handle))
+
+        for e in layout:
+            t = e.dxftype()
+            if t == 'LINE':
+                handle_line(e)
+            elif t == 'LWPOLYLINE':
+                handle_lwpolyline_lp(e)
+            elif t in ('TEXT', 'MTEXT'):
+                label_entities.append(e)
+            elif t == 'INSERT':
+                if block_has_circle(e.dxf.name):
+                    ins = e.dxf.insert
+                    connection_points.append((ins[0], ins[1]))
+                try:
+                    for v in e.virtual_entities():
+                        vt = v.dxftype()
+                        if vt == 'LINE':
+                            handle_line(v, owner_handle=e.dxf.handle)
+                        elif vt == 'LWPOLYLINE':
+                            handle_lwpolyline_lp(v, owner_handle=e.dxf.handle)
+                        elif vt in ('TEXT', 'MTEXT'):
+                            label_entities.append(v)
+                except Exception:
+                    pass
+
+        return frame_lines, region_lines, region_lines_lp, label_entities, connection_points
+
+    result = collect_from_layout(doc.modelspace())
+    if any(result):
+        return result
+
+    try:
+        for layout in doc.layouts:
+            if layout.name != 'Model':
+                alt_result = collect_from_layout(layout)
+                if any(alt_result):
+                    return alt_result
+    except Exception:
+        pass
+
+    return result
 
 
 # ============================================================
@@ -1656,12 +1691,17 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
         frame_lines, region_lines, region_lines_lp, label_entities, connection_points = \
-            _collect_region_geometry(msp, cfg)
+            _collect_region_geometry(doc, cfg)
 
         frames = detect_drawing_frames(frame_lines, cfg['snap'])
         result['frames'] = frames
         if not frames:
-            result['error'] = ('図面枠（太さ %d の線で囲まれた枠）が見つかりませんでした。'
+            # 領域検出は図面枠が無いと面積比等の基準を計算できず処理を継続できない
+            # （ref_designator.py のような「制約なし抽出」へのフォールバックが無い）
+            # ため、「何が実施できなかったか」を明確に伝える文言にする
+            # （ユーザー指摘、2026-07-14）。
+            result['error'] = ('図面枠（太さ %d の線で囲まれた枠）が見つからなかったため、'
+                               '領域探索を実施することができませんでした。'
                                % cfg['frame_lineweight'])
             return result
         frame_area = (frames[0][1] - frames[0][0]) * (frames[0][3] - frames[0][2])

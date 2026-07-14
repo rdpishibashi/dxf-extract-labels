@@ -383,48 +383,82 @@ def _format_block_names(doc, frame_lineweight: int, frame_color: int = _FRAME_CO
 def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FRAME_COLOR):
     """図面枠線と、フォーマットブロック由来を除いたラベルエンティティを収集する。
 
+    Model Space を基本とするが、Model Space に何の内容も無い場合に限り
+    Model 以外のレイアウト（Paper Space等）を順に試す。**同一レイアウト内の
+    frame_lines と label_entities のみを組み合わせて返す**（レイアウトを
+    またいで混在させない）。
+
+    Model Space と Paper Space は完全に独立した座標系であり、一方のレイアウト
+    で見つけた図面枠のbboxを、別レイアウトのラベル座標に対する「図面枠内か」の
+    判定に使うと、座標が対応せず正しいラベルが誤って除外される
+    （`EE6892-455B.dxf`: 図面枠は Paper Space〈`ICADSX Layout`〉のみに存在する
+    一方、`CB001`等の実際の機器符号ラベルは Model Space にあり、Paper Space
+    由来の枠bboxでModel Spaceのラベルをフィルタすると`CB001`等の大半が
+    「枠外」と誤判定され出力から消えてしまう不具合が発生した。2026-07-14
+    ユーザー報告により発覚）。
+
+    Model Space に何らかの内容（frame_lines・label_entities のいずれか）が
+    ある場合は常に Model Space の結果をそのまま返す（枠が見つからなくても、
+    呼び出し元の「枠なしフォールバック」〈Model Space 全ラベル無制限抽出〉に
+    委ねる）。Model Space が完全に空の場合のみ、他のレイアウトを順に試し、
+    最初に何らかの内容が見つかったレイアウト自身の frame_lines・
+    label_entities のペアを返す。
+
     戻り値: (frame_lines, label_entities)
       frame_lines: [(start, end), ...]（Vec3のまま。detect_drawing_frames に渡す）
       label_entities: TEXT/MTEXT エンティティのリスト（フォーマットブロック由来を除く）
     """
-    msp = doc.modelspace()
     fmt_blocks = _format_block_names(doc, frame_lineweight, frame_color)
-
-    frame_lines = []
-    label_entities = []
     text_block_cache = {}
 
     def is_frame_line(e):
         return (getattr(e.dxf, 'lineweight', None) == frame_lineweight
                 and getattr(e.dxf, 'color', None) == frame_color)
 
-    for e in msp:
-        t = e.dxftype()
-        if t == 'LINE':
-            if is_frame_line(e):
-                frame_lines.append((e.dxf.start, e.dxf.end))
-        elif t in ('TEXT', 'MTEXT'):
-            label_entities.append(e)
-        elif t == 'INSERT':
-            name = e.dxf.name
-            if name in fmt_blocks:
-                # フォーマットブロック: 図面枠線のみ収集し、テキスト（図面情報欄・
-                # 枠外位置記号）は丸ごと除外する
-                try:
-                    for v in e.virtual_entities():
-                        if v.dxftype() == 'LINE' and is_frame_line(v):
-                            frame_lines.append((v.dxf.start, v.dxf.end))
-                except Exception:
-                    pass
-            else:
-                if not _block_has_text_content(doc, name, text_block_cache):
-                    continue
-                try:
-                    for v in e.virtual_entities():
-                        if v.dxftype() in ('TEXT', 'MTEXT'):
-                            label_entities.append(v)
-                except Exception:
-                    pass
+    def collect_from_layout(layout):
+        frame_lines = []
+        label_entities = []
+        for e in layout:
+            t = e.dxftype()
+            if t == 'LINE':
+                if is_frame_line(e):
+                    frame_lines.append((e.dxf.start, e.dxf.end))
+            elif t in ('TEXT', 'MTEXT'):
+                label_entities.append(e)
+            elif t == 'INSERT':
+                name = e.dxf.name
+                if name in fmt_blocks:
+                    # フォーマットブロック: 図面枠線のみ収集し、テキスト（図面情報欄・
+                    # 枠外位置記号）は丸ごと除外する
+                    try:
+                        for v in e.virtual_entities():
+                            if v.dxftype() == 'LINE' and is_frame_line(v):
+                                frame_lines.append((v.dxf.start, v.dxf.end))
+                    except Exception:
+                        pass
+                else:
+                    if not _block_has_text_content(doc, name, text_block_cache):
+                        continue
+                    try:
+                        for v in e.virtual_entities():
+                            if v.dxftype() in ('TEXT', 'MTEXT'):
+                                label_entities.append(v)
+                    except Exception:
+                        pass
+        return frame_lines, label_entities
+
+    frame_lines, label_entities = collect_from_layout(doc.modelspace())
+    if frame_lines or label_entities:
+        return frame_lines, label_entities
+
+    try:
+        for layout in doc.layouts:
+            if layout.name != 'Model':
+                alt_frame_lines, alt_label_entities = collect_from_layout(layout)
+                if alt_frame_lines or alt_label_entities:
+                    return alt_frame_lines, alt_label_entities
+    except Exception:
+        pass
 
     return frame_lines, label_entities
 
@@ -483,31 +517,51 @@ def collect_in_frame_labels(
 
 def _collect_all_labels_fallback(dxf_file: str) -> List[Tuple[str, float, float]]:
     """図面枠が検出できない場合のフォールバック: 図面枠フィルタなしで
-    ファイル全体（modelspace）のラベルを収集する。"""
+    ファイル全体のラベルを収集する。
+
+    Model Space に何らかのラベルがあれば Model Space のみを対象にする
+    （`_collect_frame_and_labels` と同じ方針。Model Space が完全に空の
+    場合のみ他レイアウトを順に試す）。"""
     try:
         doc = ezdxf.readfile(dxf_file)
     except Exception:
         return []
-    msp = doc.modelspace()
     text_block_cache = {}
-    out = []
-    for e in msp:
-        t = e.dxftype()
-        if t in ('TEXT', 'MTEXT'):
-            _, clean_text, (x, y) = extract_text_from_entity(e)
-            if clean_text:
-                out.append((clean_text, x, y))
-        elif t == 'INSERT':
-            if not _block_has_text_content(doc, e.dxf.name, text_block_cache):
-                continue
-            try:
-                for v in e.virtual_entities():
-                    if v.dxftype() in ('TEXT', 'MTEXT'):
-                        _, clean_text, (x, y) = extract_text_from_entity(v)
-                        if clean_text:
-                            out.append((clean_text, x, y))
-            except Exception:
-                pass
+
+    def collect_from_layout(layout):
+        out = []
+        for e in layout:
+            t = e.dxftype()
+            if t in ('TEXT', 'MTEXT'):
+                _, clean_text, (x, y) = extract_text_from_entity(e)
+                if clean_text:
+                    out.append((clean_text, x, y))
+            elif t == 'INSERT':
+                if not _block_has_text_content(doc, e.dxf.name, text_block_cache):
+                    continue
+                try:
+                    for v in e.virtual_entities():
+                        if v.dxftype() in ('TEXT', 'MTEXT'):
+                            _, clean_text, (x, y) = extract_text_from_entity(v)
+                            if clean_text:
+                                out.append((clean_text, x, y))
+                except Exception:
+                    pass
+        return out
+
+    out = collect_from_layout(doc.modelspace())
+    if out:
+        return out
+
+    try:
+        for layout in doc.layouts:
+            if layout.name != 'Model':
+                alt_out = collect_from_layout(layout)
+                if alt_out:
+                    return alt_out
+    except Exception:
+        pass
+
     return out
 
 
@@ -597,7 +651,14 @@ def extract_ref_designator_data(
 
     collected = collect_in_frame_labels(dxf_file, frame_lineweight, frame_color)
     if collected['error']:
-        info['warning'] = collected['error'] + '（図面枠内フィルタなしで全ラベルを対象にします）'
+        # フォールバック自体は正常な抽出結果につながる（実際に正しく機器符号が
+        # 抽出できるケースがほとんど）ため、「見つかりませんでした」という
+        # 失敗を思わせる文言は避け、実施した内容を淡々と伝える言い回しにする
+        # （ユーザー指摘、2026-07-14）。
+        info['warning'] = (
+            f'図面枠（太さ {frame_lineweight} の線で囲まれた枠）を検出できなかったため、'
+            '図面枠内の制約なしに全ラベルを抽出しました。'
+        )
         raw_labels = _collect_all_labels_fallback(dxf_file)
     else:
         raw_labels = collected['labels']

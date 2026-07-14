@@ -14,6 +14,7 @@ from collections import Counter
 
 from .common_utils import normalize_width
 from .region_detector import build_region_label_summary
+from .terminal_detector import build_terminal_rows
 
 
 def _add_standard_formats(workbook):
@@ -24,9 +25,10 @@ def _add_standard_formats(workbook):
 
 
 def _write_header_row(ws, columns, header_format):
-    """ヘッダー行（1行目）の各セルに書式を適用する。"""
+    """ヘッダー行（1行目）の各セルに書式を適用し、先頭行を固定する。"""
     for col_num, value in enumerate(columns):
         ws.write(0, col_num, value, header_format)
+    ws.freeze_panes(1, 0)
 
 
 def _write_summary_hyperlinks(ws, filenames, link_format, col=0, start_row=1):
@@ -57,7 +59,21 @@ def _write_label_count_sheet(writer, sheet_name, rows, header_format,
     return ws
 
 
-def create_excel_output(results, sort_option):
+def _write_terminal_sheet(writer, terminal_results, header_format):
+    """「TB List」シート（端子台・端子No.・図番）を書き込む。
+
+    `terminal_results` は {filename: analyze_dxf_terminals()結果, ...}。
+    None または対象ファイルが1件も無い場合は何もしない（シートを作らない）。
+    """
+    if not terminal_results:
+        return None
+    rows = build_terminal_rows(terminal_results)
+    return _write_label_count_sheet(
+        writer, 'TB List', rows, header_format,
+        columns=('端子台', '端子No.', '図番'), col_widths=(25, 40, 20))
+
+
+def create_excel_output(results, sort_option, terminal_results=None):
     """通常モード（「機器符号（候補）以外も抽出」ON）の Excel を生成する。
 
     ラベルは半角へ正規化してから集計するため、図面上の表記が半角/全角どちら
@@ -116,6 +132,8 @@ def create_excel_output(results, sort_option):
         _write_label_count_sheet(writer, 'Total', total_data, header_format,
                                  columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
+        _write_terminal_sheet(writer, terminal_results, header_format)
+
         for file_path, (labels, info) in sorted_items:
             filename = info.get('filename', os.path.basename(file_path))
             sheet_name = os.path.splitext(filename)[0][:31]
@@ -131,7 +149,7 @@ def create_excel_output(results, sort_option):
     return output.getvalue()
 
 
-def create_ref_designator_excel_output(results, sort_option):
+def create_ref_designator_excel_output(results, sort_option, terminal_results=None):
     """通常モード（既定＝「機器符号（候補）以外も抽出」OFF）の Excel を生成する。
 
     `results`: {fname: {...}}（キーは各値の意味）
@@ -192,6 +210,8 @@ def create_ref_designator_excel_output(results, sort_option):
         _write_label_count_sheet(writer, 'Total', total_data, header_format,
                                  columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
+        _write_terminal_sheet(writer, terminal_results, header_format)
+
         for fname, data in sorted_items:
             sheet_name = os.path.splitext(fname)[0][:31]
             rows = list(data.get('rows', []))
@@ -205,7 +225,7 @@ def create_ref_designator_excel_output(results, sort_option):
     return output.getvalue()
 
 
-def create_region_excel_output(region_results):
+def create_region_excel_output(region_results, terminal_results=None):
     """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。
 
     Summary シート・各ファイルシートともファイル名昇順で出力する
@@ -284,6 +304,9 @@ def create_region_excel_output(region_results):
             lbl_ws.set_column('B:B', 25)
             lbl_ws.set_column(2, 2, 10)
             lbl_ws.set_column(3, col - 1, 16)
+            lbl_ws.freeze_panes(1, 0)
+
+        _write_terminal_sheet(writer, terminal_results, header_format)
 
         for fname, data in region_results.items():
             sheet_name = os.path.splitext(fname)[0][:31]

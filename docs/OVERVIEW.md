@@ -2,6 +2,7 @@
 
 > 矩形領域抽出の詳細は [REGION_DETECTION.md](REGION_DETECTION.md)、
 > 機器符号（候補）抽出パイプラインの詳細は [REF_DESIGNATOR.md](REF_DESIGNATOR.md)、
+> 端子一覧抽出の詳細は [TERMINAL_DETECTION.md](TERMINAL_DETECTION.md)、
 > バージョン履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) を参照。
 
 ## 概要
@@ -9,7 +10,8 @@
 複数の DXF ファイルからテキストラベルを抽出し、Excel 形式で出力する Streamlit アプリ。
 既定モードでは、図面枠内・図面情報欄外のラベルから Reference Designator（機器符号）
 パターンに一致するものを「機器符号（候補）」として抽出し、未確定ラベルはユーザーが
-選択して採用する（v1.6.0）。図番・タイトル抽出オプションも持つ。
+選択して採用する（v1.6.0）。図番・タイトル抽出オプションも持つ。「UNIT内結線図」
+図面から端子台の端子番号を抽出する「端子一覧を抽出」オプションも持つ（v1.8.0）。
 
 ---
 
@@ -23,6 +25,7 @@ DXF-extract-labels/
 │   ├── extract_labels.py       # DXF ラベル抽出コア（共有モジュール）
 │   ├── ref_designator.py       # 機器符号（候補）抽出パイプライン（DXF-extract-labels 専用、v1.6.0）
 │   ├── region_detector.py      # 矩形領域検出アルゴリズム（DXF-extract-labels 専用）
+│   ├── terminal_detector.py    # 端子台(TB)矩形検出・端子番号抽出（DXF-extract-labels 専用、v1.8.0）
 │   ├── excel_output.py         # Excel 出力生成（通常モード・領域モード両対応）
 │   ├── decision_log.py         # 未確定ラベルの採用/非採用の判断ログ記録（DXF-extract-labels 専用、v1.7.0）
 │   └── common_utils.py         # 共通ユーティリティ（共有モジュール）
@@ -32,11 +35,14 @@ DXF-extract-labels/
 
 > `extract_labels.py` / `common_utils.py` は DXF-label-diff / DXF-diff-processor / DXF-tools 等と
 > 同一ロジックを持つ共有モジュール。修正時は関連プロジェクトへの伝播が必要。
-> `ref_designator.py` / `region_detector.py` / `excel_output.py` は DXF-extract-labels 専用で
-> 共有対象外。`ref_designator.py` は `extract_labels.py` の `extract_text_from_entity()` /
-> `_block_has_text_content()` のみ再利用し、図面枠・フォーマットブロック検出・ラベル収集は
-> 完全に自前実装する（`extract_labels.py`／`region_detector.py` 本体を変更しないため。
-> 詳細は「機器符号（候補）抽出パイプライン」節）。
+> `ref_designator.py` / `region_detector.py` / `terminal_detector.py` / `excel_output.py` は
+> DXF-extract-labels 専用で共有対象外。`ref_designator.py` は `extract_labels.py` の
+> `extract_text_from_entity()` / `_block_has_text_content()` のみ再利用し、図面枠・
+> フォーマットブロック検出・ラベル収集は完全に自前実装する（`extract_labels.py`／
+> `region_detector.py` 本体を変更しないため。詳細は「機器符号（候補）抽出パイプライン」節）。
+> `terminal_detector.py` は `extract_labels.py` の `extract_text_from_entity()` /
+> `extract_labels()`（タイトル・サブタイトル・図番取得用）と、
+> `region_detector.py` の `_label_rotation_angle()`（90°回転判定用）を再利用する。
 
 ### モジュール責務
 
@@ -46,6 +52,7 @@ DXF-extract-labels/
 | `extract_labels.py` | DXF エンティティからのテキスト抽出・図番判別・タイトル抽出 |
 | `ref_designator.py` | 機器符号（候補）パターン・除外リスト・確定リスト・図面枠/フォーマットブロック検出・候補/確定/未確定ラベルの分類と集計（v1.6.0、確定リストは v1.6.3、連動採用は v1.7.1）|
 | `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出・集計（`build_region_results` / `build_region_label_summary`。「以外も抽出」ON 時のみ使用）|
+| `terminal_detector.py` | 端子台(TB)矩形検出（LINE+CIRCLE橋渡し）・ラベル-矩形対応判定・端子番号抽出・集計（`analyze_dxf_terminals` / `build_terminal_rows`。「端子一覧を抽出」オプション時のみ使用、v1.8.0）|
 | `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_ref_designator_excel_output` / `create_region_excel_output`）|
 | `decision_log.py` | 未確定ラベルの採用/非採用の記録（`build_entries` / `record` / `GitHubBackend` / `FileBackend`。v1.7.0）|
 | `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。領域名候補の除外判定にのみ使用）・ファイル保存・エラー処理 |
@@ -214,6 +221,17 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 
 シート名: 元ファイル名の拡張子除去、31 文字以内に切り詰め。
 
+**TB List シート（「端子一覧を抽出」ON、v1.8.0）**: `Total` シート直後
+（領域モードでは `領域別ラベル一覧` 直後）に `TB List` シート（`端子台` /
+`端子No.` / `図番`）を追加。タイトルが「UNIT内結線図」の図面を対象に、
+`TB`で始まりその直後に英大文字・数字が続く端子台ラベルに対応する矩形
+（LINE+CIRCLE橋渡し）内の端子番号を抽出する。「端子台」でユニークをとり、
+複数ファイルにまたがる場合は端子番号・図番を統合する（同じ番号が複数回
+登場する場合は `7(2)` のように件数を表示）。候補パターンには一致したが
+対応する矩形が見つからないラベルは、末尾に空行を挟んで「端子検出不可」行
+（端子No.列にラベル・図番列に図番）として記載する。詳細は
+[TERMINAL_DETECTION.md](TERMINAL_DETECTION.md) を参照。
+
 **ファイル順序**: Summary シートの行順・各ファイルシートの並びとも、アップロード順
 （dict挿入順）ではなくファイル名昇順（`sorted()`）（v1.7.9）。UI側の表示順
 （「領域の確認」「未確定ラベル」セクション）は v1.7.6/v1.7.7 で先に対応済みで、
@@ -234,6 +252,12 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 （v1.6.0、NFKC+前後空白除去）で半角へ統一してから集計する。図面上の表記が
 半角（`CN1`）でも全角（`ＣＮ１`）でも同じ語は同じ行に合算される（かな・漢字は不変）。
 
+**全シートの先頭行固定（v1.8.0）**: `Summary`/`Total`/各ファイルシート/
+`領域一覧`/`領域別ラベル一覧`/`TB List` の全シートに `freeze_panes(1, 0)`
+を適用し、スクロールしてもヘッダー行が常に表示されるようにした
+（`excel_output._write_header_row()` に集約。ヘッダー行を手書きしている
+`領域別ラベル一覧` のみ個別に `freeze_panes` を呼ぶ）。
+
 ### ラベル集計コード例
 
 ```python
@@ -252,6 +276,7 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 | タイトル・サブタイトル抽出 | `TITLE` 近傍テキストを解析して Summary に記録 |
 | ソート順 | 昇順 / 降順 / なし |
 | 矩形領域抽出 | 図面枠内の矩形（直交ポリゴン）領域を検出し、領域内ラベルに領域名を付与（独立セクション「領域選択オプション」。後述）|
+| 端子一覧を抽出 | タイトルが「UNIT内結線図」の図面（サブタイトルが「TB COMPONENT」の図面を除く）を対象に、`TB`で始まりその直後に英大文字・数字が続く端子台ラベルに対応する矩形（LINE+CIRCLE橋渡し）を検出し、矩形内の端子番号を「端子台」ユニークで `TB List` シートに出力（v1.8.0、詳細は [TERMINAL_DETECTION.md](TERMINAL_DETECTION.md)）|
 
 > v1.6.0 で「特定のレイヤーのみを処理する」（未使用のため）・「機器符号妥当性チェック」
 > （未確定ラベルUIでの人手選択に置き換え）の UI・機能を削除した。
@@ -282,6 +307,7 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 | `unclassified_checked` | dict | 「未確定ラベル」の採用チェック状態の正本（ファイル名 → {ラベル: bool}）。data_editor はここから初期値を作るだけで、ウィジェット自身の state は直接書き換えない（v1.7.1）|
 | `unclassified_ver` | int | `unclassified_checked` を書き換えるたびにインクリメントし、`unclassified_editor_*` の `key` に使うことで data_editor を別ウィジェットとして再生成する（v1.7.1、詳細は「連動採用（兄弟ラベル）」節）|
 | `decision_log_result` | dict | 判断ログの記録結果（`ok`/`message`/`fallback_csv`）。抽出結果セクションで表示し、「新しい抽出を開始」または再度「ラベルを抽出」時にクリアする（v1.7.0）|
+| `terminal_results` | dict | 「端子一覧を抽出」ON時の `analyze_dxf_terminals()` 結果（ファイル名 → 結果dict）。「ラベルを抽出」時に一度だけ計算し、既定モード（Excel生成が「選択完了」まで遅延する）でも使えるよう保持する。「新しい抽出を開始」または再度「ラベルを抽出」時にクリアする（v1.8.0）|
 
 ---
 
@@ -335,7 +361,8 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 | DXF ファイルの読み取りエラー | ファイルが有効な DXF 形式か確認。破損・パスワード保護がないか確認 |
 | ラベルが抽出されない | TEXT/MTEXT エンティティの有無を確認。「機器符号（候補）以外も抽出」ONで全ラベルを見て切り分ける |
 | 処理タイムアウト | ファイル数を減らして再試行 |
-| 図面枠が見つからない警告が出る | 「領域検出の詳細設定」の「図面枠の太さ」が実際の図面枠の lineweight と一致しているか確認（color=7 も必須条件）|
+| 「図面枠内の制約なしに全ラベルを抽出しました」と表示される（機器符号（候補）パイプライン） | 「領域検出の詳細設定」の「図面枠の太さ」が実際の図面枠の lineweight と一致しているか確認（color=7 も必須条件）。Model Space に実際のラベル・図形がある図面では、図面枠が Paper Space レイアウトにしか無い場合、意図的にこのメッセージを出し図面枠フィルタなしでの抽出にフォールバックする（Model Space と Paper Space は独立した座標系のため、Paper Space の図面枠を Model Space のラベルに適用すると正しいラベルまで誤って除外されるため。v1.8.2で確定した仕様）。抽出自体は正常に行われるため、失敗ではない（v1.8.3で「見つかりませんでした」という失敗を思わせる文言から変更） |
+| 「領域探索を実施することができませんでした」と表示される（矩形領域抽出） | 領域検出には図面枠が必須（面積比の基準となるため）で、機器符号（候補）パイプラインのような制約なしへのフォールバックが無い。「図面枠の太さ」の設定を確認するか、対象ファイルの図面枠が Paper Space レイアウトにしか無い場合は領域検出の対象外となる（v1.8.3で文言変更） |
 | 期待した機器符号が候補に出ない | 「未確定ラベル」一覧に出ていれば手動で採用できる。除外パターン（`ExclusionPatterns` シート）に該当していないか確認 |
 
 ---
@@ -364,4 +391,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-12 (v1.7.12) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-14 (v1.8.3) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

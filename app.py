@@ -18,8 +18,9 @@ from utils.excel_output import (
 from utils.common_utils import save_uploadedfile, handle_error
 from utils import ref_designator
 from utils import decision_log
+from utils import terminal_detector
 
-APP_VERSION = '1.7.12'
+APP_VERSION = '1.8.3'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -63,6 +64,19 @@ def _clear_session_keys(keys=(), prefixes=()):
         for k in list(st.session_state.keys()):
             if isinstance(k, str) and k.startswith(prefixes):
                 del st.session_state[k]
+
+
+def _compute_terminal_results(uploaded_files):
+    """「端子一覧を抽出」オプション用に、アップロード済み全ファイルの
+    端子台(TB)矩形解析を実行する（`terminal_detector.analyze_dxf_terminals`）。
+    対象外ファイル（タイトルが「UNIT内結線図」でない等）は
+    `is_target=False` のまま結果に含まれる（Excel出力側で除外される）。"""
+    results = {}
+    for uf in uploaded_files:
+        with _temp_dxf_file(uf) as tmp:
+            results[uf.name] = terminal_detector.analyze_dxf_terminals(
+                tmp, original_filename=uf.name)
+    return results
 
 
 def _gather_name_selections(fname, analysis):
@@ -313,6 +327,19 @@ def app():
         extract_drawing_numbers_option = extract_all_option
         extract_title_option = extract_all_option
 
+        # c) 端子一覧を抽出
+        extract_terminal_option = st.checkbox(
+            "端子一覧を抽出",
+            value=False,
+            help="タイトルが「UNIT内結線図」の図面を対象に、TBで始まり英大文字・数字が"
+                 "続く端子台ラベルに対応する矩形（LINE+CIRCLEで構成）を検出し、矩形内の"
+                 "端子番号を「TB List」シート（Totalシート直後）に出力します。"
+                 "「端子台」でユニークをとり、同じ番号が複数ある場合は件数をカッコで"
+                 "表示します（例: 7(2)）。\n\n"
+                 "サブタイトルが「TB COMPONENT」の図面（端子台の全端子番号一覧ページ）"
+                 "は対象外です。"
+        )
+
     with col_right:
         sort_option = st.selectbox(
             "並び替え",
@@ -549,8 +576,15 @@ def app():
                 _clear_session_keys(
                     keys=['excel_result', 'is_region_mode', 'region_results_summary',
                           'ref_pending', 'ref_pending_mode', 'ref_results_summary',
-                          'decision_log_result', 'unclassified_checked', 'unclassified_ver'],
+                          'decision_log_result', 'unclassified_checked', 'unclassified_ver',
+                          'terminal_results'],
                     prefixes=('unclassified_editor_',))
+
+                # 「端子一覧を抽出」: 「選択完了」待ちのモードでも使えるよう、
+                # ここで一度だけ解析して session_state に保持する。
+                if extract_terminal_option:
+                    st.session_state['terminal_results'] = _compute_terminal_results(uploaded_files)
+                terminal_results = st.session_state.get('terminal_results')
 
                 if 'region_analyses' in st.session_state:
                     # 領域付きモード
@@ -564,7 +598,8 @@ def app():
                         region_results = build_region_results(
                             analyses, name_selections, sort_value, filter_circuit_only=False)
 
-                        st.session_state.excel_result = create_region_excel_output(region_results)
+                        st.session_state.excel_result = create_region_excel_output(
+                            region_results, terminal_results=terminal_results)
                         st.session_state.output_filename = output_filename
                         st.session_state['is_region_mode'] = True
                         st.session_state['region_results_summary'] = {
@@ -611,7 +646,8 @@ def app():
                                     info['filename'] = original_name
                                     results[original_name] = (labels, info)
 
-                        st.session_state.excel_result = create_excel_output(results, sort_value)
+                        st.session_state.excel_result = create_excel_output(
+                            results, sort_value, terminal_results=terminal_results)
                         st.session_state.output_filename = output_filename
                         st.session_state['is_region_mode'] = False
                         st.session_state.results = results
@@ -783,7 +819,8 @@ def app():
                         region_results = ref_designator.build_region_results_from_pending(
                             ref_pending, analyses, name_selections_by_file,
                             approved_by_file, sort_value)
-                        st.session_state.excel_result = create_region_excel_output(region_results)
+                        st.session_state.excel_result = create_region_excel_output(
+                            region_results, terminal_results=st.session_state.get('terminal_results'))
                         st.session_state['is_region_mode'] = True
                         st.session_state['region_results_summary'] = {
                             f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
@@ -793,7 +830,8 @@ def app():
                         ref_final = ref_designator.build_ref_final_from_pending(
                             ref_pending, approved_by_file, sort_value)
                         st.session_state.excel_result = create_ref_designator_excel_output(
-                            ref_final, sort_value)
+                            ref_final, sort_value,
+                            terminal_results=st.session_state.get('terminal_results'))
                         st.session_state['is_region_mode'] = False
                         st.session_state['ref_results_summary'] = ref_final
 
@@ -923,7 +961,8 @@ def app():
                 keys=['excel_result', 'output_filename', 'processing_settings',
                       'results', 'is_region_mode', 'region_analyses',
                       'region_results_summary', 'ref_pending', 'ref_pending_mode',
-                      'ref_results_summary', 'download_done', 'decision_log_result'],
+                      'ref_results_summary', 'download_done', 'decision_log_result',
+                      'terminal_results'],
                 prefixes=('rc_', 'unclassified_editor_'))
             st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()

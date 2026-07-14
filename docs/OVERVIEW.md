@@ -38,11 +38,14 @@ DXF-extract-labels/
 > `ref_designator.py` / `region_detector.py` / `terminal_detector.py` / `excel_output.py` は
 > DXF-extract-labels 専用で共有対象外。`ref_designator.py` は `extract_labels.py` の
 > `extract_text_from_entity()` / `_block_has_text_content()` のみ再利用し、図面枠・
-> フォーマットブロック検出・ラベル収集は完全に自前実装する（`extract_labels.py`／
-> `region_detector.py` 本体を変更しないため。詳細は「機器符号（候補）抽出パイプライン」節）。
-> `terminal_detector.py` は `extract_labels.py` の `extract_text_from_entity()` /
-> `extract_labels()`（タイトル・サブタイトル・図番取得用）と、
-> `region_detector.py` の `_label_rotation_angle()`（90°回転判定用）を再利用する。
+> フォーマットブロック検出・ラベル収集の**アルゴリズム本体**は完全に自前実装する
+> （`extract_labels.py`／`region_detector.py` の図面枠検出ロジックそのものを変更しない
+> ため。詳細は「機器符号（候補）抽出パイプライン」節）。ただし `region_detector.py` が
+> 提供する小さな汎用ヘルパー（`select_layout_result()`＝Model/Paper Space の
+> 選択方針、`_label_rotation_angle()`＝90°回転判定）は `ref_designator.py`・
+> `terminal_detector.py` の両方から再利用する（v1.8.4でレイアウト選択ロジックの
+> 重複を解消する形で整理。ドメイン固有のアルゴリズム本体とは異なりレイアウト非依存の
+> 汎用処理のため、独立性の原則を損なわない）。
 
 ### モジュール責務
 
@@ -391,4 +394,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-14 (v1.8.3) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-14 (v1.8.4) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

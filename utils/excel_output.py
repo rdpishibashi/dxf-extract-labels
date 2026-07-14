@@ -59,6 +59,23 @@ def _write_label_count_sheet(writer, sheet_name, rows, header_format,
     return ws
 
 
+def _accumulate_total_counts(total_counter, label_drawing_numbers, label_counts, ident):
+    """(ラベル, 個数) のペア列を Total シート集計用アキュムレータに反映する
+    （`create_excel_output` / `create_ref_designator_excel_output` で共用）。"""
+    for lbl, count in label_counts:
+        total_counter[lbl] += count
+        label_drawing_numbers.setdefault(lbl, set()).add(ident)
+
+
+def _build_total_rows(total_counter, label_drawing_numbers):
+    """Total シート用の行データ（ラベル昇順、図番はABC順でカンマ結合）を返す。"""
+    return [
+        {'ラベル': lbl, '個数': total_counter[lbl],
+         '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
+        for lbl in sorted(total_counter.keys())
+    ]
+
+
 def _write_terminal_sheet(writer, terminal_results, header_format):
     """「TB List」シート（端子台・端子No.・図番）を書き込む。
 
@@ -108,11 +125,10 @@ def create_excel_output(results, sort_option, terminal_results=None):
                 'サブタイトル': info.get('subtitle', '')
             })
 
-            total_counter.update(Counter(normalize_width(l) for l in labels))
-
             ident = info.get('main_drawing_number') or os.path.splitext(filename)[0]
-            for l in labels:
-                label_drawing_numbers.setdefault(normalize_width(l), set()).add(ident)
+            _accumulate_total_counts(
+                total_counter, label_drawing_numbers,
+                Counter(normalize_width(l) for l in labels).items(), ident)
 
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
@@ -124,11 +140,7 @@ def create_excel_output(results, sort_option, terminal_results=None):
                     for fp, (_labels, info) in sorted_items]
         _write_summary_hyperlinks(summary_worksheet, filenames, link_format)
 
-        total_data = [
-            {'ラベル': lbl, '個数': total_counter[lbl],
-             '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
-            for lbl in sorted(total_counter.keys())
-        ]
+        total_data = _build_total_rows(total_counter, label_drawing_numbers)
         _write_label_count_sheet(writer, 'Total', total_data, header_format,
                                  columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
@@ -191,9 +203,9 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
             summary_data.append(row)
 
             ident = data.get('main_drawing_number') or os.path.splitext(fname)[0]
-            for r in data.get('rows', []):
-                total_counter[r['ラベル']] += r['個数']
-                label_drawing_numbers.setdefault(r['ラベル'], set()).add(ident)
+            _accumulate_total_counts(
+                total_counter, label_drawing_numbers,
+                ((r['ラベル'], r['個数']) for r in data.get('rows', [])), ident)
 
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
@@ -202,11 +214,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
         _write_summary_hyperlinks(summary_ws, [fname for fname, _data in sorted_items], link_format)
         summary_ws.set_column('A:A', 28)
 
-        total_data = [
-            {'ラベル': lbl, '個数': total_counter[lbl],
-             '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
-            for lbl in sorted(total_counter.keys())
-        ]
+        total_data = _build_total_rows(total_counter, label_drawing_numbers)
         _write_label_count_sheet(writer, 'Total', total_data, header_format,
                                  columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 

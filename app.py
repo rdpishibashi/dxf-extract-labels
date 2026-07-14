@@ -20,13 +20,46 @@ from utils import ref_designator
 from utils import decision_log
 from utils import terminal_detector
 
-APP_VERSION = '1.8.3'
+APP_VERSION = '1.8.4'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
     page_icon="📝",
     layout="wide",
 )
+
+# ============================================================
+# session_state クリア対象キー（3つのボタンハンドラで使用）
+#
+# 3つのリストは意図的にそれぞれ異なる範囲を持つ（同一のベースから機械的に
+# 導出できるわけではない）:
+#   - REGION_DETECT: 「領域を検出」再実行時。ref_pending・未確定ラベル選択
+#     状態はこの操作では変化しないため対象外。
+#   - EXTRACT: 「ラベルを抽出」実行時。入力状態（region_analyses・uploaded
+#     files 等）は保持したまま、前回の抽出結果・未確定ラベル選択状態のみ
+#     クリアする。
+#   - RESTART: 「新しい抽出を開始」時。入力状態を含む全リセット
+#     （オプション設定ウィジェットの値は対象外＝保持される、ユーザー指定）。
+# ============================================================
+_REGION_DETECT_CLEAR_KEYS = ['excel_result', 'is_region_mode', 'region_results_summary']
+_REGION_DETECT_CLEAR_PREFIXES = ('rc_',)
+
+_EXTRACT_CLEAR_KEYS = [
+    'excel_result', 'is_region_mode', 'region_results_summary',
+    'ref_pending', 'ref_pending_mode', 'ref_results_summary',
+    'decision_log_result', 'unclassified_checked', 'unclassified_ver',
+    'terminal_results',
+]
+_EXTRACT_CLEAR_PREFIXES = ('unclassified_editor_',)
+
+_RESTART_CLEAR_KEYS = [
+    'excel_result', 'output_filename', 'processing_settings',
+    'results', 'is_region_mode', 'region_analyses',
+    'region_results_summary', 'ref_pending', 'ref_pending_mode',
+    'ref_results_summary', 'download_done', 'decision_log_result',
+    'terminal_results',
+]
+_RESTART_CLEAR_PREFIXES = ('rc_', 'unclassified_editor_')
 
 
 @contextlib.contextmanager
@@ -490,8 +523,8 @@ def app():
                         analyses[uf.name] = analysis
                 st.session_state['region_analyses'] = analyses
                 _clear_session_keys(
-                    keys=['excel_result', 'is_region_mode', 'region_results_summary'],
-                    prefixes=('rc_',))
+                    keys=_REGION_DETECT_CLEAR_KEYS,
+                    prefixes=_REGION_DETECT_CLEAR_PREFIXES)
             st.rerun()
         except Exception as e:
             handle_error(e)
@@ -574,11 +607,8 @@ def app():
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 # 前回の結果・未確定ラベル選択状態をクリアする
                 _clear_session_keys(
-                    keys=['excel_result', 'is_region_mode', 'region_results_summary',
-                          'ref_pending', 'ref_pending_mode', 'ref_results_summary',
-                          'decision_log_result', 'unclassified_checked', 'unclassified_ver',
-                          'terminal_results'],
-                    prefixes=('unclassified_editor_',))
+                    keys=_EXTRACT_CLEAR_KEYS,
+                    prefixes=_EXTRACT_CLEAR_PREFIXES)
 
                 # 「端子一覧を抽出」: 「選択完了」待ちのモードでも使えるよう、
                 # ここで一度だけ解析して session_state に保持する。
@@ -958,12 +988,8 @@ def app():
         if st.button("🔄 新しい抽出を開始", key="restart_button",
                      type="primary" if download_done else "secondary"):
             _clear_session_keys(
-                keys=['excel_result', 'output_filename', 'processing_settings',
-                      'results', 'is_region_mode', 'region_analyses',
-                      'region_results_summary', 'ref_pending', 'ref_pending_mode',
-                      'ref_results_summary', 'download_done', 'decision_log_result',
-                      'terminal_results'],
-                prefixes=('rc_', 'unclassified_editor_'))
+                keys=_RESTART_CLEAR_KEYS,
+                prefixes=_RESTART_CLEAR_PREFIXES)
             st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()
 

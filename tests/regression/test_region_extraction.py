@@ -2,7 +2,7 @@
 
 検証済み仕様:
   - 図面枠 = lineweight=100 / 領域境界 = lineweight=25 & color=2
-  - 接点マージン ±2・同一座標線分の結合・面積>=枠面積×20%
+  - 接点マージン ±2・同一座標線分の結合・面積>=枠面積×5%（整数%比較、v1.9.0）
   - 名称 = 境界近傍の英字3文字以上ラベル（複数候補）
   - 1ラベルが複数領域に所属可
 
@@ -529,18 +529,36 @@ def test_sibling_fx_chamber_extracted_from_complement_face():
     B CHAMBER が2件検出される DUPE になっていた。
 
     修正後は `_resolve_complement_faces` が補完面を検出・除去し、
-    FX CHAMBER 相当のサブ領域を抽出して 'FX CHAMBER' を割り当てることで
-    3 領域（B CHAMBER、BAKE HEATER UNIT FX、FX CHAMBER）を正しく検出する。"""
+    FX CHAMBER 相当のサブ領域を抽出して 'FX CHAMBER' を割り当てる。
+
+    area_ratio の既定値が15%→5%（v1.9.0）に変更されたことで、この図面では
+    L CHAMBER（9.83%）という別の小さな正当な領域も新たに検出されるようになった
+    （従来は15%閾値未満で非表示だっただけで、本来存在する領域）。この追加検出
+    自体は area_ratio 変更の意図した効果であり問題ない。
+
+    また、area_ratio が5%まで下がったことで、FX CHAMBER 相当の生の閉領域
+    （14.59%）自体も単独採用の閾値を満たすようになり、`_resolve_complement_faces`
+    が処理する（大きい方の兄弟との）補完ペアと同じ large_i に対して、この生候補
+    自体も「もう一つの補完パートナー」として二重にマッチする不具合が発生した
+    （2026-07-14）。生候補は独自のTier評価で 'VACUUM ROBOT FX' という別名称を
+    ラベル付けされ、'B CHAMBER' の重複（合体面から誤って生成される側）と合わせて
+    3件の余分な領域が生じていた。`_resolve_complement_faces` を、同じ large_i に
+    対する複数の small_i パートナーのうち面積最大のものだけを基準面として使い、
+    他は重複として除去するよう修正（best_small_for_large）。"""
     a = analyze_dxf_regions(SIBLING)
     assert a['error'] is None
     names = [r['default_name'] for r in a['regions']]
     # B CHAMBER は1件のみ（補完面による重複がない）
     assert names.count('B CHAMBER') == 1
-    # FX CHAMBER が補完面から抽出されて検出される
+    # FX CHAMBER が補完面から抽出されて検出される（VACUUM ROBOT FX等への誤命名や
+    # 重複が発生していないこと）
     assert 'FX CHAMBER' in names
-    # 合計3領域: B CHAMBER + BAKE HEATER UNIT FX + FX CHAMBER
-    assert len(a['regions']) == 3
-    assert sorted(names) == ['B CHAMBER', 'BAKE HEATER UNIT FX', 'FX CHAMBER']
+    assert names.count('FX CHAMBER') == 1
+    assert 'VACUUM ROBOT FX' not in names
+    # 4領域: B CHAMBER + BAKE HEATER UNIT FX + FX CHAMBER + L CHAMBER
+    # （L CHAMBER はarea_ratio=5%化で新たに検出される正当な小領域）
+    assert len(a['regions']) == 4
+    assert sorted(names) == ['B CHAMBER', 'BAKE HEATER UNIT FX', 'FX CHAMBER', 'L CHAMBER']
     # FX CHAMBER は B CHAMBER の右側（x > 600）の小矩形（約14.6%）
     fx = next(r for r in a['regions'] if r['default_name'] == 'FX CHAMBER')
     assert round(fx['area_pct'], 0) == 15.0  # 14.6% → round=15
@@ -589,17 +607,22 @@ def test_level_pollution_fallback_recovers_frame():
     4パス目は「閾値超えゼロの枠があり、かつ他の枠に閾値超え領域がある」場合のみ、
     スパン単位レベル（span_level_merge=True、そのスパンを構成した線分だけの平均）で
     該当枠を再検出し、回復領域の名称が他枠の検出済み名称と一致する場合のみ採用する。
-    全枠ゼロの図面タイプ（電源基板の回路図等、EE6333-610-07A など）では発動しない。"""
+    全枠ゼロの図面タイプ（電源基板の回路図等、EE6333-610-07A など）では発動しない。
+
+    area_ratio の既定値が15%→5%（v1.9.0）に変更されたことで、この図面では
+    各枠内の 'CN-IF2-1'・'INTERLOCK B.D-3' という別の小さな正当な領域も新たに
+    検出されるようになった（従来は15%閾値未満で非表示だっただけで、本来存在する
+    領域）。この追加検出自体は area_ratio 変更の意図した効果であり問題ない。
+    このテストが保証したい本質（4枠すべてで SYSTEM I/F BOX が正しく回復・検出
+    されること）は影響を受けない。"""
     a = analyze_dxf_regions(POLLUTED)
     assert a['error'] is None
     assert len(a['frames']) == 4
     # 4枠すべてで SYSTEM I/F BOX が検出される（修正前は2枠目が欠けて3領域だった）
-    assert len(a['regions']) == 4
-    assert sorted(r['frame'] for r in a['regions']) == [0, 1, 2, 3]
-    for r in a['regions']:
-        assert r['default_name'] == 'SYSTEM I/F BOX'
+    sysif_by_frame = {r['frame']: r for r in a['regions'] if r['default_name'] == 'SYSTEM I/F BOX'}
+    assert sorted(sysif_by_frame.keys()) == [0, 1, 2, 3]
     # 回復した2枠目（frame=1）の領域: 指定9ハンドルの線分と一致する8角の凹ポリゴン
-    rec = next(r for r in a['regions'] if r['frame'] == 1)
+    rec = sysif_by_frame[1]
     assert round(rec['area_pct'], 0) == 74.0
     assert rec['corners'] == [
         (462.95, 12.63), (462.95, 280.63), (802.84, 280.63), (802.84, 224.99),
@@ -610,15 +633,27 @@ def test_level_pollution_fallback_recovers_frame():
 @pytest.mark.skipif(not os.path.exists(_find_sample('EE6333-610-07A.dxf')),
                     reason='サンプル DXF が無い')
 def test_level_pollution_fallback_not_triggered_on_schematic():
-    """全枠に閾値超え領域がない図面（電源基板の回路図）では4パス目が発動しないこと。
+    """全枠に閾値超え領域がない図面（電源基板の回路図）で、4パス目のゲート条件なし
+    フォールバックが誤検出する ACCESSORY CABLE 65% / DC19A4 36%/30% を出力しないこと。
 
     `EE6333-610-07A.dxf` は PROCESS POWER SUPPLY の回路図で、lw=25/color=2 の
     大きな枠（基板外形・ケーブル系統）はあるが機能領域（ラック/ボックス）ではない。
     ゲート条件なしのフォールバックはここで ACCESSORY CABLE 65% / DC19A4 36%/30% を
-    誤検出していた。「他の枠に閾値超え領域がある」条件により発動せず 0 領域のまま。"""
+    誤検出していた。「他の枠に閾値超え領域がある」条件により発動せず、この誤検出は
+    防がれる。
+
+    area_ratio の既定値が15%→5%（v1.9.0）に変更されたことで、この図面でも
+    'SB-1A(R3R)'（6.31%）・'MPD RACK3'（5.97%）という小さな正当な領域は検出される
+    ようになった（従来は15%閾値未満で非表示だっただけで、本来存在する領域）。
+    このテストが保証したい本質（ACCESSORY CABLE等の大きな誤検出が出ないこと）は
+    影響を受けない。"""
     a = analyze_dxf_regions(_find_sample('EE6333-610-07A.dxf'))
     assert a['error'] is None
-    assert a['regions'] == []
+    names = [r['default_name'] for r in a['regions']]
+    assert 'ACCESSORY CABLE' not in names
+    assert 'DC19A4' not in names
+    for r in a['regions']:
+        assert r['area_pct'] < 10.0
 
 
 @pytest.mark.skipif(not os.path.exists(ZENKAKU), reason='サンプル DXF が無い')
@@ -630,13 +665,19 @@ def test_zenkaku_only_label_is_valid_name_candidate():
     英字0字とみなされ `name_min_letters`(3) 条件で常に除外されていた
     （ユーザー報告: 以前は正しく検出できていたはずが検出できなくなったとの指摘を
     受け調査。実際には region 検出機能導入時点(v1.4.0)から一貫してこの挙動で、
-    退行ではなく既存の未対応だったことを git bisect で確認）。"""
+    退行ではなく既存の未対応だったことを git bisect で確認）。
+
+    area_ratio の既定値が15%→5%（v1.9.0）に変更されたことで、この図面でも
+    各枠内に別の小さな正当な領域（'ＦＬ１Ｆ③'・'ＦＬ１Ｆ①'・'ＩＯＧ Ａ７'等）が
+    新たに検出されるようになった（従来は15%閾値未満で非表示だっただけで、本来
+    存在する領域）。この追加検出自体は area_ratio 変更の意図した効果であり
+    問題ない。このテストが保証したい本質（全角のみのラベルでも4枠すべてで
+    'ＳＹＳＴＥＭ Ｉ／Ｆ ＢＯＸ' が検出されること）は影響を受けない。"""
     a = analyze_dxf_regions(ZENKAKU)
     assert a['error'] is None
     assert len(a['frames']) == 4
-    assert len(a['regions']) == 4
-    for r in a['regions']:
-        assert r['default_name'] == 'ＳＹＳＴＥＭ Ｉ／Ｆ ＢＯＸ'
+    sysif_frames = {r['frame'] for r in a['regions'] if r['default_name'] == 'ＳＹＳＴＥＭ Ｉ／Ｆ ＢＯＸ'}
+    assert sysif_frames == {0, 1, 2, 3}
 
 
 LSHAPE = _find_sample('EE6491-039-04A.dxf')  # L字型領域（名称ラベルが切り欠き下向きエッジ直上）
@@ -710,3 +751,77 @@ def test_under_threshold_named_siblings_both_recovered_via_union_parent():
               if r['frame'] == 0 and r['default_name'] == 'FX CHAMBER')
     assert regions_overlap(fx['polygon'], sb['polygon'])
     assert regions_overlap(fx['polygon'], cn['polygon'])
+
+
+# --- area_ratio 既定値 15%→5% 変更・課題3の名称除外（v1.9.0、ユーザー報告） ---
+
+SYSIFBOX_639 = _find_sample('EE6888-639-01A.dxf')  # SYSTEM I/F BOX が4.61%（旧15%閾値では非検出）
+SYSIFBOX_660 = _find_sample('EE6888-660-01A.dxf')  # SYSTEM I/F BOX が12.54%（旧15%閾値では非検出）
+CMDRV_650 = _find_sample('EE6888-650-01C.dxf')     # CM DRV 4.71%・合体親ゲート・"("除外の複合ケース
+
+
+@pytest.mark.skipif(not os.path.exists(SYSIFBOX_639), reason='サンプル DXF が無い')
+def test_area_ratio_default_5pct_detects_small_system_if_box_639():
+    """area_ratio の既定値を15%→5%に変更したことで、`EE6888-639-01A.dxf` の
+    `SYSTEM I/F BOX **`（4.61%）が検出されること（v1.9.0、ユーザー報告）。
+
+    面積比較を整数%（四捨五入）・`>=` に統一したため、4.61%は表示上「5%」となり
+    既定の area_ratio(5%) を満たす。この統一が無いと、LINE-onlyで既に検出できて
+    いたこの候補が、gate_ratio(15%)判定によるLWPOLYLINE追加パスに巻き込まれて
+    別の誤った候補に置き換わり消えていた（2026-07-14 発見・`_merge_cands_lists`
+    による合算方式で解消）。"""
+    a = analyze_dxf_regions(SYSIFBOX_639)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    assert 'SYSTEM I/F BOX **' in names
+
+
+@pytest.mark.skipif(not os.path.exists(SYSIFBOX_660), reason='サンプル DXF が無い')
+def test_area_ratio_default_5pct_detects_system_if_box_660():
+    """`EE6888-660-01A.dxf` の `SYSTEM I/F BOX`（12.54%）が area_ratio 既定値
+    5%化で検出されること（v1.9.0、ユーザー報告）。境界に多数の端子CIRCLEを
+    持つ `SX03 ** (NX-SID800)`（3.69%）等は area_ratio(5%) 未満のため出力
+    されない。"""
+    a = analyze_dxf_regions(SYSIFBOX_660)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    assert 'SYSTEM I/F BOX' in names
+
+
+@pytest.mark.skipif(not os.path.exists(CMDRV_650), reason='サンプル DXF が無い')
+def test_cm_drv_detected_with_area_ratio_5pct():
+    """`EE6888-650-01C.dxf` の `ＣＭ ＤＲＶ ＊＊`（4.71%）が area_ratio 既定値
+    5%化で検出されること（v1.9.0、ユーザー報告・課題4）。"""
+    a = analyze_dxf_regions(CMDRV_650)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    assert any(n.startswith('ＣＭ') and 'ＤＲＶ' in n for n in names)
+
+
+@pytest.mark.skipif(not os.path.exists(CMDRV_650), reason='サンプル DXF が無い')
+def test_union_parent_gate_excludes_low_area_parent_children():
+    """合体親（union parent）自身が単独面積閾値(area_ratio)を満たさない場合、
+    その子を面積閾値バイパスで採用しないこと（v1.9.0、課題3）。
+
+    `EE6888-650-01C.dxf` の合体親 `ＣＡＴＨＯＤＥ ＭＡＩＮＴＥＮＡＮＣＥ ＳＷ`
+    （1.39%）は area_ratio(5%) を満たさないため、その子 `（ＣＬＯＳＥ）`
+    （0.81%）・`ＣＯＭＭＯＮ ＢＯＸ`（0.58%）はバイパス採用されない
+    （`_force_include_union_children` にゲートを追加して修正）。"""
+    a = analyze_dxf_regions(CMDRV_650)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    assert '（ＣＬＯＳＥ）' not in names
+    assert 'ＣＯＭＭＯＮ ＢＯＸ' not in names
+
+
+@pytest.mark.skipif(not os.path.exists(CMDRV_650), reason='サンプル DXF が無い')
+def test_name_candidate_excludes_label_starting_with_paren():
+    """矩形領域名称候補の1文字目が"("（全角"（"含む）のラベルは候補から除外
+    されること（v1.9.0、課題3）。`EE6888-650-01C.dxf` の `（ＣＬＯＳＥ）` が
+    対象。"""
+    a = analyze_dxf_regions(CMDRV_650)
+    assert a['error'] is None
+    for r in a['regions']:
+        for _d, t in r['name_candidates']:
+            assert not t.strip().startswith('(')
+            assert not t.strip().startswith('（')

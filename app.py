@@ -20,7 +20,7 @@ from utils import ref_designator
 from utils import decision_log
 from utils import terminal_detector
 
-APP_VERSION = '1.8.4'
+APP_VERSION = '1.9.0'
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -436,15 +436,15 @@ def app():
             with rc2:
                 frm_area_pct = st.number_input(
                     "最小面積（単独領域・図面枠面積比 %）",
-                    value=min(99, max(1, int(saved_cfg['area_ratio'] * 100))),
+                    value=min(99, max(1, round(saved_cfg['area_ratio'] * 100))),
                     min_value=1, max_value=99, step=1,
-                    help="1つの閉領域が単独でこの面積比以上のとき抽出対象とします",
+                    help="1つの閉領域が単独でこの面積比（四捨五入した整数%）以上のとき抽出対象とします",
                     key='frm_area_ratio_pct')
                 frm_group_pct = st.number_input(
                     "最小面積（同名複数領域・図面枠面積比 %）",
-                    value=min(50, max(1, int(saved_cfg['group_area_ratio'] * 100))),
+                    value=min(50, max(1, round(saved_cfg['group_area_ratio'] * 100))),
                     min_value=1, max_value=50, step=1,
-                    help="同じ名称の複数ピースを合算したとき、この面積比以上なら抽出対象とします。"
+                    help="同じ名称の複数ピースを合算したとき、この面積比（四捨五入した整数%）以上なら抽出対象とします。"
                          "第1図面で成立した名称は他図面でも面積不問で抽出します。",
                     key='frm_group_area_ratio_pct')
                 frm_name_max = st.number_input(

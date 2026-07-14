@@ -394,4 +394,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-14 (v1.8.4) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-14 (v1.9.0) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

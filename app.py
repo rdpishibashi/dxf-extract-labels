@@ -20,7 +20,22 @@ from utils import ref_designator
 from utils import decision_log
 from utils import terminal_detector
 
-APP_VERSION = '1.9.0'
+APP_VERSION = '1.9.4'
+
+# 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
+# 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
+# 表示時に動的に追加し、値を失わないようにする（app()内 frm_region_color 参照）。
+_ACI_COLOR_CHOICES = [
+    (1, "1: 赤"),
+    (2, "2: 黄"),
+    (3, "3: 緑"),
+    (4, "4: シアン"),
+    (5, "5: 青"),
+    (6, "6: マゼンタ"),
+    (7, "7: 白/黒"),
+    (8, "8: グレー"),
+    (9, "9: 明るいグレー"),
+]
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -149,6 +164,7 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
     for j in range(n_cands):
         if j != clicked_idx:
             st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
+    st.session_state[f"rc_{fname}_{reg_id}_none"] = False  # 実候補を選んだら「領域選択しない」を解除
 
     analyses = st.session_state.get('region_analyses', {})
     clicked_region = next(
@@ -169,6 +185,21 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
                 continue  # 重なり（内包/部分重複）のある領域同士は同期しない
             for j2, (_d2, t2) in enumerate(cands2):
                 st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
+
+
+def _on_change_none(fname, reg_id, n_cands):
+    """「領域選択しない」チェックボックスをラジオボタン的に動作させるコールバック。
+
+    ON になったとき、同一領域の名称候補チェックボックスを全て OFF にする。
+    「選択しない」は実在する名称候補ではないため、他領域への同期
+    （`_on_change_radio` の (2)）は行わない——この領域だけの個別判断であり、
+    同名候補を持つ他領域まで一律「選択しない」にする理由がないため。
+    """
+    ck = f"rc_{fname}_{reg_id}_none"
+    if not st.session_state.get(ck, False):
+        return
+    for j in range(n_cands):
+        st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
 
 
 def _compute_default_candidate_index(fname, reg, cands, analyses):
@@ -360,7 +391,24 @@ def app():
         extract_drawing_numbers_option = extract_all_option
         extract_title_option = extract_all_option
 
-        # c) 端子一覧を抽出
+        # c) 領域を検出（矩形領域抽出機能全体のON/OFF）
+        enable_region_detection = st.checkbox(
+            "領域を検出",
+            value=False,
+            key='enable_region_detection',
+            help="ONにすると「領域検出の詳細設定」「領域を検出」ボタン「領域の確認」"
+                 "セクションが表示され、矩形領域付きでラベルを抽出できます。"
+                 "OFFにすると通常モード（機器符号のみ抽出等）になります。"
+        )
+        if not enable_region_detection:
+            # OFF中に前回検出済みの領域データが残っていると、抽出時に誤って
+            # 領域付きモードと判定されてしまうため、表示を隠すだけでなく
+            # session_state からも明示的に消しておく。
+            _clear_session_keys(
+                keys=['region_analyses'] + _REGION_DETECT_CLEAR_KEYS,
+                prefixes=_REGION_DETECT_CLEAR_PREFIXES)
+
+        # d) 端子一覧を抽出
         extract_terminal_option = st.checkbox(
             "端子一覧を抽出",
             value=False,
@@ -403,136 +451,155 @@ def app():
     saved_cfg = st.session_state.get('saved_region_cfg', _cfg_defaults)
     region_cfg = dict(saved_cfg)  # 「設定完了」が押されるまではこの値を使用
 
-    with st.expander("領域検出の詳細設定", expanded=False):
-        st.caption("値を変更した後、「設定完了」ボタンを押すと確定されます（ボタンを押さずに変更した値は反映されません）。")
-        with st.form("region_cfg_form"):
-            rc1, rc2 = st.columns(2)
-            with rc1:
-                frm_frame_lw = st.number_input(
-                    "図面枠の太さ",
-                    value=int(saved_cfg['frame_lineweight']),
-                    step=5,
-                    help="図面全体を囲む枠の線の太さ（lineweight）",
-                    key='frm_frame_lineweight')
-                frm_region_lw = st.number_input(
-                    "領域境界線の太さ",
-                    value=int(saved_cfg['region_lineweight']),
-                    step=5,
-                    help="矩形領域の境界線の太さ（lineweight）",
-                    key='frm_region_lineweight')
-                frm_region_color = st.number_input(
-                    "領域境界線の色(ACI)",
-                    value=int(saved_cfg['region_color']),
-                    min_value=1, max_value=256, step=1,
-                    help="矩形領域の境界線の ACI 色番号（2 = 黄色）",
-                    key='frm_region_color')
-                frm_cp_margin = st.number_input(
-                    "接続点判定マージン（座標）",
-                    value=float(saved_cfg['connection_point_margin']),
-                    min_value=0.0, step=0.01, format="%.2f",
-                    help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
-                         "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
-                    key='frm_connection_point_margin')
-            with rc2:
-                frm_area_pct = st.number_input(
-                    "最小面積（単独領域・図面枠面積比 %）",
-                    value=min(99, max(1, round(saved_cfg['area_ratio'] * 100))),
-                    min_value=1, max_value=99, step=1,
-                    help="1つの閉領域が単独でこの面積比（四捨五入した整数%）以上のとき抽出対象とします",
-                    key='frm_area_ratio_pct')
-                frm_group_pct = st.number_input(
-                    "最小面積（同名複数領域・図面枠面積比 %）",
-                    value=min(50, max(1, round(saved_cfg['group_area_ratio'] * 100))),
-                    min_value=1, max_value=50, step=1,
-                    help="同じ名称の複数ピースを合算したとき、この面積比（四捨五入した整数%）以上なら抽出対象とします。"
-                         "第1図面で成立した名称は他図面でも面積不問で抽出します。",
-                    key='frm_group_area_ratio_pct')
-                frm_name_max = st.number_input(
-                    "領域名称ラベルの境界線からの最大距離（座標）",
-                    value=min(20, max(1, int(saved_cfg.get('name_max_dist', 10.0)))),
-                    min_value=1, max_value=20, step=1,
-                    help="下端境界線からこの座標距離以内のラベルを名称候補とします",
-                    key='frm_name_max_dist')
-                frm_name_min = st.number_input(
-                    "領域名称ラベルの境界線からの最小距離（座標）",
-                    value=min(10, max(1, int(saved_cfg['name_min_dist']))),
-                    min_value=1, max_value=10, step=1,
-                    help="この距離未満（境界線分上）のラベルは名称候補から除外します",
-                    key='frm_name_min_dist')
-                frm_min_letters = st.number_input(
-                    "領域名称候補に必要な文字数",
-                    value=int(saved_cfg['name_min_letters']),
-                    min_value=1, step=1,
-                    help="英字がこの文字数以上のラベルのみ名称候補とします",
-                    key='frm_name_min_letters')
-                frm_terms = st.text_input(
-                    "領域名称候補から除外する単語（カンマ区切り）",
-                    value=','.join(saved_cfg['name_exclude_terms']),
-                    help="これらの語を含むラベルを名称候補から除外します",
-                    key='frm_name_exclude_terms')
+    submitted = False
+    if enable_region_detection:
+        with st.expander("領域検出の詳細設定", expanded=False):
+            st.caption("値を変更した後、「設定完了」ボタンを押すと確定されます（ボタンを押さずに変更した値は反映されません）。")
+            with st.form("region_cfg_form"):
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    frm_frame_lw = st.number_input(
+                        "図面枠の太さ",
+                        value=int(saved_cfg['frame_lineweight']),
+                        step=5,
+                        help="図面全体を囲む枠の線の太さ（lineweight）",
+                        key='frm_frame_lineweight')
+                    frm_region_lw = st.number_input(
+                        "領域境界線の太さ",
+                        value=int(saved_cfg['region_lineweight']),
+                        step=5,
+                        help="矩形領域の境界線の太さ（lineweight）",
+                        key='frm_region_lineweight')
+                    frm_cp_margin = st.number_input(
+                        "接続点判定マージン（座標）",
+                        value=float(saved_cfg['connection_point_margin']),
+                        min_value=0.0, step=0.01, format="%.2f",
+                        help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
+                             "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
+                        key='frm_connection_point_margin')
+                    _current_region_color = int(saved_cfg['region_color'])
+                    _region_color_choices = list(_ACI_COLOR_CHOICES)
+                    if _current_region_color not in dict(_region_color_choices):
+                        _region_color_choices = _region_color_choices + [
+                            (_current_region_color, f"{_current_region_color}: (カスタム)")]
+                    frm_region_color = st.selectbox(
+                        "領域境界線の色(ACI)",
+                        options=[v for v, _ in _region_color_choices],
+                        index=[v for v, _ in _region_color_choices].index(_current_region_color),
+                        format_func=lambda v: dict(_region_color_choices)[v],
+                        help="矩形領域の境界線の色（既定: 2 = 黄）",
+                        key='frm_region_color')
+                    frm_filter_prefixes = st.text_input(
+                        "抽出したい領域名の先頭文字列（カンマ区切り・複数可）",
+                        value=','.join(saved_cfg.get('name_filter_prefixes', ())),
+                        help="指定すると、名称候補がこの文字列のいずれかで始まる領域は、"
+                             "面積比の閾値を満たさなくても抽出対象になります"
+                             "（前方一致。全角/半角は区別しません）。空欄なら従来通り"
+                             "面積比のみで判定します。",
+                        key='frm_name_filter_prefixes')
+                    frm_terms = st.text_input(
+                        "領域名称候補から除外する単語（カンマ区切り）",
+                        value=','.join(saved_cfg['name_exclude_terms']),
+                        help="これらの語を含むラベルを名称候補から除外します",
+                        key='frm_name_exclude_terms')
+                with rc2:
+                    frm_area_pct = st.number_input(
+                        "最小面積（単独領域・図面枠面積比 %）",
+                        value=min(99, max(1, round(saved_cfg['area_ratio'] * 100))),
+                        min_value=1, max_value=99, step=1,
+                        help="1つの閉領域が単独でこの面積比（四捨五入した整数%）以上のとき抽出対象とします",
+                        key='frm_area_ratio_pct')
+                    frm_group_pct = st.number_input(
+                        "最小面積（同名複数領域・図面枠面積比 %）",
+                        value=min(50, max(1, round(saved_cfg['group_area_ratio'] * 100))),
+                        min_value=1, max_value=50, step=1,
+                        help="同じ名称の複数ピースを合算したとき、この面積比（四捨五入した整数%）以上なら抽出対象とします。"
+                             "第1図面で成立した名称は他図面でも面積不問で抽出します。",
+                        key='frm_group_area_ratio_pct')
+                    frm_name_max = st.number_input(
+                        "領域名称ラベルの境界線からの最大距離（座標）",
+                        value=min(20, max(1, int(saved_cfg.get('name_max_dist', 10.0)))),
+                        min_value=1, max_value=20, step=1,
+                        help="下端境界線からこの座標距離以内のラベルを名称候補とします",
+                        key='frm_name_max_dist')
+                    frm_name_min = st.number_input(
+                        "領域名称ラベルの境界線からの最小距離（座標）",
+                        value=min(10, max(1, int(saved_cfg['name_min_dist']))),
+                        min_value=1, max_value=10, step=1,
+                        help="この距離未満（境界線分上）のラベルは名称候補から除外します",
+                        key='frm_name_min_dist')
+                    frm_min_letters = st.number_input(
+                        "領域名称候補に必要な文字数",
+                        value=int(saved_cfg['name_min_letters']),
+                        min_value=1, step=1,
+                        help="英字がこの文字数以上のラベルのみ名称候補とします",
+                        key='frm_name_min_letters')
 
-            submitted = st.form_submit_button("設定完了", type="primary")
+                submitted = st.form_submit_button("設定完了", type="primary")
 
-    # フォーム送信時に設定を確定・保存
-    if submitted:
-        region_cfg.update({
-            'frame_lineweight': frm_frame_lw,
-            'region_lineweight': frm_region_lw,
-            'region_color': frm_region_color,
-            'connection_point_margin': frm_cp_margin,
-            'area_ratio': frm_area_pct / 100.0,
-            'group_area_ratio': frm_group_pct / 100.0,
-            'name_max_dist': float(frm_name_max),
-            'name_min_dist': float(frm_name_min),
-            'name_min_letters': frm_min_letters,
-            'name_exclude_terms': tuple(
-                s.strip() for s in frm_terms.split(',') if s.strip()),
-        })
-        st.session_state['saved_region_cfg'] = dict(region_cfg)
-        st.session_state['region_cfg_is_saved'] = True
-        st.toast("設定を保存しました", icon="✅")
+        # フォーム送信時に設定を確定・保存
+        if submitted:
+            region_cfg.update({
+                'frame_lineweight': frm_frame_lw,
+                'region_lineweight': frm_region_lw,
+                'region_color': frm_region_color,
+                'connection_point_margin': frm_cp_margin,
+                'area_ratio': frm_area_pct / 100.0,
+                'group_area_ratio': frm_group_pct / 100.0,
+                'name_max_dist': float(frm_name_max),
+                'name_min_dist': float(frm_name_min),
+                'name_min_letters': frm_min_letters,
+                'name_exclude_terms': tuple(
+                    s.strip() for s in frm_terms.split(',') if s.strip()),
+                'name_filter_prefixes': tuple(
+                    s.strip() for s in frm_filter_prefixes.split(',') if s.strip()),
+            })
+            st.session_state['saved_region_cfg'] = dict(region_cfg)
+            st.session_state['region_cfg_is_saved'] = True
+            st.toast("設定を保存しました", icon="✅")
 
-    if st.session_state.get('region_cfg_is_saved'):
+    if enable_region_detection and st.session_state.get('region_cfg_is_saved'):
         st.caption("✅ 詳細設定：保存済み")
 
     # ============================================================
     # 領域を検出
     # ============================================================
-    detect_done = 'region_analyses' in st.session_state
-    # 「ラベルを抽出」が開始済み（未確定ラベルの選択待ち含む）なら、領域検出は
-    # もはやこの回の抽出には反映されないため「領域を検出」を白にする。
-    extract_done = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
-    detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
-    if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
-        try:
-            with st.spinner('図面枠と矩形領域を検出中...'):
-                analyses = {}
-                for uf in uploaded_files:
-                    with _temp_dxf_file(uf) as tmp:
-                        analysis = analyze_dxf_regions(tmp, region_cfg)
-                        if extract_all_option:
-                            _, dn_info = extract_labels(
-                                tmp,
-                                extract_drawing_numbers_option=True,
-                                extract_title_option=True,
-                                original_filename=uf.name,
-                            )
-                            analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
-                            analysis['title'] = dn_info.get('title')
-                            analysis['subtitle'] = dn_info.get('subtitle')
-                        analyses[uf.name] = analysis
-                st.session_state['region_analyses'] = analyses
-                _clear_session_keys(
-                    keys=_REGION_DETECT_CLEAR_KEYS,
-                    prefixes=_REGION_DETECT_CLEAR_PREFIXES)
-            st.rerun()
-        except Exception as e:
-            handle_error(e)
+    if enable_region_detection:
+        detect_done = 'region_analyses' in st.session_state
+        # 「ラベルを抽出」が開始済み（未確定ラベルの選択待ち含む）なら、領域検出は
+        # もはやこの回の抽出には反映されないため「領域を検出」を白にする。
+        extract_done = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
+        detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
+        if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
+            try:
+                with st.spinner('図面枠と矩形領域を検出中...'):
+                    analyses = {}
+                    for uf in uploaded_files:
+                        with _temp_dxf_file(uf) as tmp:
+                            analysis = analyze_dxf_regions(tmp, region_cfg)
+                            if extract_all_option:
+                                _, dn_info = extract_labels(
+                                    tmp,
+                                    extract_drawing_numbers_option=True,
+                                    extract_title_option=True,
+                                    original_filename=uf.name,
+                                )
+                                analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
+                                analysis['title'] = dn_info.get('title')
+                                analysis['subtitle'] = dn_info.get('subtitle')
+                            analyses[uf.name] = analysis
+                    st.session_state['region_analyses'] = analyses
+                    _clear_session_keys(
+                        keys=_REGION_DETECT_CLEAR_KEYS,
+                        prefixes=_REGION_DETECT_CLEAR_PREFIXES)
+                st.rerun()
+            except Exception as e:
+                handle_error(e)
 
     # ============================================================
     # 領域の確認
     # ============================================================
-    if 'region_analyses' in st.session_state:
+    if enable_region_detection and 'region_analyses' in st.session_state:
         analyses = st.session_state['region_analyses']
         st.subheader("領域の確認")
 
@@ -595,6 +662,19 @@ def app():
                         on_change=_on_change_radio,
                         args=(fname, reg['id'], i, len(cands), t)
                     )
+
+                # 領域選択しない（この領域にはどの名称候補も割り当てない）。
+                # 既定は未チェック（従来通りいずれかの候補が既定選択される）で、
+                # ユーザーが明示的に選んだときだけこの領域を無名扱いにする。
+                ck_none = f"rc_{fname}_{reg['id']}_none"
+                if ck_none not in st.session_state:
+                    st.session_state[ck_none] = False
+                st.checkbox(
+                    "　（領域選択しない）",
+                    key=ck_none,
+                    on_change=_on_change_none,
+                    args=(fname, reg['id'], len(cands))
+                )
 
     # ============================================================
     # ラベルを抽出

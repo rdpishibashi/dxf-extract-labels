@@ -20,7 +20,7 @@ from utils import ref_designator
 from utils import decision_log
 from utils import terminal_detector
 
-APP_VERSION = '1.9.0'
+APP_VERSION = '1.9.4'
 
 # 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
 # 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は

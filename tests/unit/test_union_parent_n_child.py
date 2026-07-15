@@ -21,7 +21,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.region_detector import analyze_dxf_regions, DEFAULT_REGION_CONFIG  # noqa: E402
+from model.region_detector import analyze_dxf_regions, DEFAULT_REGION_CONFIG  # noqa: E402
 
 FRAME_LW = DEFAULT_REGION_CONFIG['frame_lineweight']
 FRAME_COLOR = DEFAULT_REGION_CONFIG['frame_color']

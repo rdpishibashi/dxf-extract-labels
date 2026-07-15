@@ -4,7 +4,7 @@ extracted_labels*.xlsx（DXF-extract-labels の「機器符号（候補）以外
 で出力した Excel。`Total` シートに ラベル・個数 列を持つ）を複数入力し、
 reference_designator_candidates.xlsx と同じ構成の分析用 Excel を生成する。
 
-パターン・除外リストの定義は `utils/ref_designator.py` を単一の正として再利用
+パターン・除外リストの定義は `model/ref_designator.py` を単一の正として再利用
 する（本体アプリの判定ロジックと乖離しないため、ここで独自に定義し直さない）。
 
 起動方法:
@@ -26,8 +26,8 @@ _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_CURRENT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
 
-from utils import ref_designator as rd  # noqa: E402
-from utils import decision_log as dlog  # noqa: E402
+from model import ref_designator as rd  # noqa: E402
+from model import decision_log as dlog  # noqa: E402
 
 st.set_page_config(
     page_title="Reference Designator 抽出検討ツール",
@@ -167,9 +167,9 @@ def build_pattern_signature(label: str, pattern_name: str):
 # ExclusionPatterns で明らかに Reference Designator ではないものを除いた後の
 # 残り（RemainingUnclassified）から、さらに「確実に Reference Designator と
 # 判定してよい」形をユーザーと確定した4パターン（2026-07-10）。本体アプリ
-# （`utils/ref_designator.py`）も v1.6.3 でこの4パターンを取り込み、確定した
+# （`model/ref_designator.py`）も v1.6.3 でこの4パターンを取り込み、確定した
 # ラベルは「未確定ラベル」UI でのレビューを経ずに自動採用するようになったため、
-# ここでも `utils/ref_designator.py` を単一の正として参照する（独自に定義し直さない）。
+# ここでも `model/ref_designator.py` を単一の正として参照する（独自に定義し直さない）。
 
 CONFIRMED_PATTERN_CATEGORIES = rd.CONFIRMED_PATTERN_CATEGORIES
 matched_confirmed_category = rd.matched_confirmed_category
@@ -326,7 +326,7 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
 # ============================================================
 #
 # DXF-extract-labels 本体アプリの「未確定ラベル」UI でユーザーが行った採用/非採用の
-# 判断（utils/decision_log.py が記録）を集計し、確定パターン・除外パターンの
+# 判断（model/decision_log.py が記録）を集計し、確定パターン・除外パターンの
 # 候補を機械的に提案する。GitHub 上のログ専用リポジトリから直接取得するか、
 # ローカル/Dropbox の decision_log.csv をアップロード（フォルダのドラッグ&ドロップ
 # 可）で読み込む。
@@ -451,7 +451,7 @@ def _app_extracted_labels():
             "DXF-extract-labels 本体の「機器符号（候補）以外も抽出」ON で出力した "
             "extracted_labels*.xlsx を入力とし、Reference Designator の抽出パターン・"
             "除外パターンを検討するための分析用ツールです。\n\n"
-            "パターン・除外リストの定義は `utils/ref_designator.py`（本体アプリの判定"
+            "パターン・除外リストの定義は `model/ref_designator.py`（本体アプリの判定"
             "ロジック）を単一の正として参照するため、本体の挙動とここでの分析結果は"
             "常に一致します。\n\n"
             "**本体アプリとの違い**: 本体アプリは DXF ファイルを直接解析し、図面枠・"
@@ -554,7 +554,7 @@ def _app_decision_log():
             "ローカル）に追記記録します。同一ラベルについて『ほぼ常に採用されている』"
             "→確定パターン候補、『ほぼ常に非採用』→除外パターン候補として提案します。\n\n"
             "提案はあくまで機械的な集計に基づく候補です。実際にパターンへ反映するかは "
-            "`utils/ref_designator.py` の `CONFIRMED_PATTERN_CATEGORIES` /"
+            "`model/ref_designator.py` の `CONFIRMED_PATTERN_CATEGORIES` /"
             "`EXCLUSION_*_CATEGORIES` を人手で判断・編集してください。"
         )
 

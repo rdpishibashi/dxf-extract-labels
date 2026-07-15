@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.extract_labels import determine_drawing_number_types
+from model.extract_labels import determine_drawing_number_types
 
 # 流用元図番ラベル・DWG No ラベルの実座標（EE6888-602-01A.dxf 由来）
 LABELS = [
@@ -115,7 +115,7 @@ def test_integration_real_dxf_if_present():
     if not os.path.exists(dxf):
         print("  (skip: EE6888-602-01A.dxf がローカルに無い)")
         return
-    from utils.extract_labels import extract_labels
+    from model.extract_labels import extract_labels
     _, info = extract_labels(dxf, extract_drawing_numbers_option=True,
                              extract_title_option=True, original_filename='EE6888-602-01A.dxf')
     assert info['main_drawing_number'] == 'EE6888-602-01A', info

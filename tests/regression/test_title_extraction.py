@@ -35,7 +35,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils.extract_labels import extract_title_and_subtitle
+from model.extract_labels import extract_title_and_subtitle
 
 # EE6888-637-01A.dxf のタイトルブロック周辺ラベル（実座標・実グループ構成を再現）
 # OLD = 旧ブロック(JZB_0051/61E), NEW = 現行ブロック(JZB_0001/62A), FRM = 枠ブロック(61F)
@@ -158,7 +158,7 @@ def _find_local(name):
 
 def test_integration_real_dxf_if_present():
     """実ファイルがローカルにあれば extract_labels 経由で検証（無ければスキップ）。"""
-    from utils.extract_labels import extract_labels
+    from model.extract_labels import extract_labels
     expectations = [
         ('EE6888-637-01A.dxf', 'ELECTRICAL SCHEMATIC DIAGRAM', 'ＳＥＮＳＯＲ ＬＩＮＥ'),
         ('EE6892-617-01B.dxf', 'ELECTRICAL SCHEMATIC DIAGRAM', 'ＣＨＩＬＬＥＲ Ｒ１'),

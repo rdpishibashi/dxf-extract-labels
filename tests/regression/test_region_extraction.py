@@ -17,7 +17,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.region_detector import (  # noqa: E402
+from model.region_detector import (  # noqa: E402
     analyze_dxf_regions, assign_region_labels,
     _point_in_polygon, _polygon_area, regions_overlap,
 )
@@ -111,7 +111,7 @@ def test_mpd_rack1_region_is_recovered():
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
 def test_connection_point_region_excluded():
     """返る領域はすべて境界上の接続点(円)が しきい値未満（配線ループは除外）。"""
-    from utils.region_detector import (
+    from model.region_detector import (
         analyze_dxf_regions as _a, _collect_region_geometry,
         _count_connection_points_on_boundary, DEFAULT_REGION_CONFIG,
     )

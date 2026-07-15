@@ -10,7 +10,7 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.common_utils import filter_non_circuit_symbols  # noqa: E402
+from model.common_utils import filter_non_circuit_symbols  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

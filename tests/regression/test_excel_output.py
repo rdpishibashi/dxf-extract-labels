@@ -14,7 +14,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils.excel_output import (  # noqa: E402
+from model.excel_output import (  # noqa: E402
     create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
 )
 
@@ -317,7 +317,7 @@ def test_create_region_excel_output_sorted_by_filename():
 # ---------------------------------------------------------------------------
 
 def test_normalize_width_basic():
-    from utils.common_utils import normalize_width
+    from model.common_utils import normalize_width
     assert normalize_width('ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ') == 'SYSTEM I/F BOX'
     assert normalize_width('ＣＮ１') == 'CN1'
     assert normalize_width('CN1') == 'CN1'
@@ -348,7 +348,7 @@ def test_create_excel_output_merges_zenkaku_and_hankaku_labels():
 def test_build_region_results_normalizes_names_and_labels():
     """build_region_results は領域名・ラベルとも半角へ正規化して集計する
     （合成データによる単体テスト。半角と全角の同一ラベルが1行に合算される）。"""
-    from utils.region_detector import build_region_results
+    from model.region_detector import build_region_results
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     analyses = {
         'z.dxf': {
@@ -374,7 +374,7 @@ def test_build_region_results_normalizes_names_and_labels():
 def test_zenkaku_circuit_symbol_recognized_by_filter():
     """全角の機器符号（ＣＮ１）も filter_non_circuit_symbols が機器符号として
     認識する（判定は半角相当・返り値は元の表記のまま）。"""
-    from utils.common_utils import filter_non_circuit_symbols
+    from model.common_utils import filter_non_circuit_symbols
     matched, excluded = filter_non_circuit_symbols(['ＣＮ１', 'これは説明文'])
     assert matched == ['ＣＮ１']
     assert excluded == 1
@@ -427,7 +427,7 @@ def _make_multi_file_region_results():
 
 
 def test_build_region_label_summary_aggregates_across_files():
-    from utils.region_detector import build_region_label_summary
+    from model.region_detector import build_region_label_summary
     results = _make_multi_file_region_results()
     files, rows = build_region_label_summary(results)
 

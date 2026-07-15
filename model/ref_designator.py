@@ -3,7 +3,7 @@
 reference_designator_candidates.xlsx（`Patterns` / `ExclusionPatterns` /
 `ConfirmedPatterns` シート）を正としてパターン・除外・確定リストを実装する。
 DXF-extract-labels 固有の新機能であり、他プロジェクトとの共有コピーは無い
-（`utils/extract_labels.py` とは独立に保つ）。
+（`model/extract_labels.py` とは独立に保つ）。
 
 処理の流れ:
   1. 図面枠（lineweight=frame_lineweight かつ color=7 の LINE 4本で構成）を検出
@@ -35,7 +35,7 @@ from .region_detector import detect_drawing_frames, assign_region_labels, select
 
 # パターン・除外・確定リストの版。リスト（PATTERN_CATEGORIES /
 # EXCLUSION_*_CATEGORIES / CONFIRMED_PATTERN_CATEGORIES）を変更したら上げる。
-# 判断ログ（utils/decision_log.py）の patterns_version 列に記録され、
+# 判断ログ（model/decision_log.py）の patterns_version 列に記録され、
 # 「パターン更新後もまだ手動判断され続けているラベル」の特定に使う。
 PATTERNS_VERSION = '1.7.2'
 

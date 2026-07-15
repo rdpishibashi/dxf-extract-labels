@@ -2,23 +2,39 @@ import streamlit as st
 import os
 import sys
 import contextlib
+import traceback
 import pandas as pd
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-utils_path = os.path.join(current_dir, 'utils')
-sys.path.insert(0, utils_path)
+model_path = os.path.join(current_dir, 'model')
+sys.path.insert(0, model_path)
 
-from utils.extract_labels import extract_labels, process_multiple_dxf_files
-from utils.region_detector import (
+from model.extract_labels import extract_labels, process_multiple_dxf_files
+from model.region_detector import (
     analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
 )
-from utils.excel_output import (
+from model.excel_output import (
     create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
 )
-from utils.common_utils import save_uploadedfile, handle_error
-from utils import ref_designator
-from utils import decision_log
-from utils import terminal_detector
+from model.common_utils import save_uploadedfile
+from model import ref_designator
+from model import decision_log
+from model import terminal_detector
+
+
+def handle_error(e, show_traceback=True):
+    """エラーを適切に処理して表示する"""
+    st.error(f"エラーが発生しました: {str(e)}")
+    if show_traceback:
+        st.error(traceback.format_exc())
+
+
+def _read_github_secrets():
+    """st.secrets['github'] を安全に読む（secrets.toml が無い環境では例外を握りつぶす）。"""
+    try:
+        return st.secrets.get('github')
+    except Exception:
+        return None
 
 APP_VERSION = '1.9.4'
 
@@ -947,7 +963,8 @@ def app():
 
                     # 判断ログの記録（失敗しても抽出本体は止めない。結果は
                     # rerun 後の抽出結果セクションで表示する）
-                    log_ok, log_msg = decision_log.record(log_entries)
+                    log_ok, log_msg = decision_log.record(
+                        log_entries, github_conf=_read_github_secrets())
                     st.session_state['decision_log_result'] = {
                         'ok': log_ok,
                         'message': log_msg,

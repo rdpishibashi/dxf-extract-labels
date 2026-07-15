@@ -1,6 +1,6 @@
 """tools/reference_designator_analyzer.py の回帰テスト。
 
-パターン・除外リストの定義自体は utils/ref_designator.py（DXF-extract-labels
+パターン・除外リストの定義自体は model/ref_designator.py（DXF-extract-labels
 本体アプリの判定ロジック）を単一の正として参照するため、ここでは集計・
 パターン表記生成・Excel 出力の配線を検証する（定義の重複検証はしない）。
 """

@@ -4,17 +4,19 @@
 追記型 CSV として蓄積する。蓄積したログは tools/reference_designator_analyzer.py が
 読み込み、確定パターン・除外パターンの候補提案に使う。
 
-バックエンド（record() が自動選択する）:
-- GitHubBackend: Streamlit Community Cloud 用。st.secrets['github'] の PAT で
-  ログ専用リポジトリ（既定 rdpishibashi/dxf-label-decisions）の decision_log.csv に
+バックエンド（record() が github_conf の有無で選択する）:
+- GitHubBackend: Streamlit Community Cloud 用。呼び出し元（View 層）が
+  st.secrets['github'] を読み取って渡す PAT で、ログ専用リポジトリ
+  （既定 rdpishibashi/dxf-label-decisions）の decision_log.csv に
   Contents API で追記する。アプリ本体のリポジトリに置くとコミットごとに
   Streamlit Cloud が再デプロイされるため、必ず別リポジトリを使うこと。
 - FileBackend: ローカル / Windows アプリ用。既定 ~/Documents/DXF-extract-labels/
   decision_log.csv に追記する。環境変数 DXF_DECISION_LOG_PATH で変更可能
   （Dropbox 配下を指定すれば複数 PC のログを自動的に一元化できる）。
 
-record() は例外を外に出さない（記録の失敗で抽出本体を止めないため）。
-失敗時は (False, メッセージ) を返し、呼び出し元がフォールバック
+このモジュールは streamlit に依存しない（モデル層）。st.secrets へのアクセスは
+呼び出し元の責務。record() は例外を外に出さない（記録の失敗で抽出本体を止めない
+ため）。失敗時は (False, メッセージ) を返し、呼び出し元がフォールバック
 （entries_to_csv_bytes() によるダウンロード提供）を行う。
 """
 
@@ -223,42 +225,40 @@ def fetch_log_text(token: str, repo: str,
     return base64.b64decode(data['content']).decode('utf-8')
 
 
-def _github_backend_from_secrets() -> Optional[GitHubBackend]:
-    """st.secrets['github'] があれば GitHubBackend を作る。無ければ None。
+def _github_backend_from_conf(conf: Optional[dict]) -> Optional[GitHubBackend]:
+    """github 設定 dict（token/repo/[path]/[branch]）があれば GitHubBackend を作る。
 
-    secrets.toml 自体が存在しない環境（ローカル・Windows アプリ）では
-    st.secrets へのアクセスが例外を投げることがあるため、全て握りつぶして
-    None（= FileBackend へフォールバック）を返す。
+    conf は呼び出し元（View 層）が `st.secrets.get('github')` 等で読み取って渡す。
+    st.secrets へのアクセス自体（secrets.toml が無い環境での例外）は呼び出し元の
+    責務であり、ここでは扱わない（モデル層を streamlit 非依存に保つため）。
     """
-    try:
-        import streamlit as st
-        conf = st.secrets.get('github')
-        if not conf:
-            return None
-        token = conf.get('token')
-        repo = conf.get('repo')
-        if not token or not repo:
-            return None
-        return GitHubBackend(
-            token=token, repo=repo,
-            path=conf.get('path', DEFAULT_GITHUB_PATH),
-            branch=conf.get('branch', DEFAULT_GITHUB_BRANCH),
-        )
-    except Exception:
+    if not conf:
         return None
+    token = conf.get('token')
+    repo = conf.get('repo')
+    if not token or not repo:
+        return None
+    return GitHubBackend(
+        token=token, repo=repo,
+        path=conf.get('path', DEFAULT_GITHUB_PATH),
+        branch=conf.get('branch', DEFAULT_GITHUB_BRANCH),
+    )
 
 
-def pick_backend():
-    """利用可能なバックエンドを返す（GitHub 優先、無ければローカルファイル）。"""
-    return _github_backend_from_secrets() or FileBackend()
+def pick_backend(github_conf: Optional[dict] = None):
+    """利用可能なバックエンドを返す（github_conf があれば GitHub、無ければローカルファイル）。"""
+    return _github_backend_from_conf(github_conf) or FileBackend()
 
 
-def record(entries: List[Dict[str, str]]) -> Tuple[bool, str]:
-    """エントリを記録する。例外を外に出さず (成功?, メッセージ) を返す。"""
+def record(entries: List[Dict[str, str]], github_conf: Optional[dict] = None) -> Tuple[bool, str]:
+    """エントリを記録する。例外を外に出さず (成功?, メッセージ) を返す。
+
+    github_conf は st.secrets['github'] 相当の dict（呼び出し元が読み取って渡す）。
+    """
     if not entries:
         return True, '記録対象の判断はありませんでした（未確定ラベルなし）'
     try:
-        backend = pick_backend()
+        backend = pick_backend(github_conf)
         src = backend.default_source()
         for e in entries:
             if not e.get('source'):

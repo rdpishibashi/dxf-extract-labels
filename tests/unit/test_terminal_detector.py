@@ -1,4 +1,4 @@
-"""utils/terminal_detector.py の単体テスト（モデル層のみ、Streamlit UI 非依存）。
+"""model/terminal_detector.py の単体テスト（モデル層のみ、Streamlit UI 非依存）。
 
 組み合わせ表:
   - _TB_LABEL_PATTERN: TB+英大文字/数字（候補）/ TB+漢字・TB+スペース（非候補）
@@ -24,7 +24,7 @@ import ezdxf
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from utils import terminal_detector as td
+from model import terminal_detector as td
 
 
 LW, COLOR = td.TB_LINE_WEIGHT, td.TB_LINE_COLOR

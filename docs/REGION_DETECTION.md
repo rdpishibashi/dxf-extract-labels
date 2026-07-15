@@ -5,7 +5,7 @@
 ## 矩形領域抽出（領域選択オプション）
 
 電気回路 DXF 内の閉領域（直交ポリゴン。四角形に限らない）を検出し、領域内ラベルに
-領域名を付与する機能。`utils/extract_labels.py` の `analyze_dxf_regions()` /
+領域名を付与する機能。`model/extract_labels.py` の `analyze_dxf_regions()` /
 `assign_region_labels()`、`app.py` の「領域選択オプション」セクションで実装。
 
 ### 処理フロー（UI）

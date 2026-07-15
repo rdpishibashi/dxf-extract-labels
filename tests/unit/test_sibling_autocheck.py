@@ -1,4 +1,4 @@
-"""utils/ref_designator.py の兄弟ラベル連動（sibling_key / propagate_selection_all_files）の単体テスト。
+"""model/ref_designator.py の兄弟ラベル連動（sibling_key / propagate_selection_all_files）の単体テスト。
 
 組み合わせ表:
   - sibling_key: 末尾数字1桁/2桁（対象）、3桁以上・末尾英字・数字のみ・括弧付き（対象外）、
@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from utils import ref_designator
+from model import ref_designator
 
 
 class TestSiblingKey(unittest.TestCase):

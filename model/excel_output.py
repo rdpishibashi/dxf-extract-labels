@@ -173,7 +173,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
           図番・タイトル抽出オプション有効時のみ値が入る
 
     'rows' はラベルの正規化（NFKC・前後空白除去）済みで渡される想定
-    （`utils/ref_designator.py` 側で実施済み）。
+    （`model/ref_designator.py` 側で実施済み）。
 
     Summary シート・各ファイルシートともファイル名昇順で出力する。
     """

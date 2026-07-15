@@ -1,4 +1,4 @@
-"""機器符号（候補）抽出（utils/ref_designator.py）の回帰テスト。
+"""機器符号（候補）抽出（model/ref_designator.py）の回帰テスト。
 
 検証済み仕様（2026-07-10 確定、reference_designator_candidates.xlsx が正）:
   - パターン: 英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ
@@ -23,7 +23,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from utils import ref_designator  # noqa: E402
+from model import ref_designator  # noqa: E402
 
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
 

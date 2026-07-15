@@ -16,5 +16,8 @@
 
 ---
 
+最終更新: 2026-07-15（`utils/` を `model/` にリネーム。OVERVIEW.md・REF_DESIGNATOR.md・
+REGION_DETECTION.md・TERMINAL_DETECTION.md のパス表記を更新、v1.9.5）
+
 最終更新: 2026-07-15（REGION_DETECTION.md にT字接合の局所修復・合体親のN子一般化・
 名称先頭文字列指定・「領域を検出」オプション化を反映、v1.9.4）

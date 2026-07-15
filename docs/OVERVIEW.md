@@ -19,9 +19,9 @@
 
 ```
 DXF-extract-labels/
-├── app.py                      # Streamlit UI（ファイルアップロード・オプション・結果表示）
+├── app.py                      # View & Driver層: Streamlit UI（ファイルアップロード・オプション・結果表示）
 ├── requirements.txt
-├── utils/
+├── model/                      # Model層: streamlit非依存のドメインロジック（v1.9.5でutils/から改名）
 │   ├── extract_labels.py       # DXF ラベル抽出コア（共有モジュール）
 │   ├── ref_designator.py       # 機器符号（候補）抽出パイプライン（DXF-extract-labels 専用、v1.6.0）
 │   ├── region_detector.py      # 矩形領域検出アルゴリズム（DXF-extract-labels 専用）
@@ -33,6 +33,13 @@ DXF-extract-labels/
     └── reference_designator_analyzer.py  # Reference Designator 抽出検討ツール（v1.6.0、判断ログ分析はv1.7.0、後述）
 ```
 
+> `model/` 配下は streamlit に依存しない（`app.py` からのみ import される）。
+> ただし `extract_labels.py` / `ref_designator.py` / `region_detector.py` /
+> `terminal_detector.py` / `excel_output.py` / `common_utils.py` はいずれも
+> パッケージ内相対import（`.common_utils` 等）のみを使うため、`utils/` から
+> `model/` への改名はファイル内容に一切影響しない（他プロジェクトとのバイト一致
+> コピー対象である `extract_labels.py` の同期状態にも影響なし）。
+>
 > `extract_labels.py` / `common_utils.py` は DXF-label-diff / DXF-diff-processor / DXF-tools 等と
 > 同一ロジックを持つ共有モジュール。修正時は関連プロジェクトへの伝播が必要。
 > `ref_designator.py` / `region_detector.py` / `terminal_detector.py` / `excel_output.py` は
@@ -321,7 +328,7 @@ streamlit>=1.40.0, ezdxf>=1.4.2, pandas>=2.0.0
 xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 ```
 
-`requests` は判断ログの GitHub Contents API 呼び出し（`utils/decision_log.py`）に
+`requests` は判断ログの GitHub Contents API 呼び出し（`model/decision_log.py`）に
 使用する（v1.7.0 で追加）。
 
 ---
@@ -378,8 +385,8 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 | DXF-label-diff | 2 つの DXF ファイルのラベルを比較し差分を抽出 |
 | DXF-extract-labels | 単一または複数の DXF ファイルからラベルを抽出 |
 
-両プロジェクトは同一の `utils/extract_labels.py` を共有している（バイト一致、伝播ルールは
-`Tools/CLAUDE.md` 参照）。`utils/common_utils.py` は v1.6.0 で本プロジェクト側のみ
+両プロジェクトは同一の `extract_labels.py` を共有している（バイト一致、伝播ルールは
+`Tools/CLAUDE.md` 参照。本プロジェクトでは `model/extract_labels.py`）。`common_utils.py` は v1.6.0 で本プロジェクト側のみ
 `validate_circuit_symbols()` を削除したため、他プロジェクトのコピーとは差異がある
 （伝播前に `diff`/`md5` で確認すること）。
 

@@ -9,7 +9,7 @@ v1.5.1（2026-06-15）で MTEXT 整形を手書き正規表現から
   2. 新実装で改善されたケース（旧実装では未対応だったコード）
 の期待値を固定し、将来の退行を防ぐ。
 """
-from utils.extract_labels import clean_mtext_format_codes as c
+from model.extract_labels import clean_mtext_format_codes as c
 
 
 # --- 後方互換: 旧実装と同じ出力を維持すべきケース --------------------------

@@ -1,11 +1,15 @@
-"""utils/decision_log.py の単体テスト（モデル層のみ、Streamlit UI 非依存）。
+"""model/decision_log.py の単体テスト（モデル層のみ、Streamlit UI 非依存）。
 
 組み合わせ表:
   - build_entries: 採用/非採用混在、同一ラベル複数出現（個数集計）
   - FileBackend: 新規作成時（ヘッダー付与）/ 既存ファイルへの追記（ヘッダーなし）
   - GitHubBackend: 新規ファイル（404）/ 既存ファイル（sha あり）/ 競合リトライ（409→成功）
-  - pick_backend: st.secrets['github'] あり→GitHubBackend / なし→FileBackend
+  - pick_backend: github_conf あり（token/repo 揃い）→GitHubBackend /
+    github_conf が None・空・token 欠落・repo 欠落→FileBackend
   - record(): 空エントリ→記録スキップ
+
+st.secrets の読み取り自体は View 層（app.py の `_read_github_secrets()`）の責務であり、
+このモジュールは streamlit に依存しないため、ここでは github_conf を直接渡してテストする。
 """
 import base64
 import os
@@ -15,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from utils import decision_log
+from model import decision_log
 
 
 class TestBuildEntries(unittest.TestCase):
@@ -200,24 +204,25 @@ class TestFetchLogText(unittest.TestCase):
 
 
 class TestPickBackendAndRecord(unittest.TestCase):
-    def test_pick_backend_prefers_github_when_secrets_present(self):
-        fake_secrets = {'github': {'token': 'tok', 'repo': 'org/repo'}}
-        with patch('streamlit.secrets', fake_secrets):
-            backend = decision_log.pick_backend()
+    def test_pick_backend_prefers_github_when_conf_has_token_and_repo(self):
+        backend = decision_log.pick_backend({'token': 'tok', 'repo': 'org/repo'})
         self.assertIsInstance(backend, decision_log.GitHubBackend)
         self.assertEqual(backend.repo, 'org/repo')
 
-    def test_pick_backend_falls_back_to_file_when_no_secrets(self):
-        with patch('streamlit.secrets', {}):
-            backend = decision_log.pick_backend()
+    def test_pick_backend_falls_back_to_file_when_conf_is_none(self):
+        backend = decision_log.pick_backend(None)
         self.assertIsInstance(backend, decision_log.FileBackend)
 
-    def test_pick_backend_falls_back_when_secrets_access_raises(self):
-        class RaisingSecrets:
-            def get(self, *a, **kw):
-                raise RuntimeError('no secrets.toml')
-        with patch('streamlit.secrets', RaisingSecrets()):
-            backend = decision_log.pick_backend()
+    def test_pick_backend_falls_back_to_file_when_conf_is_empty(self):
+        backend = decision_log.pick_backend({})
+        self.assertIsInstance(backend, decision_log.FileBackend)
+
+    def test_pick_backend_falls_back_when_token_missing(self):
+        backend = decision_log.pick_backend({'repo': 'org/repo'})
+        self.assertIsInstance(backend, decision_log.FileBackend)
+
+    def test_pick_backend_falls_back_when_repo_missing(self):
+        backend = decision_log.pick_backend({'token': 'tok'})
         self.assertIsInstance(backend, decision_log.FileBackend)
 
     def test_record_empty_entries_skips_backend(self):

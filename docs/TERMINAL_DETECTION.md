@@ -7,7 +7,7 @@
 タイトルが「UNIT内結線図」の図面を対象に、`TB`で始まる端子台ラベル（例:
 `TB001`、`TBN241 (24A)`）に対応する端子台矩形を検出し、矩形内に記載された
 端子番号（数字のみのラベル）を抽出し、`TB List` シートに出力する機能。
-`utils/terminal_detector.py` の `analyze_dxf_terminals()` /
+`model/terminal_detector.py` の `analyze_dxf_terminals()` /
 `build_terminal_rows()`、`app.py` の「端子一覧を抽出」チェックボックスで
 実装。
 
@@ -224,7 +224,7 @@ dict）。**この段階では重複除去しない**（同じ番号が複数の
 
 ## 設定・定数
 
-矩形検出・マッチングの内部定数（UIには公開しない、`utils/terminal_detector.py`
+矩形検出・マッチングの内部定数（UIには公開しない、`model/terminal_detector.py`
 モジュール冒頭）:
 
 | 定数 | 既定 | 役割 |

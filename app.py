@@ -36,7 +36,7 @@ def _read_github_secrets():
     except Exception:
         return None
 
-APP_VERSION = '1.9.4'
+APP_VERSION = '1.9.5'
 
 # 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
 # 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は

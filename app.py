@@ -22,6 +22,21 @@ from utils import terminal_detector
 
 APP_VERSION = '1.9.0'
 
+# 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
+# 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
+# 表示時に動的に追加し、値を失わないようにする（app()内 frm_region_color 参照）。
+_ACI_COLOR_CHOICES = [
+    (1, "1: 赤"),
+    (2, "2: 黄"),
+    (3, "3: 緑"),
+    (4, "4: シアン"),
+    (5, "5: 青"),
+    (6, "6: マゼンタ"),
+    (7, "7: 白/黒"),
+    (8, "8: グレー"),
+    (9, "9: 明るいグレー"),
+]
+
 st.set_page_config(
     page_title="DXF Extract Labels",
     page_icon="📝",
@@ -455,12 +470,6 @@ def app():
                         step=5,
                         help="矩形領域の境界線の太さ（lineweight）",
                         key='frm_region_lineweight')
-                    frm_region_color = st.number_input(
-                        "領域境界線の色(ACI)",
-                        value=int(saved_cfg['region_color']),
-                        min_value=1, max_value=256, step=1,
-                        help="矩形領域の境界線の ACI 色番号（2 = 黄色）",
-                        key='frm_region_color')
                     frm_cp_margin = st.number_input(
                         "接続点判定マージン（座標）",
                         value=float(saved_cfg['connection_point_margin']),
@@ -468,6 +477,31 @@ def app():
                         help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
                              "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
                         key='frm_connection_point_margin')
+                    _current_region_color = int(saved_cfg['region_color'])
+                    _region_color_choices = list(_ACI_COLOR_CHOICES)
+                    if _current_region_color not in dict(_region_color_choices):
+                        _region_color_choices = _region_color_choices + [
+                            (_current_region_color, f"{_current_region_color}: (カスタム)")]
+                    frm_region_color = st.selectbox(
+                        "領域境界線の色(ACI)",
+                        options=[v for v, _ in _region_color_choices],
+                        index=[v for v, _ in _region_color_choices].index(_current_region_color),
+                        format_func=lambda v: dict(_region_color_choices)[v],
+                        help="矩形領域の境界線の色（既定: 2 = 黄）",
+                        key='frm_region_color')
+                    frm_filter_prefixes = st.text_input(
+                        "抽出したい領域名の先頭文字列（カンマ区切り・複数可）",
+                        value=','.join(saved_cfg.get('name_filter_prefixes', ())),
+                        help="指定すると、名称候補がこの文字列のいずれかで始まる領域は、"
+                             "面積比の閾値を満たさなくても抽出対象になります"
+                             "（前方一致。全角/半角は区別しません）。空欄なら従来通り"
+                             "面積比のみで判定します。",
+                        key='frm_name_filter_prefixes')
+                    frm_terms = st.text_input(
+                        "領域名称候補から除外する単語（カンマ区切り）",
+                        value=','.join(saved_cfg['name_exclude_terms']),
+                        help="これらの語を含むラベルを名称候補から除外します",
+                        key='frm_name_exclude_terms')
                 with rc2:
                     frm_area_pct = st.number_input(
                         "最小面積（単独領域・図面枠面積比 %）",
@@ -500,19 +534,6 @@ def app():
                         min_value=1, step=1,
                         help="英字がこの文字数以上のラベルのみ名称候補とします",
                         key='frm_name_min_letters')
-                    frm_terms = st.text_input(
-                        "領域名称候補から除外する単語（カンマ区切り）",
-                        value=','.join(saved_cfg['name_exclude_terms']),
-                        help="これらの語を含むラベルを名称候補から除外します",
-                        key='frm_name_exclude_terms')
-                    frm_filter_prefixes = st.text_input(
-                        "抽出したい領域名の先頭文字列（カンマ区切り・複数可）",
-                        value=','.join(saved_cfg.get('name_filter_prefixes', ())),
-                        help="指定すると、名称候補がこの文字列のいずれかで始まる領域は、"
-                             "面積比の閾値を満たさなくても抽出対象になります"
-                             "（前方一致。全角/半角は区別しません）。空欄なら従来通り"
-                             "面積比のみで判定します。",
-                        key='frm_name_filter_prefixes')
 
                 submitted = st.form_submit_button("設定完了", type="primary")
 

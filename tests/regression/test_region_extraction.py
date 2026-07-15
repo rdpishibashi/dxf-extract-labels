@@ -856,10 +856,7 @@ NEAR_MISS_SB1A_R3R = _find_sample('EE6333-610-07A.dxf')  # 局所修復の安全
 def test_fl1f_left_column_split_from_merged_outer_face():
     """`EE6888-650-01C.dxf` の FL1F①②③（縦仕切り1本＋右列を横仕切り1本で
     さらに2分割、計3矩形）について、局所修復により少なくとも左列（①相当、
-    bbox x:313~370.5、面積比約4.9%）が外周と別の領域として検出されること。
-
-    右列（②③）の完全な分離・各矩形への正しい命名（合体親`ＦＬ１Ｆ③`の除去）
-    は合体親のN子一般化（別タスク）が必要で、本テストの時点では未達成。"""
+    bbox x:313~370.5、面積比約4.9%）が外周と別の領域として検出されること。"""
     a = analyze_dxf_regions(FL1F_650)
     assert a['error'] is None
     matched = [r for r in a['regions']
@@ -868,6 +865,52 @@ def test_fl1f_left_column_split_from_merged_outer_face():
     assert matched, 'FL1F左列（bbox x:313~370.5相当）の領域が見つからない'
     areas_pct = [100.0 * r['area'] / a['frame_area'] for r in matched]
     assert any(4.0 <= p <= 6.0 for p in areas_pct), f'左列の面積比が想定外: {areas_pct}'
+
+
+@pytest.mark.skipif(not os.path.exists(FL1F_650), reason='サンプル DXF が無い')
+def test_fl1f_all_three_pieces_named_and_union_parent_removed():
+    """`EE6888-650-01C.dxf` の FL1F①②③（3分割された矩形）が、局所修復
+    （行き止まり枝の再接続）と合体親のN子一般化（`_detect_union_parents`）の
+    組み合わせにより、①②③すべてが個別領域として正しく命名され、合体親
+    （外周そのもの、面積43552・9.88%）が独立領域として残らないこと
+    （2026-07-15 修正）。"""
+    a = analyze_dxf_regions(FL1F_650)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions']]
+    assert 'ＦＬ１Ｆ① ＊＊ （ＦＬ１Ｆ－Ｈ１２ＲＣＥ）' in names
+    assert 'ＦＬ１Ｆ② ＊＊ （ＦＬ１Ｆ－Ｍ０８Ｂ２Ｒ２）' in names
+    assert 'ＦＬ１Ｆ③ ＊＊ （ＦＬ１Ｆ－Ｍ０８Ｂ２Ｒ２）' in names
+    # 合体親（外周、bbox x:313~428, y:103.7~482.5相当）が独立領域として残らないこと
+    for r in a['regions']:
+        xs = [p[0] for p in r['polygon']]
+        ys = [p[1] for p in r['polygon']]
+        is_union_parent = (309 <= min(xs) <= 317 and 424 <= max(xs) <= 432
+                           and 99 <= min(ys) <= 108 and 478 <= max(ys) <= 487)
+        assert not is_union_parent, f'合体親（外周）が除去されず残っている: {r["default_name"]!r}'
+
+
+@pytest.mark.skipif(not os.path.exists(SPLIT_CN_IF2), reason='サンプル DXF が無い')
+def test_de5434_563_03a_fx_chamber_not_broken_by_n_child_generalization():
+    """`_detect_union_parents` のN子一般化（面積降順貪欲選択）が、既存の2子
+    ケース（`DE5434-563-03A.dxf` の合体親 `FX CHAMBER` とその子
+    `SB-1A(FX1)`/`CN I/F B.D TYPE3 (CN-IF3-1A)`）を壊さないこと。
+
+    N子一般化の実装過程で、子候補の絞り込みを「他の内包候補に内包されない
+    最も内側の葉のみ」とする実装を最初に試みたところ、`SB-1A(FX1)` の内部に
+    たまたま存在する無関係な小さな詳細領域（面積比4.94%）に `SB-1A(FX1)`
+    自体が「内包している」とみなされ、正しい子から誤って除外され、
+    `FX CHAMBER`・`SB-1A(FX1)`・`CN I/F B.D TYPE3` の3領域すべてが検出結果
+    から消える回帰を起こした。面積降順の貪欲選択（大きい候補を先に採用し、
+    既選択候補と重ならないものだけを残す）に変更して解消（2026-07-15）。"""
+    fx_chamber_650 = _find_sample('DE5434-563-03A.dxf')
+    if not os.path.exists(fx_chamber_650):
+        pytest.skip('サンプル DXF が無い')
+    a = analyze_dxf_regions(fx_chamber_650)
+    assert a['error'] is None
+    names = [r['default_name'] for r in a['regions'] if r['frame'] == 0]
+    assert 'FX CHAMBER' in names
+    assert 'SB-1A(FX1)' in names
+    assert 'CN I/F B.D TYPE3 (CN-IF3-1A)' in names
 
 
 @pytest.mark.skipif(not os.path.exists(SPLIT_CN_IF2), reason='サンプル DXF が無い')

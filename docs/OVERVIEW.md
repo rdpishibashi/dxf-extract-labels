@@ -303,7 +303,7 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 | `is_region_mode` | bool | 最後に実行したのが領域モードか通常モードかの区別 |
 | `processing_settings` | dict | 適用したオプション設定 |
 | `results` | dict | ファイル名 → (labels, info) の辞書（通常モード）|
-| `region_analyses` | dict | ファイル名 → `analyze_dxf_regions()` 結果（領域モード）。「図面番号・タイトル・サブタイトルを抽出」ON で検出した場合は `main_drawing_number`/`title`/`subtitle` キーを追加格納（v1.5.27）|
+| `region_analyses` | dict | ファイル名 → `analyze_dxf_regions()` 結果（領域モード）。「図面番号・タイトル・サブタイトルを抽出」ON で検出した場合は `main_drawing_number`/`title`/`subtitle` キーを追加格納（v1.5.27）。**「領域を検出」チェックボックスOFF中は毎回の再描画でこのキーのみをクリアする**（前回検出済みの残留データが誤って領域付きモードと判定されるのを防ぐガード）。このガードに `excel_result` 等の抽出結果本体を含めてはならない（含めると通常モードの結果が直後の再描画で消える。v1.9.4で混入・v1.9.6で修正した回帰、詳細は [VERSION_HISTORY.md](VERSION_HISTORY.md) v1.9.6）|
 | `saved_region_cfg` | dict | 「設定完了」で確定した領域検出詳細設定 |
 | `region_cfg_is_saved` | bool | 詳細設定が保存済みかどうか（✅キャプション表示制御）|
 | `rc_<fname>_<reg_id>_<i>` | bool | 領域名チェックボックスの選択状態（ラジオ動作）|

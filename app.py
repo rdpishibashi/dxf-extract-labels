@@ -36,7 +36,7 @@ def _read_github_secrets():
     except Exception:
         return None
 
-APP_VERSION = '1.9.5'
+APP_VERSION = '1.9.6'
 
 # 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
 # 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
@@ -417,11 +417,16 @@ def app():
                  "OFFにすると通常モード（機器符号のみ抽出等）になります。"
         )
         if not enable_region_detection:
-            # OFF中に前回検出済みの領域データが残っていると、抽出時に誤って
-            # 領域付きモードと判定されてしまうため、表示を隠すだけでなく
+            # OFF中に前回検出済みの領域データ（region_analyses）が残っていると、抽出時に
+            # 誤って領域付きモードと判定されてしまうため、表示を隠すだけでなく
             # session_state からも明示的に消しておく。
+            # このブロックは「領域を検出」OFF中は毎回の再描画で実行されるため、
+            # _REGION_DETECT_CLEAR_KEYS（excel_result 等の抽出結果本体）を含めては
+            # ならない（含めると、通常モードで生成した抽出結果が直後の再描画で
+            # 消えてしまう。2026-07-15ユーザー報告で発覚、v1.9.4で領域検出を
+            # オプション化した際に混入した回帰）。
             _clear_session_keys(
-                keys=['region_analyses'] + _REGION_DETECT_CLEAR_KEYS,
+                keys=['region_analyses'],
                 prefixes=_REGION_DETECT_CLEAR_PREFIXES)
 
         # d) 端子一覧を抽出

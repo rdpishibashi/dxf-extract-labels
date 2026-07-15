@@ -741,6 +741,75 @@ def _find_rectilinear_faces(Hm, Vm, eps):
     return faces, dangling_branches
 
 
+def _branch_leaf_points(branch, attach_tol=0.5):
+    """行き止まり枝(branch)の座標グラフの中で、取り付け点(attachment)以外の
+    次数1端点(leaf、枝の"先端")を返す。通常は1点（単純な行き止まり）。"""
+    edges = branch.get('edges') or []
+    deg = {}
+    for (p1, p2) in edges:
+        deg[p1] = deg.get(p1, 0) + 1
+        deg[p2] = deg.get(p2, 0) + 1
+    attachment = branch.get('attachment')
+    leaves = []
+    for pt, d in deg.items():
+        if d != 1:
+            continue
+        if attachment is not None and math.hypot(pt[0] - attachment[0], pt[1] - attachment[1]) <= attach_tol:
+            continue
+        leaves.append(pt)
+    return leaves
+
+
+def _resplit_face_with_dangling(face_poly, dangling_branches, Hm, Vm, fsnap, local_tol, margin=2.0):
+    """1つの閉領域(face_poly)について、その境界に取り付く行き止まり枝のうち
+    「反対側の端点(leaf)も同じ face_poly の境界に近接する」ものがあれば、
+    face_poly の bbox 内だけに限定して面探索をやり直し、未接続だった内部の
+    仕切り線を復元する。
+
+    グローバルな face_snap やレベル平均化方式には一切触れない——溶接が必要と
+    判明した face の bbox 内という限定された範囲でだけ、より緩い許容誤差
+    （`local_tol`、merge_level_tol 由来の上限）で再接続を試みる。これにより、
+    無関係な遠方の線分同士を誤って結合するリスクを避ける（`EE6888-650-01C.dxf`
+    の FL1F①②③、`_merge_collinear` のレベル平均化ドリフトで内部仕切りの
+    T字接合が face_snap=0.1 では繋がらず、外周だけの1領域に誤マージされていた
+    不具合。グローバルな face_snap 拡大・レベル平均化方式変更はいずれも無関係な
+    別ファイルの誤結合を誘発したため、この局所再トレース方式に切替。2026-07-15）。
+
+    戻り値: (sub_faces | None, consumed_branch_ids)。sub_faces は再トレースで
+    2面以上に分割できた場合のみ非Noneのリスト（元のfaceそのものも含む。
+    合体親候補として後段のN子合体親解消に利用する）。consumed_branch_ids は
+    溶接に使った枝を後段の dangling_edges 報告から除外するための識別子集合。
+    """
+    attach_tol = max(fsnap, 0.5)
+    triggered = False
+    consumed = set()
+    for bi, br in enumerate(dangling_branches):
+        att = br.get('attachment')
+        if att is None or _dist_point_to_polygon(att, face_poly) > attach_tol:
+            continue
+        for leaf in _branch_leaf_points(br, attach_tol):
+            if _dist_point_to_polygon(leaf, face_poly) <= local_tol:
+                triggered = True
+                consumed.add(bi)
+                break
+    if not triggered:
+        return None, consumed
+
+    xs = [p[0] for p in face_poly]
+    ys = [p[1] for p in face_poly]
+    bx0, bx1 = min(xs) - margin, max(xs) + margin
+    by0, by1 = min(ys) - margin, max(ys) + margin
+    local_H = [h for h in Hm if by0 <= h[0] <= by1 and h[2] >= bx0 and h[1] <= bx1]
+    local_V = [v for v in Vm if bx0 <= v[0] <= bx1 and v[2] >= by0 and v[1] <= by1]
+    sub_faces, _sub_dangling = _find_rectilinear_faces(local_H, local_V, local_tol)
+    result = [f for f in sub_faces
+              if all(bx0 - 1 <= x <= bx1 + 1 for x, _y in f)
+              and all(by0 - 1 <= y <= by1 + 1 for _x, y in f)]
+    if len(result) <= 1:
+        return None, set()
+    return result, consumed
+
+
 def _resolve_dangling_handles(dangling_branches, raw_lines, tol=0.5):
     """行き止まり枝（枝ごとの端点ペアのリスト＋取り付け点）について、その経路上に
     ある元のLINE/LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。
@@ -843,6 +912,22 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, circles=None, raw_lines=None
     # 端点接続ベースの面探索（中ほど交差では繋がない）ため、部品矩形の縦線は領域辺の
     # 途中を横切るだけで接続せず、回り込みは発生しない。
     faces, dangling = _find_rectilinear_faces(Hm, Vm, fsnap)
+    # 局所修復（v1.9.1）: 行き止まり枝の反対端点も同じ face の境界に近接する場合、
+    # その face の bbox 内だけに限定して再トレースし、内部仕切りの未接続T字を復元する
+    # （`_resplit_face_with_dangling` 参照）。
+    local_tol = max(mtol, 0.5)
+    expanded_faces = []
+    consumed_branch_idx = set()
+    for f in faces:
+        sub, consumed = _resplit_face_with_dangling(f, dangling, Hm, Vm, fsnap, local_tol)
+        if sub:
+            expanded_faces.extend(sub)
+            consumed_branch_idx |= consumed
+        else:
+            expanded_faces.append(f)
+    faces = expanded_faces
+    if consumed_branch_idx:
+        dangling = [br for bi, br in enumerate(dangling) if bi not in consumed_branch_idx]
     thr = frame_area * cfg.get('min_face_ratio', 0.005)
     regions = []
     seen = set()

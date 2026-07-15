@@ -71,6 +71,11 @@ DEFAULT_REGION_CONFIG = {
     'exclude_connection_point_regions': True,  # 境界に接続点(円)を持つ領域(配線ループ)を除外
     'connection_point_threshold': 1,    # 境界上の接続点がこの数(個数)以上なら除外
     'connection_point_margin': 0.05,   # 接続点が境界線上とみなす座標距離マージン
+    'name_filter_prefixes': (),  # 指定した文字列のいずれかで名称候補が始まる領域は、
+                                 # 面積閾値(area_ratio)を満たさなくても強制的に採用する
+                                 # （前方一致、複数指定可）。判定は normalize_width() で
+                                 # 半角化してから行う（4節「全角/半角混在への対応」の鉄則）。
+                                 # min_face_ratio によるノイズ下限は救済しない。
 }
 
 
@@ -2040,20 +2045,30 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
 
         # 3) 採用条件: 個別面積>=単独閾値(20%)、または 名称がターゲット（複数ピース合算で
         #    第1図面が閾値超）、または合体親（union parent）の子と確認された候補
-        #    （`_force_include_union_children`、面積閾値を問わず採用。後述）。
+        #    （`_force_include_union_children`、面積閾値を問わず採用。後述）、または
+        #    名称候補が `name_filter_prefixes` のいずれかで前方一致する候補
+        #    （面積閾値を問わず採用。v1.9.3、ユーザー要望: 抽出したい領域名が
+        #    分かっている場合に面積比とは無関係に抽出できるようにする）。
         #    行き止まり枝は、その取り付け点(attachment)が当該領域のポリゴン境界上に
         #    乗るものだけを、その領域の `dangling_edges` として絞り込む（無関係な
         #    部品・他領域の枝を混在させない）。
         attach_tol = max(cfg.get('face_snap', 0.1), 0.5)
+        name_filter_prefixes = [normalize_width(p) for p in cfg.get('name_filter_prefixes', ()) if p]
         regions = []
         rid = 0
         for fi, cands_list in enumerate(frame_cands):
             frame_dangling = dangling_by_frame[fi] if fi < len(dangling_by_frame) else []
             force_idx = _force_include_union_children(cands_list, frame_area, area_ratio)
             for cidx, cf in enumerate(cands_list):
+                name_filter_hit = name_filter_prefixes and any(
+                    normalize_width(t).startswith(p)
+                    for _d, t in cf['name_candidates']
+                    for p in name_filter_prefixes
+                )
                 if not (_area_ratio_met(cf['area'], frame_area, area_ratio)
                         or (cf['default_name'] and cf['default_name'] in target_names)
-                        or cidx in force_idx):
+                        or cidx in force_idx
+                        or name_filter_hit):
                     continue
                 region_dangling = [
                     br for br in frame_dangling

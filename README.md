@@ -1,4 +1,4 @@
-# DXF Extract Labels
+# DXF Extract Labels - 機器符号抽出
 
 DXFファイルからテキストラベルを抽出し、Excel形式で出力するStreamlitアプリケーションです。
 

@@ -312,6 +312,48 @@ def test_create_region_excel_output_sorted_by_filename():
     assert data_sheets == ['aaa', 'zzz']
 
 
+def test_create_region_excel_output_summary_omits_drawing_number_title_when_not_extracted():
+    """`title` キーが無い（＝『図面番号・タイトル・サブタイトルを抽出』オプション
+    未使用）場合、Summary シートに『図番』『タイトル』列は追加されない
+    （既存の region モード出力との後方互換性）。"""
+    wb = _load_wb(create_region_excel_output(_make_region_results()))
+    header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
+    assert '図番' not in header
+    assert 'タイトル' not in header
+
+
+def test_create_region_excel_output_summary_includes_drawing_number_title_when_extracted():
+    """`title` キーが None でない場合（『図面番号・タイトル・サブタイトルを抽出』
+    オプション使用時）、Summary シートに『図番』『タイトル』列が追加され、
+    `DXF-label-compare` の `load_summary_titles()` が要求する列構成
+    （『図番』『タイトル』）を満たす（2026-07-23、region モードのSummaryに
+    この2列が無く、B側の図番フィルタが領域モード出力に対して機能しなかった
+    欠落の修正）。"""
+    results = _make_region_results()
+    results['circuit.dxf']['drawing_number'] = 'EE0001-001-01A'
+    results['circuit.dxf']['title'] = 'UNIT内結線図'
+    wb = _load_wb(create_region_excel_output(results))
+    header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
+    assert '図番' in header
+    assert 'タイトル' in header
+    row = list(wb['Summary'].iter_rows(min_row=2, max_row=2, values_only=True))[0]
+    row_dict = dict(zip(header, row))
+    assert row_dict['図番'] == 'EE0001-001-01A'
+    assert row_dict['タイトル'] == 'UNIT内結線図'
+
+
+def test_create_region_excel_output_summary_title_extracted_but_empty_still_adds_columns():
+    """タイトル抽出は有効だったが実際の抽出結果が空文字だったケース
+    （`title` キーは `''`＝None でない）でも、列自体は追加される
+    （空文字と『未抽出』は区別する）。"""
+    results = _make_region_results()
+    results['circuit.dxf']['title'] = ''
+    wb = _load_wb(create_region_excel_output(results))
+    header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
+    assert '図番' in header
+    assert 'タイトル' in header
+
+
 # ---------------------------------------------------------------------------
 # 半角正規化（出力ファイルのラベル・領域名はすべて半角で集計・記録する）
 # ---------------------------------------------------------------------------
@@ -369,6 +411,36 @@ def test_build_region_results_normalizes_names_and_labels():
         'CN1': (2, 'SYSTEM I/F BOX'),   # 全角・半角が合算される
         'GND': (1, 'SYSTEM I/F BOX'),
     }
+
+
+def test_build_region_results_captures_title_when_present():
+    """analysis に 'title' がある場合（『図面番号・タイトル・サブタイトルを抽出』
+    オプション使用時）は region_results にもそのまま引き継がれ、無い場合は
+    None のままになる（`create_region_excel_output` の図番/タイトル列判定に使う）。"""
+    from model.region_detector import build_region_results
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+
+    def _analysis(extra=None):
+        base = {
+            'frames': [(0, 100, 0, 100)],
+            'labels': [],
+            'regions': [{
+                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
+                'name_candidates': [],
+            }],
+        }
+        base.update(extra or {})
+        return base
+
+    with_title = {'with_title.dxf': _analysis({
+        'main_drawing_number': 'EE0001-001-01A', 'title': 'UNIT内結線図'})}
+    rr = build_region_results(with_title, {}, 'asc')
+    assert rr['with_title.dxf']['title'] == 'UNIT内結線図'
+    assert rr['with_title.dxf']['drawing_number'] == 'EE0001-001-01A'
+
+    without_title = {'no_title.dxf': _analysis()}
+    rr2 = build_region_results(without_title, {}, 'asc')
+    assert rr2['no_title.dxf']['title'] is None
 
 
 def test_zenkaku_circuit_symbol_recognized_by_filter():

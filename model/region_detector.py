@@ -2219,6 +2219,7 @@ def build_region_results(
             'final_count': len(labels),
             'in_region_count': in_region_count,
             'drawing_number': analysis.get('main_drawing_number') or '',
+            'title': analysis.get('title'),
             'region_label_counts': {n: dict(c) for n, c in region_label_counts.items()},
         }
     return region_results

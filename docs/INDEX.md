@@ -16,6 +16,9 @@
 
 ---
 
+最終更新: 2026-07-23（REGION_DETECTION.md に、regionモードの Summary シートに
+`図番`・`タイトル` 列が無かった欠落の修正を反映、v1.9.9）
+
 最終更新: 2026-07-23（REGION_DETECTION.md に境界線ちょうどの点を内側扱いする
 `_point_in_polygon` の `boundary_eps` 修正を反映、v1.9.8）
 

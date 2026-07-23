@@ -239,6 +239,15 @@ def create_region_excel_output(region_results, terminal_results=None):
     Summary シート・各ファイルシートともファイル名昇順で出力する
     （region_results をソート済み dict に差し替えることで、領域別ラベル
     一覧のファイル列順にも一括で反映される）。
+
+    『図面番号・タイトル・サブタイトルを抽出』オプション有効時（`data['title']`
+    が None でない時）のみ、Summary シートに『図番』『タイトル』列を追加する
+    （`create_excel_output`/`create_ref_designator_excel_output` と同じ
+    「抽出オプション有効時のみ列を出す」方針。従来この2列が region モードの
+    Summary に無く、`DXF-label-compare` 側の B 図番フィルタ〈タイトルで
+    UNIT内結線図を判定〉が領域モード出力に対して機能できない欠落だった。
+    サブタイトル・流用元図番は今回のスコープ外— region モードの解析結果には
+    元々流用元図番を持たないため追加しない）。
     """
     region_results = dict(sorted(region_results.items(), key=lambda kv: kv[0]))
     output = BytesIO()
@@ -248,7 +257,7 @@ def create_region_excel_output(region_results, terminal_results=None):
 
         summary_data = []
         for fname, data in region_results.items():
-            summary_data.append({
+            row = {
                 'ファイル名': fname,
                 '総抽出ラベル数': data.get('total_in_frame', 0),
                 '除外ラベル数': data.get('filtered_count', 0),
@@ -257,7 +266,11 @@ def create_region_excel_output(region_results, terminal_results=None):
                 '検出領域数': data['regions_detected'],
                 '確定領域数': data['regions_named'],
                 '領域内ラベル数': data['in_region_count'],
-            })
+            }
+            if data.get('title') is not None:
+                row['図番'] = data.get('drawing_number', '') or ''
+                row['タイトル'] = data.get('title', '') or ''
+            summary_data.append(row)
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         summary_ws = writer.sheets['Summary']

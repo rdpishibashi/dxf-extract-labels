@@ -1867,13 +1867,33 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         frames = detect_drawing_frames(frame_lines, cfg['snap'])
         result['frames'] = frames
         if not frames:
-            # 領域検出は図面枠が無いと面積比等の基準を計算できず処理を継続できない
-            # （ref_designator.py のような「制約なし抽出」へのフォールバックが無い）
-            # ため、「何が実施できなかったか」を明確に伝える文言にする
-            # （ユーザー指摘、2026-07-14）。
+            # 領域検出（面積比等の計算・矩形領域の列挙）は図面枠が無いと処理を
+            # 継続できないため、「何が実施できなかったか」を明確に伝える文言に
+            # する（ユーザー指摘、2026-07-14）。
             result['error'] = ('図面枠（太さ %d の線で囲まれた枠）が見つからなかったため、'
                                '領域探索を実施することができませんでした。'
                                % cfg['frame_lineweight'])
+            # ただし『ラベル抽出』自体は図面枠に依存しないため、
+            # `ref_designator._collect_all_labels_fallback()` と同じ「枠制約
+            # なし・重複除去のみ」の方針で `result['labels']` を埋める。
+            # 従来はここで空のまま return していたため、`build_region_results()`
+            # （「機器符号（候補）以外も抽出」ON時に使用、`analysis['labels']`
+            # のみを参照）がこの図面のラベルを一切集計できず、複数図面入力時に
+            # その図面だけラベルが0件になる不具合があった（2026-07-23
+            # ユーザー報告: `EE6892-455B.dxf` 等、Model/Paper Space分離で
+            # 図面枠が見つからない図面を含む入力で「領域を検出」使用時に発生）。
+            seen = set()
+            fallback_labels = []
+            for it in label_entities:
+                _, clean_text, (x, y) = extract_text_from_entity(it)
+                if not clean_text:
+                    continue
+                key = (clean_text, round(x, 1), round(y, 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                fallback_labels.append((clean_text, x, y))
+            result['labels'] = fallback_labels
             return result
         frame_area = (frames[0][1] - frames[0][0]) * (frames[0][3] - frames[0][2])
         result['frame_area'] = frame_area

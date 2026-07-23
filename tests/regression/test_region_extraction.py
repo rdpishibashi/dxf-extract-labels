@@ -18,7 +18,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from model.region_detector import (  # noqa: E402
-    analyze_dxf_regions, assign_region_labels,
+    analyze_dxf_regions, assign_region_labels, build_region_results,
     _point_in_polygon, _polygon_area, regions_overlap,
 )
 
@@ -80,6 +80,37 @@ def test_frame_in_different_layout_than_content_is_not_cross_applied():
     a = analyze_dxf_regions(PAPERSPACE_FRAME)
     assert a['error'] is not None
     assert a['frames'] == []
+
+
+NO_FRAME_LABELS = _find_sample('EE6892-455B.dxf')  # 図面枠が見つからない（同上）が実ラベルは持つ
+
+
+@pytest.mark.skipif(not os.path.exists(NO_FRAME_LABELS), reason='サンプル DXF が無い')
+def test_no_frame_found_still_populates_labels_for_non_region_pipeline():
+    """`EE6892-455B.dxf` は図面枠が見つからずエラーになる（上のテストと同じ
+    ファイル・原因）が、ラベル自体（`CB001` 等）は Model Space に実在する。
+
+    従来 `analyze_dxf_regions()` は図面枠が見つからない場合、`result['labels']`
+    を空のまま return していた（『領域検出は面積比等の基準計算に図面枠が必須』
+    という理由で、ラベル収集自体もまとめて諦めていた）。`build_region_results()`
+    （「機器符号（候補）以外も抽出」ON時に使用）は `analysis['labels']` だけを
+    頼りにラベルを集計するため、複数図面を一括入力して「領域を検出」を使うと、
+    図面枠が見つからないこのファイルだけラベルが0件になり出力から消えていた
+    （2026-07-23 ユーザー報告）。`ref_designator._collect_all_labels_fallback()`
+    と同じ「枠制約なし・重複除去のみ」の方針で `result['labels']` を埋めるよう
+    修正し、`regions`/`frames`/`error` の意味（『領域探索自体はできない』）は
+    変えていない。"""
+    a = analyze_dxf_regions(NO_FRAME_LABELS)
+    assert a['error'] is not None
+    assert a['frames'] == []
+    assert a['regions'] == []
+    assert len(a['labels']) > 0
+
+    region_results = build_region_results({'EE6892-455B.dxf': a}, {}, 'asc', filter_circuit_only=False)
+    rows = region_results['EE6892-455B.dxf']['rows']
+    assert rows  # 図面枠が無くてもラベル出力自体は空にならない
+    cb001 = [r for r in rows if r['ラベル'] == 'CB001']
+    assert cb001 and cb001[0]['領域'] == ''  # 領域は割り当てられない（検出領域が無いため）
 
 
 @pytest.mark.skipif(not os.path.exists(MULTI), reason='サンプル DXF が無い')

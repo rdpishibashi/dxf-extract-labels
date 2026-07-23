@@ -160,6 +160,22 @@ def test_point_in_polygon_basic():
     assert abs(_polygon_area(sq) - 100.0) < 1e-6
 
 
+def test_point_in_polygon_boundary_floating_point_noise_counts_as_inside():
+    """境界線ちょうど（浮動小数点誤差レベルのズレ）にある点は内側として扱う。
+
+    `EE6491-039-21A.dxf` の `CNPG01` は x=197.5415880847095、領域ポリゴンの
+    右端エッジは x=197.54158790475174（差は約2e-7）——同一図面フォーマットの
+    もう1枚（`EE6888-637-01A.dxf`）ではこの余白が0.375あり問題にならなかったが、
+    こちらは実質「境界線ちょうど」で、素の ray casting だと浮動小数点誤差
+    次第で内外どちらにも倒れ、領域から漏れていた（2026-07-23 ユーザー報告）。"""
+    edge_x = 197.54158790475174
+    poly = [(50.0, 16.0), (edge_x, 16.0), (edge_x, 281.0), (50.0, 281.0)]
+    just_outside = (197.5415880847095, 250.0)  # 実データと同じ約2e-7のズレ
+    assert _point_in_polygon(just_outside, poly)
+    # 明確に外側の点は従来どおり除外される（許容誤差が過剰に緩くないことの確認）
+    assert not _point_in_polygon((edge_x + 0.01, 250.0), poly)
+
+
 def test_regions_overlap_basic_shapes():
     """`regions_overlap()` の基本ケース（合成図形による単体テスト）:
     完全内包・部分的な重複・隣接（境界が接するだけ）・完全分離の4パターンを
@@ -941,3 +957,23 @@ def test_local_resplit_does_not_merge_unrelated_near_miss_endpoints():
     for r in a['regions']:
         pct = 100.0 * r['area'] / a['frame_area']
         assert pct < 50.0, f"{r['default_name']!r} の面積比が異常に大きい: {pct:.1f}%（誤結合の疑い）"
+
+
+CNPG01_BOUNDARY = _find_sample('EE6491-039-21A.dxf')  # CNPG01が領域境界線ちょうどに位置する
+
+
+@pytest.mark.skipif(not os.path.exists(CNPG01_BOUNDARY), reason='サンプル DXF が無い')
+def test_label_on_region_boundary_is_assigned_not_dropped():
+    """`EE6491-039-21A.dxf` の `CNPG01` は領域境界線ちょうど（浮動小数点誤差レベル
+    のズレ）に位置するため、素の ray casting だと境界線ちょうどの点が浮動小数点
+    誤差次第で内外どちらにも倒れ、`SYSTEM I/F BOX` 領域に所属せず（領域列が空欄）
+    出力から漏れていた（2026-07-23 ユーザー報告: 同一フォーマットの
+    `EE6888-637-01A.dxf` 側では正しく領域内と判定されるのに、この図面だけ
+    `CNPG01` の個数が0になる）。"""
+    a = analyze_dxf_regions(CNPG01_BOUNDARY)
+    assert a['error'] is None
+    named = [{'polygon': r['polygon'], 'name': r['default_name']}
+             for r in a['regions'] if r['default_name']]
+    assigned = assign_region_labels(a['labels'], named)
+    cnpg01_regions = next(names for (t, _x, _y, names) in assigned if t == 'CNPG01')
+    assert 'SYSTEM I/F BOX' in cnpg01_regions

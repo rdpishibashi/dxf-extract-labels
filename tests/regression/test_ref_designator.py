@@ -326,7 +326,10 @@ def test_build_labeled_rows_with_region():
 
 def test_build_named_regions_auto_names_unnamed():
     """名称候補が無い領域は自動命名される。候補がある領域はユーザー選択
-    （name_selections）が無い限り named に含まれない（build_region_results と同じ挙動）。"""
+    （name_selections）が無い限り named に含まれない（build_region_results と同じ挙動）。
+    無名領域が1個だけの図面では番号を付けず「no name」のみにする（2026-07-23、
+    ユーザー指摘: 番号は複数の無名領域を区別するためのものであり、1個しか
+    無いのに番号が付くとその意味が伝わらず不安になるため）。"""
     analysis = {
         'regions': [
             {'id': 0, 'frame': 0, 'polygon': [], 'area_pct': 10.0, 'name_candidates': []},
@@ -336,14 +339,29 @@ def test_build_named_regions_auto_names_unnamed():
     }
     named, next_idx = ref_designator.build_named_regions(analysis, {}, 'a.dxf')
     names = sorted(r['name'] for r in named)
-    assert names == ['no name 1']   # 候補ありの領域1は未選択のため named に含まれない
+    assert names == ['no name']   # 無名領域はこの図面に1個だけなので番号なし
     assert next_idx == 1
 
     # 明示的に選択すれば全角→半角正規化された名称が named に入る
     selections = {('a.dxf', 1): ['ＲＡＣＫ１']}
     named2, _ = ref_designator.build_named_regions(analysis, selections, 'a.dxf')
     names2 = sorted(r['name'] for r in named2)
-    assert names2 == ['RACK1', 'no name 1']
+    assert names2 == ['RACK1', 'no name']
+
+
+def test_build_named_regions_numbers_multiple_unnamed():
+    """同じ図面内に無名領域が2個以上ある場合は、従来通り連番で区別する
+    （「no name 1」「no name 2」）。"""
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': [], 'area_pct': 10.0, 'name_candidates': []},
+            {'id': 1, 'frame': 0, 'polygon': [], 'area_pct': 10.0, 'name_candidates': []},
+        ]
+    }
+    named, next_idx = ref_designator.build_named_regions(analysis, {}, 'a.dxf')
+    names = sorted(r['name'] for r in named)
+    assert names == ['no name 1', 'no name 2']
+    assert next_idx == 2
 
 
 def test_build_region_output_counts_and_sorts():

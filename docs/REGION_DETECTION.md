@@ -43,7 +43,13 @@
                            名称候補なし・または「選択しない」選択 → Excel 出力時に
                            「no name #」（連番）で自動命名 or その領域には割り当てない
                            （前者は候補ゼロ、後者は候補はあるが未選択で挙動が異なる。
-                           `build_region_results()` 参照）。
+                           `build_region_results()` 参照）。**同じ図面内の無名領域が
+                           1個だけの場合は番号を付けず「no name」のみにする**（v1.9.11。
+                           番号は複数の無名領域を区別するためだけのものであり、1個しか
+                           無いのに番号が付くとユーザーがその意味を理解できず不安に感じる
+                           ため。`build_region_results()`/
+                           `ref_designator.build_named_regions()` の両方でこの図面の
+                           無名領域数を数えてから命名する）。
 「ラベルを抽出」ボタン（既定モード） → ref_designator.extract_ref_designator_data() を
                         各ファイルに実行（frame_lineweight は「図面枠の太さ」設定を使用）。
                         「領域の確認」で確定した名称選択から ref_designator.build_named_regions()

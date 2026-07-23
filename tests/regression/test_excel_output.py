@@ -413,6 +413,45 @@ def test_build_region_results_normalizes_names_and_labels():
     }
 
 
+def test_build_region_results_no_name_omits_number_when_single():
+    """名称候補の無い領域がこの図面に1個だけの場合、番号を付けず「no name」
+    のみにする（2026-07-23、ユーザー指摘: 番号は複数の無名領域を区別する
+    ためのものであり、1個しか無いのに番号が付くと意味が伝わらず不安になる）。"""
+    from model.region_detector import build_region_results
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analyses = {
+        'z.dxf': {
+            'frames': [(0, 100, 0, 100)],
+            'labels': [],
+            'regions': [{
+                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
+                'name_candidates': [],
+            }],
+        }
+    }
+    rr = build_region_results(analyses, {}, 'asc')
+    assert [r['name'] for r in rr['z.dxf']['named']] == ['no name']
+
+
+def test_build_region_results_no_name_numbers_when_multiple():
+    """名称候補の無い領域が2個以上ある場合は、従来通り連番で区別する。"""
+    from model.region_detector import build_region_results
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analyses = {
+        'z.dxf': {
+            'frames': [(0, 100, 0, 100)],
+            'labels': [],
+            'regions': [
+                {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0, 'name_candidates': []},
+                {'id': 1, 'frame': 0, 'polygon': square, 'area_pct': 50.0, 'name_candidates': []},
+            ],
+        }
+    }
+    rr = build_region_results(analyses, {}, 'asc')
+    names = sorted(r['name'] for r in rr['z.dxf']['named'])
+    assert names == ['no name 1', 'no name 2']
+
+
 def test_build_region_results_captures_title_when_present():
     """analysis に 'title' がある場合（『図面番号・タイトル・サブタイトルを抽出』
     オプション使用時）は region_results にもそのまま引き継がれ、無い場合は

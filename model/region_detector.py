@@ -2172,12 +2172,20 @@ def build_region_results(
     for fname, analysis in analyses.items():
         named = []
         named_region_ids = set()
+        regions = analysis.get('regions', [])
+        # 番号は複数の無名領域を区別するためだけのものなので、この図面に
+        # 無名領域が1つしかない場合は付けない（ユーザー指摘: 番号があると
+        # ユーザーがその意味を理解できず不安に感じる。2026-07-23）。
+        total_no_name = sum(
+            1 for reg in regions
+            if not name_selections.get((fname, reg['id']), []) and not reg.get('name_candidates')
+        )
         no_name_idx = 0
-        for reg in analysis.get('regions', []):
+        for reg in regions:
             chosen_names = name_selections.get((fname, reg['id']), [])
             if not chosen_names and not reg.get('name_candidates'):
                 no_name_idx += 1
-                chosen_names = [f"no name {no_name_idx}"]
+                chosen_names = ["no name" if total_no_name == 1 else f"no name {no_name_idx}"]
             for nm in chosen_names:
                 if not nm:
                     continue

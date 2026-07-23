@@ -16,6 +16,9 @@
 
 ---
 
+最終更新: 2026-07-23（REGION_DETECTION.md に境界線ちょうどの点を内側扱いする
+`_point_in_polygon` の `boundary_eps` 修正を反映、v1.9.8）
+
 最終更新: 2026-07-15（`utils/` を `model/` にリネーム。OVERVIEW.md・REF_DESIGNATOR.md・
 REGION_DETECTION.md・TERMINAL_DETECTION.md のパス表記を更新、v1.9.5）
 

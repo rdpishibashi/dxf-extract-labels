@@ -291,7 +291,18 @@ def _polygon_corners(poly, tol=0.5):
     return out[start:] + out[:start]
 
 
-def _point_in_polygon(pt, poly):
+def _point_in_polygon(pt, poly, boundary_eps=1e-4):
+    """ラベルが領域境界線ちょうど（浮動小数点誤差の範囲内）にある場合は内側扱いにする。
+
+    手描き図面の座標は完全一致しないため、名称ラベル・機器符号が領域境界と
+    ほぼ同一座標に配置されることがある。素の ray casting は境界上の点を
+    浮動小数点誤差（1e-7オーダー）次第で内外どちらにも倒すため、同じ図面
+    フォーマットの2図面で片方は境界のわずか内側・もう片方はわずか外側という
+    座標になり、後者だけラベルが領域から漏れる不具合が実データで発生した
+    （2026-07-23、CNPG01 が EE6491-039-21A.dxf で領域無しになる report）。
+    """
+    if _dist_point_to_polygon(pt, poly) <= boundary_eps:
+        return True
     x, y = pt
     inside = False
     n = len(poly)

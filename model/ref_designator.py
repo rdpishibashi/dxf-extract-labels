@@ -822,6 +822,7 @@ def build_region_results_from_pending(
             'final_count': len(final_labels),
             'in_region_count': out['in_region_count'],
             'drawing_number': analysis.get('main_drawing_number') or '',
+            'title': analysis.get('title'),
             'region_label_counts': out['region_label_counts'],
         }
     return region_results

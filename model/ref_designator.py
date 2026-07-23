@@ -722,12 +722,21 @@ def build_named_regions(
     戻り値: (named, next_no_name_idx)
     """
     named = []
+    regions = analysis.get('regions', [])
+    # 番号は複数の無名領域を区別するためだけのものなので、この図面に無名領域が
+    # 1つしかない場合は付けない（ユーザー指摘: 番号があるとユーザーがその意味を
+    # 理解できず不安に感じる。2026-07-23。region_detector.build_region_results()
+    # と同じ方針）。
+    total_no_name = sum(
+        1 for reg in regions
+        if not name_selections.get((fname, reg['id']), []) and not reg.get('name_candidates')
+    )
     no_name_idx = start_no_name_idx
-    for reg in analysis.get('regions', []):
+    for reg in regions:
         chosen_names = name_selections.get((fname, reg['id']), [])
         if not chosen_names and not reg.get('name_candidates'):
             no_name_idx += 1
-            chosen_names = [f"no name {no_name_idx}"]
+            chosen_names = ["no name" if total_no_name == 1 else f"no name {no_name_idx}"]
         for nm in chosen_names:
             if not nm:
                 continue

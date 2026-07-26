@@ -616,3 +616,32 @@ def test_added_patterns_do_not_affect_untouched_existing_labels():
     assert ref_designator.matched_confirmed_category('R10') == 'letters_digits_2or3'
     assert ref_designator.is_ref_designator_candidate('GND') is False
     assert ref_designator.matched_confirmed_category('CN3') == 'cn_single_digit'
+
+
+# ---------------------------------------------------------------------------
+# classify_excluded_labels（除外符号シート用、2026-07-26 追加）
+# ---------------------------------------------------------------------------
+
+def test_classify_excluded_labels_returns_only_excluded_status():
+    """3パターンには一致したが除外パターンに該当したラベルのみを返す。
+    candidate（機器符号候補）・no_match（記号・注記）はいずれも含まない。"""
+    labels = [
+        ('GND', 0, 0),        # excluded (circuit_description)
+        ('MOTOR', 1, 1),      # excluded (common_nouns)
+        ('R10', 2, 2),        # candidate
+        ('(2/5)', 3, 3),      # no_match
+    ]
+    excluded = ref_designator.classify_excluded_labels(labels)
+    assert excluded == [('GND', 0, 0), ('MOTOR', 1, 1)]
+
+
+def test_extract_ref_designator_data_includes_excluded_labels():
+    """`extract_ref_designator_data()` の戻り値に `excluded_labels` キーが
+    含まれ、除外判定されたラベルが正しく収集される。"""
+    path = _find_sample('EE6491-039-04A.dxf')
+    if not path:
+        pytest.skip('sample DXF not found: EE6491-039-04A.dxf')
+    data = ref_designator.extract_ref_designator_data(
+        path, frame_lineweight=100, original_filename='EE6491-039-04A.dxf')
+    assert 'excluded_labels' in data
+    assert isinstance(data['excluded_labels'], list)

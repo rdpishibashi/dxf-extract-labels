@@ -206,16 +206,75 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
 def _on_change_none(fname, reg_id, n_cands):
     """「領域選択しない」チェックボックスをラジオボタン的に動作させるコールバック。
 
-    ON になったとき、同一領域の名称候補チェックボックスを全て OFF にする。
-    「選択しない」は実在する名称候補ではないため、他領域への同期
-    （`_on_change_radio` の (2)）は行わない——この領域だけの個別判断であり、
-    同名候補を持つ他領域まで一律「選択しない」にする理由がないため。
+    ON になったとき、(1) 同一領域の名称候補チェックボックスを全て OFF にする、
+    (2) この領域自身の候補テキストと一致するチェックボックスを、他領域
+    （候補を1つでも持ち、かつ同一ファイル内で重なりのある領域を除く）でも
+    OFF にする、(3) (2) の結果その他領域の候補が全て OFF になった場合は、
+    その領域自身の「領域選択しない」も ON にする（2026-07-26 ユーザー指摘）。
+
+    旧実装は (2)(3) を行わず「この領域だけの個別判断」としていた（「選択しない」は
+    実在する名称候補ではないため、同名候補を持つ他領域まで一律「選択しない」
+    にする理由がない、という理由）。しかし「選択しない」を選んだ以上この領域の
+    候補群はどれも採用されなくなるにもかかわらず、`_on_change_radio()` の (2)
+    によって以前 ON 側へ同期された他領域の同名チェックボックスがそのまま
+    残っていると、「この領域では不採用と決めた名称が、別領域では採用済みの
+    まま」という矛盾した状態になる。ON化の伝播（`_on_change_radio`）と対称的に
+    OFF化も伝播させることで解消する。ON化と異なり「クリックされた1候補」では
+    なく「この領域の候補すべて」が対象になる点に注意（この領域自身がどの候補
+    にも紐付かないことを選んだため）。
+
+    **候補1件のみ（自動確定）の領域も対象に含める**: `_on_change_radio()` の
+    (2) は「候補が2件以上＝選択肢ありの領域のみ」を同期対象とし、候補1件のみの
+    領域（ユーザーが能動的に選んだわけではない自動確定）は除外している。だが
+    この OFF 伝播ではその除外を適用しない。実例（2026-07-26 ユーザー報告、
+    `DE5027-563-03A.dxf`）: 候補1件のみの領域が複数（領域21-24が候補
+    `NXSAF FX1`、領域25-29が候補`SX13 FX`）連続しており、そのうち1つで
+    「選択しない」を選んでも、候補1件のみの除外により兄弟領域に伝播せず
+    「選択しない」も同期しなかった。ON伝播（能動的な選択と紛れることを防ぐ
+    ための除外）と異なり、この OFF 伝播は「今まさに選ばれた選択しないという
+    能動的な判断」を伝えるものであり、伝播先が候補1件だったかどうかは無関係
+    （むしろ「同じ孤立候補を持つ領域群を一貫させる」というこの機能の目的そのもの
+    に合致する）。
+
+    さらに (3): OFF化の結果、他領域の候補が1つも選択されていない状態になると、
+    「どの候補も選んでいない」のに「領域選択しない」も OFF という、実質的に
+    未決定なまま宙に浮いた状態になる（ユーザー指摘: 「何も選択されていない
+    領域は『領域選択しない』を ON にする必要がある」）。この領域自身の候補
+    チェックボックスが（今回の伝播とは無関係な既存の OFF 状態も含めて）全て
+    OFF になっていれば、その領域の「領域選択しない」を ON にして状態を明確化
+    する。
     """
     ck = f"rc_{fname}_{reg_id}_none"
     if not st.session_state.get(ck, False):
         return
     for j in range(n_cands):
         st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
+
+    analyses = st.session_state.get('region_analyses', {})
+    clicked_region = next(
+        (r for r in analyses.get(fname, {}).get('regions', []) if r['id'] == reg_id), None)
+    if not clicked_region:
+        return
+    clicked_texts = {t for _d, t in clicked_region.get('name_candidates', [])}
+    clicked_polygon = clicked_region['polygon']
+
+    for fn2, an2 in analyses.items():
+        for r2 in an2.get('regions', []):
+            if fn2 == fname and r2['id'] == reg_id:
+                continue
+            cands2 = r2.get('name_candidates', [])
+            if not any(t2 in clicked_texts for _d2, t2 in cands2):
+                continue  # この領域の候補を1つも持たない他領域には影響しない
+                          # （候補0件・候補1件のみ＝自動確定の領域も対象に含める。
+                          # docstring「候補1件のみ（自動確定）の領域も対象に含める」参照）
+            if (fn2 == fname and regions_overlap(clicked_polygon, r2['polygon'])):
+                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
+            for j2, (_d2, t2) in enumerate(cands2):
+                if t2 in clicked_texts:
+                    st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = False
+            if not any(st.session_state.get(f"rc_{fn2}_{r2['id']}_{j2}", False)
+                       for j2 in range(len(cands2))):
+                st.session_state[f"rc_{fn2}_{r2['id']}_none"] = True
 
 
 def _compute_default_candidate_index(fname, reg, cands, analyses):

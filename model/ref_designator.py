@@ -710,6 +710,19 @@ def classify_labels(
             if _classify_judgment(_judgment_text(item[0]), item[0]) == 'candidate']
 
 
+def classify_excluded_labels(
+    labels: List[Tuple[str, float, float]],
+) -> List[Tuple[str, float, float]]:
+    """正規化済み (text,x,y) リストから、3パターンには一致したが除外パターンに
+    該当し Reference Designator ではないと判断されたラベルだけを抽出する
+    （`classify_labels()` の 'candidate' 判定の対となる 'excluded' 判定。
+    「除外符号」シート用、2026-07-26 追加）。3パターンいずれにも一致しない
+    文字列（`(2/5)` 等の記号・注記、'no_match'）は対象外。
+    """
+    return [item for item in labels
+            if _classify_judgment(_judgment_text(item[0]), item[0]) == 'excluded']
+
+
 def split_confirmed(
     labels: List[Tuple[str, float, float]],
 ) -> Tuple[List[Tuple[str, float, float]], List[Tuple[str, float, float]]]:
@@ -750,6 +763,9 @@ def extract_ref_designator_data(
       filename: str
       confirmed_labels: [(ラベル, x, y), ...]（正規化済み、確定パターン一致＝自動採用）
       review_labels: [(ラベル, x, y), ...]（正規化済み、未確定ラベルUIでのレビュー対象）
+      excluded_labels: [(ラベル, x, y), ...]（正規化済み、3パターンには一致したが
+        除外パターンに該当し Reference Designator ではないと判断されたもの。
+        「除外符号」シート用、2026-07-26 追加）
       total_in_frame: int
       warning: str | None （図面枠が見つからずフォールバックした場合等）
     """
@@ -757,6 +773,7 @@ def extract_ref_designator_data(
         'filename': original_filename or dxf_file,
         'confirmed_labels': [],
         'review_labels': [],
+        'excluded_labels': [],
         'total_in_frame': 0,
         'warning': None,
     }
@@ -779,6 +796,7 @@ def extract_ref_designator_data(
     info['total_in_frame'] = len(normalized)
     candidates = classify_labels(normalized)
     info['confirmed_labels'], info['review_labels'] = split_confirmed(candidates)
+    info['excluded_labels'] = classify_excluded_labels(normalized)
     return info
 
 
@@ -988,6 +1006,7 @@ def build_region_results_from_pending(
             'drawing_number': analysis.get('main_drawing_number') or '',
             'title': analysis.get('title'),
             'region_label_counts': out['region_label_counts'],
+            'excluded_rows': build_labeled_rows(data.get('excluded_labels', [])),
         }
     return region_results
 
@@ -1016,5 +1035,6 @@ def build_ref_final_from_pending(
             'source_drawing_number': data.get('source_drawing_number'),
             'title': data.get('title'),
             'subtitle': data.get('subtitle'),
+            'excluded_rows': build_labeled_rows(data.get('excluded_labels', [])),
         }
     return ref_final

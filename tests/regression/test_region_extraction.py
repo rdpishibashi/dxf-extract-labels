@@ -1149,3 +1149,30 @@ def test_known_limitation_nested_regions_require_both_escalations():
     }
     assert (85, 631) not in nested_bboxes
     assert (110, 618) not in nested_bboxes
+
+
+DE5027_IOG = _find_sample('DE5027-563-03A.dxf')  # IOG B7ケース: 頻度は別フレーム数で数える
+
+
+@pytest.mark.skipif(not os.path.exists(DE5027_IOG), reason='サンプル DXF が無い')
+def test_cross_frame_frequency_counts_distinct_frames_not_regions():
+    """`DE5027-563-03A.dxf` 図面3/領域15（id=14）: 'IOG B7'〈距離7.3〉と
+    'SY15 FX (NX-SOD400)'〈距離4.5、より近い〉がどちらも同一フレーム（図面3）
+    内でのみ複数回登場する（IOG B7は3領域、SY15 FXは2領域、どちらも別フレーム
+    には一切またがらない）。頻度を「候補を持つ領域の個数」で数えると、単純に
+    領域数で上回るIOG B7が誤って先着してしまっていた（2026-07-26 ユーザー
+    報告で発覚）。頻度の集計単位を「候補を持つ別フレームの個数」に変更した
+    ことで、両候補とも頻度1の同点になり、距離が近い正しい候補
+    SY15 FX (NX-SOD400) が既定名称になる。`EE6892-039-05B.dxf` の
+    SYSTEM I/F BOX（4つの別フレームにまたがる）は引き続き頻度4で正しく
+    救済されることは
+    `test_cross_frame_frequency_rescues_correct_tier1_candidate` が検証する。
+    """
+    a = analyze_dxf_regions(DE5027_IOG, config={'area_ratio': 0.05, 'group_area_ratio': 0.10})
+    assert a['error'] is None
+    target = next(
+        r for r in a['regions']
+        if r['frame'] == 2
+        and any(t == 'SY15 FX (NX-SOD400)' for _d, t in r['name_candidates'])
+        and any(t == 'IOG B7' for _d, t in r['name_candidates']))
+    assert target['default_name'] == 'SY15 FX (NX-SOD400)'

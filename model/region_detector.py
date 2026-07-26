@@ -1463,35 +1463,49 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
 
 def _apply_cross_frame_frequency_ranking(regions):
     """同一ファイル内の全フレームを横断して集計した出現頻度（同じ候補テキストが
-    何領域の候補リストに登場するか）を最優先の並び替えキーとして、各領域の
-    `name_candidates` を再ソートする（2026-07-26、ユーザー確定）。
+    何**フレーム**の候補リストに登場するか）を最優先の並び替えキーとして、各
+    領域の `name_candidates` を再ソートする（2026-07-26、ユーザー確定。集計
+    単位を領域数からフレーム数に変更・2026-07-26追加修正）。
 
-    「同じ名称が複数の領域候補に繰り返し現れるほど、その名称が本来の領域名で
-    ある確信度が高い」という考え方に基づく。実例: `EE6892-039-05B.dxf` の
-    図面1/領域0（L字型ポリゴンの切り欠きに、検出漏れの入れ子小領域の名称
-    ラベルが紛れ込んだケース）で、局所的な距離順では「SENSOR I/F B.D-Ⅲ」
-    〈距離1.2、この図面のどの領域にも他に登場しない孤立候補〉が
-    「SYSTEM I/F BOX」〈距離3.6だが、図面2/3/4の大領域候補（面積74.0%/
-    37.3%/47.7%）にも一貫して登場〉より先に表示・既定選択されてしまって
-    いた。頻度優先の並び替えにより SYSTEM I/F BOX が正しく先頭になる。
+    「同じ名称が複数のページ（フレーム）にまたがって繰り返し現れるほど、
+    その名称が本来の領域名である確信度が高い」という考え方に基づく。実例:
+    `EE6892-039-05B.dxf` の図面1/領域0（L字型ポリゴンの切り欠きに、検出漏れの
+    入れ子小領域の名称ラベルが紛れ込んだケース）で、局所的な距離順では
+    「SENSOR I/F B.D-Ⅲ」〈距離1.2、この図面のどの領域にも他に登場しない
+    孤立候補〉が「SYSTEM I/F BOX」〈距離3.6だが、図面2/3/4の大領域候補
+    （面積74.0%/37.3%/47.7%）にも一貫して登場〉より先に表示・既定選択されて
+    しまっていた。頻度優先の並び替えにより SYSTEM I/F BOX が正しく先頭になる。
 
-    出現頻度は単純な出現回数（同名候補を持つ領域の個数。同一ファイル内の
-    全フレームを対象、面積による重み付けはしない）。`name_candidates` は
-    呼び出し時点で distance→center→tier で安定ソート済みであることを前提に、
-    頻度のみをキーにした安定ソートを重ねがけする（同頻度内では元の
-    distance→center→tier順序を保つ）。`_remove_overlap_claimed_candidates()`
-    より前に呼ぶこと（`_tier_by_text` を参照する。同関数はこれを pop するため）。
+    集計単位はフレーム数（同名候補を持つ**別フレーム**の個数。同一ファイル内の
+    全フレームを対象、面積による重み付けはしない）。**領域数ではない**点に
+    注意——当初は領域数で数えていたが、`DE5027-563-03A.dxf` 図面3で、同一
+    フレーム内の複数の異なる小領域それぞれの近くに汎用的な機器符号ラベル
+    「IOG B7」（3領域）が偶然登場し、正解の「SY15 FX (NX-SOD400)」〈距離4.5、
+    2領域〉より領域数で上回ってしまい、距離が遠い（7.3）誤った候補が既定に
+    なる不具合が発覚（2026-07-26 ユーザー報告）。両候補とも実際にはフレーム2
+    にしか登場しておらず、「複数ページにまたがる」という頻度シグナルの前提
+    自体が成立していなかった。フレーム数で数えることで、この2候補はどちらも
+    頻度1で同点になり、頻度では決着せず元の距離順（SY15 FXが正しく優先）に
+    フォールバックする。一方 `SYSTEM I/F BOX` は4つの別フレームにまたがるため
+    引き続き頻度4で正しく救済される。
+
+    `name_candidates` は呼び出し時点で distance→center→tier で安定ソート済み
+    であることを前提に、頻度のみをキーにした安定ソートを重ねがけする（同頻度
+    内では元の distance→center→tier順序を保つ）。
+    `_remove_overlap_claimed_candidates()` より前に呼ぶこと（`_tier_by_text`
+    を参照する。同関数はこれを pop するため）。
     """
-    freq = defaultdict(int)
+    freq = defaultdict(set)
     for r in regions:
+        frame = r.get('frame')
         for t in {t for _d, t in r.get('name_candidates', [])}:
-            freq[t] += 1
+            freq[t].add(frame)
 
     for r in regions:
         cands = r.get('name_candidates', [])
         if len(cands) <= 1:
             continue
-        reordered = sorted(cands, key=lambda c: -freq[c[1]])
+        reordered = sorted(cands, key=lambda c: -len(freq[c[1]]))
         if reordered != cands:
             r['name_candidates'] = reordered
             r['default_name'] = reordered[0][1]

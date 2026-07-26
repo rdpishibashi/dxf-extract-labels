@@ -198,7 +198,7 @@ def classify_aggregated_labels(agg):
 
     for label, data in agg.items():
         judgment = rd._judgment_text(label)
-        status, category = rd.classify_judgment_detailed(judgment)
+        status, category = rd.classify_judgment_detailed(judgment, label)
         if status == 'no_match':
             continue
         pattern_name = rd.matched_pattern_name(judgment)
@@ -282,6 +282,11 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
     for name, rx, desc in rd.EXCLUSION_REGEX_CATEGORIES:
         imp = exclusion_impact.get(name, {'labels': 0, 'count': 0})
         ws4.append([name, '確定', '正規表現', rx.pattern, desc, imp['labels'], imp['count']])
+    for name, rx, spec in rd.ADDED_EXCLUSION_PATTERNS:
+        imp = exclusion_impact.get(name, {'labels': 0, 'count': 0})
+        ws4.append([name, '確定', '正規表現（追加パターン）', rx.pattern,
+                    f'reference_deginator_pattern_added.txt 由来（記法: {spec}）',
+                    imp['labels'], imp['count']])
     for col, width in zip('ABCDEFG', (26, 10, 22, 60, 45, 12, 14)):
         ws4.column_dimensions[col].width = width
     ws4.freeze_panes = 'A2'
@@ -291,6 +296,11 @@ def build_output_workbook(ref_rows, signature_rows, exclusion_impact, confirmed_
     for name, basis, rx, desc in CONFIRMED_PATTERN_CATEGORIES:
         imp = confirmed_impact.get(name, {'labels': 0, 'count': 0})
         ws5.append([name, '確定', '正規表現', basis, rx.pattern, desc, imp['labels'], imp['count']])
+    for name, rx, spec in rd.ADDED_DESIGNATOR_PATTERNS:
+        imp = confirmed_impact.get(name, {'labels': 0, 'count': 0})
+        ws5.append([name, '確定', '正規表現（追加パターン）', 'full', rx.pattern,
+                    f'reference_deginator_pattern_added.txt 由来（記法: {spec}）',
+                    imp['labels'], imp['count']])
     for col, width in zip('ABCDEFGH', (30, 10, 12, 12, 55, 55, 12, 14)):
         ws5.column_dimensions[col].width = width
     ws5.freeze_panes = 'A2'

@@ -140,7 +140,10 @@ def test_a_and_b_excluded_only_from_single_letter_pattern():
 # ---------------------------------------------------------------------------
 
 def test_build_output_workbook_sheet_names_and_remaining_sorted_desc():
-    src = _make_total_xlsx([('CNX', 2), ('CNY', 9), ('GND', 5)])
+    # 'CNX'/'CNY' は使わない（追加機器符号パターン CN.*、2026-07-26 に一致し
+    # 確定扱いになるため）。'ZQX'/'ZQY' はどの追加/既存パターンにも一致しない
+    # ため未確定のまま残る（本テストの意図＝「未確定のまま残る」ケース向き）。
+    src = _make_total_xlsx([('ZQX', 2), ('ZQY', 9), ('GND', 5)])
     agg, _ = rda.aggregate_labels([('x.xlsx', src)])
     ref_rows, sig_rows, exc_impact, conf_impact = rda.classify_aggregated_labels(agg)
     data = rda.build_output_workbook(ref_rows, sig_rows, exc_impact, conf_impact)
@@ -153,23 +156,23 @@ def test_build_output_workbook_sheet_names_and_remaining_sorted_desc():
     ]
 
     remaining = list(wb['RemainingUnclassified'].iter_rows(min_row=2, values_only=True))
-    assert [r[0] for r in remaining] == ['CNY', 'CNX']   # 個数降順、GNDは含まれない
+    assert [r[0] for r in remaining] == ['ZQY', 'ZQX']   # 個数降順、GNDは含まれない
 
     ref_labels = {r[0] for r in wb['ReferenceDesignators'].iter_rows(min_row=2, values_only=True)}
-    assert ref_labels == {'CNX', 'CNY', 'GND'}
+    assert ref_labels == {'ZQX', 'ZQY', 'GND'}
 
 
 def test_build_output_workbook_confirmed_labels_excluded_from_remaining():
     """確定パターンに一致したラベル（R10）は RemainingUnclassified から除かれ、
     ConfirmedPatterns シートの該当ラベル数・個数に反映される。"""
-    src = _make_total_xlsx([('R10', 4), ('CNX', 2), ('GND', 5)])
+    src = _make_total_xlsx([('R10', 4), ('ZQX', 2), ('GND', 5)])
     agg, _ = rda.aggregate_labels([('x.xlsx', src)])
     ref_rows, sig_rows, exc_impact, conf_impact = rda.classify_aggregated_labels(agg)
     data = rda.build_output_workbook(ref_rows, sig_rows, exc_impact, conf_impact)
     wb = openpyxl.load_workbook(BytesIO(data))
 
     remaining_labels = {r[0] for r in wb['RemainingUnclassified'].iter_rows(min_row=2, values_only=True)}
-    assert remaining_labels == {'CNX'}
+    assert remaining_labels == {'ZQX'}
 
     confirmed_rows = {r[0]: r for r in wb['ConfirmedPatterns'].iter_rows(min_row=2, values_only=True)}
     row = confirmed_rows['letters_digits_2or3']

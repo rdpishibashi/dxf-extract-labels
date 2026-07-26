@@ -16,6 +16,18 @@
 
 ---
 
+最終更新: 2026-07-26（REGION_DETECTION.md に、`detect_drawing_frames()` の
+高さの異なる複数枠が左辺を共有する場合の検出漏れ修正・入れ子領域の既知の限界
+（両エスカレーション同時発動が必要）を反映、v1.9.14）
+
+最終更新: 2026-07-26（REGION_DETECTION.md に、領域名称候補の並び順変更
+（距離→中央→頻度→Tier）と既知の限界（`MPD RACK2 PANEL LIMIT`ケース）を反映、
+v1.9.13）
+
+最終更新: 2026-07-26（REF_DESIGNATOR.md に、ユーザー提供の速記記法による
+追加除外/機器符号パターン（`ADDED_EXCLUSION_PATTERNS`/`ADDED_DESIGNATOR_PATTERNS`）
+を反映、v1.9.12）
+
 最終更新: 2026-07-23（REGION_DETECTION.md に、無名領域が1個だけの場合は
 番号を付けず「no name」のみにする変更を反映、v1.9.11）
 

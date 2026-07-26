@@ -514,31 +514,65 @@ def detect_drawing_frames(
 ) -> list[tuple[float, float, float, float]]:
     """lineweight=100・color=7 の線分（呼び出し元の `_collect_region_geometry` で
     既にこの2条件で絞り込まれている）から図面枠（複数可）を検出する。
-    枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
+    戻り値: [(xl,xr,y0,y1), ...]
 
-    注: 枠の縦辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
+    注: 枠の辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
     いるケース）でも正しく検出できるよう、分類後に共線セグメントを結合してから
-    高さ判定を行う。
+    判定する。
 
-    `min_side`（既定0=フィルタなし）: 2026-06-24以前は400.0固定で、縦辺の高さが
-    これ未満の枠（実例: EE6097-039-06C.dxf、高さ277）を取り落としていた。
-    color=7 条件を追加導入したことで、無関係な短い lineweight=100 線分（実例:
-    色5の小さな線分群、サンプル137件で確認）が混入しなくなったため、高さに
-    よる足切りは不要になった。
+    横辺（上辺・下辺）のペアで x スパンが一致するものを1つの枠の候補とし、
+    その両端 x に対応する縦辺（左辺・右辺）が実在するかを確認して初めて枠として
+    採用する（2026-07-26、高さの異なる複数枠が同一 x 位置に左辺を共有する
+    ケースで不具合発覚・修正）。
+
+    旧実装は縦辺のみを使い「全枠が同じ y 範囲を共有する」ことを前提に x 座標を
+    左右ペアへクラスタ化していたが、`_merge_collinear` は同一 x（レベル）上で
+    y 範囲が重なる線分を無条件で1本に結合するため、高さの異なる2つの枠が
+    左辺を共有する場合（`EE6868-516-01A.dxf`: 枠A x:[25,584] y:[10,410]・
+    枠B x:[25,821] y:[20,574]、両枠とも左辺が x≈25）に、枠A・枠Bの左辺
+    （y:[10,410] と y:[20,574]、x=25で重複）が y:[10,574] という実在しない
+    1本の縦辺へ誤結合され、さらに x クラスタが `[25,584,821]` の奇数個（本来
+    4個のはずが左辺の共有で3個）になることでペアリングが崩れ、枠Bの右辺
+    （821）が捨てられて枠Bが検出されず、実際には大面積の領域（`EFEM UPPER`・
+    `SBS1`）を含む枠が丸ごと検出漏れになっていた。横辺は枠A・枠Bで y レベルが
+    異なるため誤結合せず、x スパンの一致で正しく枠ごとに区別できる。
     """
-    _, V = _split_axis_aligned(frame_lines, eps)
-    # 接触/重複する同一 x 上の線分を 1 本に統合してから高さ判定
-    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されているケース）
-    Vm = _merge_collinear(V, eps, bridge=False)
-    tall = [v for v in Vm if (v[2] - v[1]) >= min_side]
-    if len(tall) < 2:
+    H, V = _split_axis_aligned(frame_lines, eps)
+    # 接触/重複する同一レベル上の線分を1本に統合してから判定
+    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で2分割されているケース）
+    Hm = _merge_collinear(H, eps, bridge=False)  # [(y, x0, x1), ...]
+    Vm = _merge_collinear(V, eps, bridge=False)  # [(x, y0, y1), ...]
+    if len(Hm) < 2 or len(Vm) < 2:
         return []
-    xedges = _cluster_1d([v[0] for v in tall], eps)
-    ys = [v[1] for v in tall] + [v[2] for v in tall]
-    y0, y1 = min(ys), max(ys)
+
+    def _has_vertical_coverage(x, y0, y1):
+        return any(abs(vx - x) <= eps and vy0 - eps <= y0 and y1 <= vy1 + eps
+                   for (vx, vy0, vy1) in Vm)
+
+    Hs = sorted(Hm, key=lambda h: h[0])
+    n = len(Hs)
+    used = set()
     frames = []
-    for i in range(0, len(xedges) - 1, 2):
-        frames.append((xedges[i], xedges[i + 1], y0, y1))
+    for i in range(n):
+        if i in used:
+            continue
+        y_i, x0_i, x1_i = Hs[i]
+        for j in range(i + 1, n):
+            if j in used:
+                continue
+            y_j, x0_j, x1_j = Hs[j]
+            if abs(x0_i - x0_j) > eps or abs(x1_i - x1_j) > eps:
+                continue
+            y0, y1 = min(y_i, y_j), max(y_i, y_j)
+            if (y1 - y0) < min_side:
+                continue
+            xl, xr = min(x0_i, x1_i), max(x0_i, x1_i)
+            if _has_vertical_coverage(xl, y0, y1) and _has_vertical_coverage(xr, y0, y1):
+                frames.append((xl, xr, y0, y1))
+                used.add(i)
+                used.add(j)
+                break
+    frames.sort(key=lambda f: (f[0], f[2]))
     return frames
 
 
@@ -1116,6 +1150,39 @@ def _dist_to_vertical_edge(pt, vertical_segs):
     return _dist_to_edge_segments(pt, vertical_segs, axis='x')
 
 
+def _dist_and_center_to_edge_segments(pt, segs, axis='y'):
+    """点から最も近いエッジ分節までの垂直距離と、その分節の中点までの沿軸距離
+    （「中央らしさ」）を (distance, center_offset) で返す（`_dist_to_edge_segments`
+    の拡張版。region_name_candidates() の候補順位付け専用。2026-07-26 追加）。
+
+    最も近い分節の決定基準は `_dist_to_edge_segments` と同じ（垂直距離が最小の
+    分節）。center_offset はその分節の中点から点までの沿軸方向の距離で、
+    小さいほど分節（＝辺）の中央寄りに位置することを意味する。
+    """
+    a, b = pt if axis == 'y' else pt[::-1]
+    best_d = float('inf')
+    best_center = 0.0
+    for (a0, a1, eb) in segs:
+        if a0 <= a <= a1:
+            d = abs(b - eb)
+        else:
+            d = math.hypot(a - (a0 if a < a0 else a1), b - eb)
+        if d < best_d:
+            best_d = d
+            best_center = abs(a - (a0 + a1) / 2.0)
+    return best_d, best_center
+
+
+def _dist_and_center_to_bottom_edge(pt, bottom_segs):
+    """`_dist_and_center_to_edge_segments` の下端横エッジ版。"""
+    return _dist_and_center_to_edge_segments(pt, bottom_segs, axis='y')
+
+
+def _dist_and_center_to_vertical_edge(pt, vertical_segs):
+    """`_dist_and_center_to_edge_segments` の縦エッジ版。"""
+    return _dist_and_center_to_edge_segments(pt, vertical_segs, axis='x')
+
+
 def region_name_candidates(
     polygon: list[tuple[float, float]],
     labels: list[tuple[str, float, float]],
@@ -1167,8 +1234,25 @@ def region_name_candidates(
       tier_by_text: {text: tier(1|2|3), ...}（`candidates` と同じ重複除去後の
                     エントリに対応。呼び出し側が「この候補がどれだけ確信度が
                     高いか」を判定するために使う）
+
+    並び順（2026-07-26 変更、ユーザー確定）: 「境界線からの距離→辺の中央からの
+    距離→Tier（下辺>上辺）」の順で全候補を横断的にソートする。従来は
+    「Tier→Tier内で距離」の順（Tier1が常にTier2より優先）だったが、
+    `DE5027-558-01B.dxf` 図面3/領域5 で「Tier2（上辺）候補 SY12 RX〈距離4.5、
+    辺の中央からのオフセット2.5＝ほぼ中央〉が、Tier1（下辺）候補
+    IOG B7〈距離7.3、オフセット26.5＝辺の端で中央から大きく外れる〉より
+    直感的に正しい名称であるにもかかわらず、Tier優先のため後方に表示される」
+    という実例が見つかり、Tier絶対優先の設計を距離優先に改めた。距離の比較は
+    表示用に丸めた値（`round(d, 1)`、UIでの表示丸め`{d:.0f}`とは別に内部的に
+    保持している精度）で行う。生の浮動小数点値で比較すると実質的にほぼ確実に
+    詳細が異なり「辺の中央」がタイブレークとして機能しないため（表示上「同じ
+    距離」に見える候補同士でのみ中央寄り・Tierが意味を持つ）。中央からの
+    オフセットは、各候補が実際に最も近いと判定されたエッジ分節（Tier1/2は
+    `_dist_and_center_to_bottom_edge`/`_dist_and_center_to_vertical_edge`、
+    Tier3はエッジという概念が無いため常に0＝タイブレークに寄与しない）の
+    中点からの沿軸距離。
     """
-    def _scan(edge_segs, dist_fn, require_inside):
+    def _scan(edge_segs, dist_center_fn, require_inside):
         cand = []
         for (t, x, y) in labels:
             if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
@@ -1177,31 +1261,32 @@ def region_name_candidates(
                 continue
             if require_inside and not _point_in_polygon((x, y), polygon):
                 continue
-            d = dist_fn((x, y), edge_segs)
+            d, c = dist_center_fn((x, y), edge_segs)
             if min_dist <= d <= max_dist:
-                cand.append((d, t))
+                cand.append((d, c, t))
         return cand
 
     if rotated_edge_roles:
         tier1_side, tier2_side = rotated_edge_roles
         tier1_edges = _vertical_edges_at_extreme(polygon, tier1_side)
         tier2_edges = _vertical_edges_at_extreme(polygon, tier2_side)
-        dist_fn = _dist_to_vertical_edge
+        dist_center_fn = _dist_and_center_to_vertical_edge
     else:
         tier1_edges = _bottom_edges(polygon)
         # Tier2 は上端エッジに加え、L字型等の切り欠き部の下向きエッジも対象にする
         # （切り欠き直上の名称ラベルを拾う。詳細は _notch_bottom_edges docstring）。
         tier2_edges = _top_edges(polygon) + _notch_bottom_edges(polygon)
-        dist_fn = _dist_to_bottom_edge
+        dist_center_fn = _dist_and_center_to_bottom_edge
 
     tiered = []
     for tier, edges in ((1, tier1_edges), (2, tier2_edges)):
         if not edges:
             continue
-        for d, t in _scan(edges, dist_fn, True):
-            tiered.append((tier, d, t))
+        for d, c, t in _scan(edges, dist_center_fn, True):
+            tiered.append((tier, d, c, t))
 
     # Tier1/2 でも候補ゼロの場合のみ、ポリゴン全体の境界への最短距離でフォールバック
+    # （エッジという概念が無いため中央オフセットは常に0＝タイブレークに寄与しない）
     if not tiered:
         for (t, x, y) in labels:
             if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
@@ -1210,13 +1295,13 @@ def region_name_candidates(
                 continue
             d = _dist_point_to_polygon((x, y), polygon)
             if min_dist <= d <= max_dist:
-                tiered.append((3, d, t))
+                tiered.append((3, d, 0.0, t))
 
-    tiered.sort(key=lambda c: (c[0], c[1]))
+    tiered.sort(key=lambda c: (round(c[1], 1), c[2], c[0]))
     seen = set()
     out = []
     tier_by_text = {}
-    for tier, d, t in tiered:
+    for tier, d, _c, t in tiered:
         if t in seen:
             continue
         seen.add(t)
@@ -1374,6 +1459,43 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
         fc.append(cands_list)
         dangling_by_frame.append([d for d in det_dangling if d['entities']])
     return fc, dangling_by_frame
+
+
+def _apply_cross_frame_frequency_ranking(regions):
+    """同一ファイル内の全フレームを横断して集計した出現頻度（同じ候補テキストが
+    何領域の候補リストに登場するか）を最優先の並び替えキーとして、各領域の
+    `name_candidates` を再ソートする（2026-07-26、ユーザー確定）。
+
+    「同じ名称が複数の領域候補に繰り返し現れるほど、その名称が本来の領域名で
+    ある確信度が高い」という考え方に基づく。実例: `EE6892-039-05B.dxf` の
+    図面1/領域0（L字型ポリゴンの切り欠きに、検出漏れの入れ子小領域の名称
+    ラベルが紛れ込んだケース）で、局所的な距離順では「SENSOR I/F B.D-Ⅲ」
+    〈距離1.2、この図面のどの領域にも他に登場しない孤立候補〉が
+    「SYSTEM I/F BOX」〈距離3.6だが、図面2/3/4の大領域候補（面積74.0%/
+    37.3%/47.7%）にも一貫して登場〉より先に表示・既定選択されてしまって
+    いた。頻度優先の並び替えにより SYSTEM I/F BOX が正しく先頭になる。
+
+    出現頻度は単純な出現回数（同名候補を持つ領域の個数。同一ファイル内の
+    全フレームを対象、面積による重み付けはしない）。`name_candidates` は
+    呼び出し時点で distance→center→tier で安定ソート済みであることを前提に、
+    頻度のみをキーにした安定ソートを重ねがけする（同頻度内では元の
+    distance→center→tier順序を保つ）。`_remove_overlap_claimed_candidates()`
+    より前に呼ぶこと（`_tier_by_text` を参照する。同関数はこれを pop するため）。
+    """
+    freq = defaultdict(int)
+    for r in regions:
+        for t in {t for _d, t in r.get('name_candidates', [])}:
+            freq[t] += 1
+
+    for r in regions:
+        cands = r.get('name_candidates', [])
+        if len(cands) <= 1:
+            continue
+        reordered = sorted(cands, key=lambda c: -freq[c[1]])
+        if reordered != cands:
+            r['name_candidates'] = reordered
+            r['default_name'] = reordered[0][1]
+            r['default_name_tier'] = r.get('_tier_by_text', {}).get(reordered[0][1])
 
 
 def _remove_overlap_claimed_candidates(regions):
@@ -2017,6 +2139,23 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         # 候補〔LA CHAMBER 13.59%等〕が5%を満たすため回転橋渡しパスがスキップされ、
         # 本来27.89%まで正しく検出されるはずの `CN I/F B.D TYPE3 (CN-IF3-1A)` が
         # 0.94%の断片のまま埋もれて消えていた不具合。2026-07-14 発見・修正）。
+        # 既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: このゲート
+        # （zero_fis のみ）と直前の LWPOLYLINE 追加ゲートは、いずれも独立に
+        # 「ゼロヒットのフレームのみ」で発動する。あるフレームが1件でも
+        # area_ratio を満たす候補（例 EFEM UPPER）を見つけた時点でどちらの
+        # ゲートも素通りするため、「LWPOLYLINE 追加」と「横ギャップ橋渡し」の
+        # "両方" が揃って初めて閉じる入れ子領域（`EE6868-516-01A.dxf` の
+        # `EFEM UPPER` 内部、`#FEC`〈x:85.3-630.8〉・`#FEB`〈x:110.3-618.0〉を
+        # 辺とする2つの入れ子矩形。上辺の一部が LWPOLYLINE 由来かつ複数分節に
+        # 分かれている）は、フレームが既に1件ヒット済みのため両ゲートとも発動
+        # せず、検出されないまま残る（`_detect_regions()` に両方の条件を直接
+        # 渡せば正しく検出できることを確認済み）。「各図面枠は最低1件見つければ
+        # 良い」という現行のエスカレーション設計の構造的な限界であり、解消には
+        # ゲート条件自体の見直し（全フレームで常に両パスを試して結果を合算する
+        # 等）が必要で影響範囲が広いため、既知の限界として受容する
+        # （ユーザー判断。`test_region_extraction.py` の
+        # `test_known_limitation_nested_regions_require_both_escalations`
+        # 参照）。
         det_cfg = cfg
         zero_fis = _zero_hit_frame_indices(frame_cands, gate_ratio)
         if zero_fis and rotated:
@@ -2122,6 +2261,7 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                 rid += 1
         regions = _resolve_complement_faces(regions, frame_area, next_id=rid)
         regions = _resolve_union_parents(regions, labels=frame_labels, cfg=cfg)
+        _apply_cross_frame_frequency_ranking(regions)
         _remove_overlap_claimed_candidates(regions)
         result['regions'] = regions
 

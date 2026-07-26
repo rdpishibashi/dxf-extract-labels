@@ -45,7 +45,7 @@ def _find_sample(name):
 @pytest.mark.parametrize('label', [
     'R10', 'CN3', 'D4', 'CN1',                   # 英字+数字（A/Bは機器端子として除外対象）
     'FB', 'CNCNT', 'MSS',                        # 英字のみ
-    'CN-IF2-1', 'AAC1B4-07', 'ETC-JP2',           # 英字-英字+数字(+ハイフン任意)
+    'CN-IF2-1', 'AAC1B4-07', 'AB-CD12',           # 英字-英字+数字(+ハイフン任意)
     'R10(2.2K)', 'FB()', 'MSS(MOTOR)', 'U23B(DAC)',  # 括弧付き（括弧前で判定）
 ])
 def test_candidate_pattern_matches(label):
@@ -97,6 +97,7 @@ def test_candidate_pattern_rejects(label):
     ('TITLE', 'titleblock_terms'),
     ('DATE', 'titleblock_terms'),
     ('W1234', 'wiring_digit_run'),
+    ('ETC-JP2', 'added_excl:ETC-JPn*'),
 ])
 def test_exclusion_categories(label, reason):
     assert ref_designator.is_ref_designator_candidate(label) is False, (
@@ -118,11 +119,33 @@ def test_circuit_description_excludes_keyword_plus_single_digit(label):
     assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
 
 
-@pytest.mark.parametrize('label', ['OUT12', 'IN10', 'GND12'])
+@pytest.mark.parametrize('label', ['GND12'])
 def test_circuit_description_two_digit_suffix_not_excluded(label):
-    """数字2桁以上は circuit_description の除外対象外（候補として残る）。"""
+    """数字2桁以上は circuit_description の除外対象外（候補として残る）。
+
+    OUT12/IN10 はかつてこの対象だったが、追加除外パターン OUTn*/I.*
+    （reference_deginator_pattern_added.txt、2026-07-26）が桁数を問わず
+    除外するため対象から外れた。GND12 は追加除外リストに GND 系の
+    プレフィックスが無いため、引き続き候補として残る
+    （`test_added_exclusion_overrides_two_digit_suffix_exception` 参照）。
+    """
     status, _category = ref_designator.classify_judgment_detailed(label)
     assert status != 'excluded'
+
+
+@pytest.mark.parametrize('label,category', [
+    ('OUT12', 'added_excl:O.*'),   # O.* が OUTn* より先に定義されており先に一致
+    ('IN10', 'added_excl:I.*'),
+])
+def test_added_exclusion_overrides_two_digit_suffix_exception(label, category):
+    """追加除外パターン（reference_deginator_pattern_added.txt、2026-07-26）は
+    桁数を問わず除外するため、OUT12/IN10 は 2026-07-10 の「数字2桁以上は
+    circuit_description の除外対象外」という既存方針の例外だったが、今回
+    追加リストを優先する方針（2026-07-26 ユーザー確定）でこの2件は除外に
+    転じた。"""
+    status, actual_category = ref_designator.classify_judgment_detailed(label)
+    assert status == 'excluded'
+    assert actual_category == category
 
 
 # ---------------------------------------------------------------------------
@@ -515,3 +538,81 @@ def test_extract_ref_designator_rows_end_to_end():
     # 行データは {'ラベル': str, '個数': int} の形
     for sample in (result['confirmed_rows'][0], result['review_rows'][0]):
         assert set(sample.keys()) == {'ラベル', '個数'}
+
+
+# ---------------------------------------------------------------------------
+# 追加パターン（reference_deginator_pattern_added.txt、2026-07-26 追加確定）
+# ---------------------------------------------------------------------------
+#
+# 優先順位: 候補形ゲート → 既存除外（judgment基準）→ 追加機器符号
+# （ADDED_DESIGNATOR_PATTERNS、ラベル全体基準）→ 追加除外
+# （ADDED_EXCLUSION_PATTERNS、ラベル全体基準）。
+# 既存除外が「英単語」を優先的に除外し（MOTOR等）、追加機器符号は
+# 追加除外より優先される（DC12A3等）。model/ref_designator.py の
+# 「2b. 追加パターン」節冒頭コメント参照。
+
+def test_compile_shorthand_pattern_notation():
+    """独自記法（a=英大文字1字, n=数字1字, *=1回以上繰返し, .*=任意0文字以上）
+    の変換が正しいことを直接検証する。"""
+    rx = ref_designator._compile_shorthand_pattern('DCnnan')
+    assert rx.match('DC12A3')
+    assert not rx.match('DC1A3')     # 数字が1桁少ない
+    assert not rx.match('DC123A34')  # 長さ不一致
+
+    rx2 = ref_designator._compile_shorthand_pattern('Kn')
+    assert rx2.match('K1')
+    assert not rx2.match('K12')      # 'n' に * が無いので数字は1桁のみ
+
+    rx3 = ref_designator._compile_shorthand_pattern('SW.*')
+    assert rx3.match('SW')
+    assert rx3.match('SW1')
+    assert rx3.match('SW(ABC)')      # .* は括弧を含む
+
+
+@pytest.mark.parametrize('label,expected_category', [
+    ('MOT1', 'added_desig:MOT.*'),
+    ('PG1', 'added_desig:PG.*'),
+    ('SW1', 'added_desig:SW.*'),
+    ('CB001', 'letters_digits_2or3'),      # 既存確定パターンが先に一致
+    ('LS1', 'added_desig:LS.*'),
+    ('OS1', 'added_desig:OS.*'),
+    ('DC12A3', 'added_desig:DCnnan'),      # A衝突: 追加機器符号が追加除外に優先
+])
+def test_added_designator_patterns_confirmed(label, expected_category):
+    """追加の機器符号パターンに一致するラベルは候補かつ確定（自動採用）になる。"""
+    assert ref_designator.is_ref_designator_candidate(label) is True
+    assert ref_designator.matched_confirmed_category(label) == expected_category
+
+
+@pytest.mark.parametrize('label,expected_category', [
+    ('DC12', 'added_excl:DCn*.*'),   # DCnnan(機器符号)には一致しないため除外のまま
+    ('K1', 'added_excl:Kn'),
+    ('O5', 'added_excl:O.*'),
+    ('I9', 'added_excl:I.*'),
+    ('CM100', 'added_excl:CM.*'),
+])
+def test_added_exclusion_patterns_excluded(label, expected_category):
+    """追加の除外パターンに一致し、追加の機器符号パターンで救済されない
+    ラベルは除外される。"""
+    assert ref_designator.is_ref_designator_candidate(label) is False
+    status, category = ref_designator.classify_judgment_detailed(
+        ref_designator._judgment_text(label), label)
+    assert status == 'excluded'
+    assert category == expected_category
+
+
+@pytest.mark.parametrize('label', ['MOTOR', 'PGND', 'SWITCH', 'CONTROL', 'THERMOCOUPLE'])
+def test_existing_exclusion_wins_over_added_designator_prefix(label):
+    """B衝突: 既存の除外語リスト（普通名詞・回路説明語）に完全一致する語は、
+    その語幹が追加の機器符号パターン（MOT.*/PG.*/SW.*/CON.*/TH.* 等）に
+    一致していても除外が優先される（英単語はそのまま除外、MOT1等の記号形
+    だけ追加機器符号として救済する、2026-07-26 ユーザー確定）。"""
+    assert ref_designator.is_ref_designator_candidate(label) is False
+
+
+def test_added_patterns_do_not_affect_untouched_existing_labels():
+    """追加パターンに一切関与しない既存ラベルの判定は変化しない（無回帰）。"""
+    assert ref_designator.is_ref_designator_candidate('R10') is True
+    assert ref_designator.matched_confirmed_category('R10') == 'letters_digits_2or3'
+    assert ref_designator.is_ref_designator_candidate('GND') is False
+    assert ref_designator.matched_confirmed_category('CN3') == 'cn_single_digit'

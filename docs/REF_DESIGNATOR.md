@@ -184,6 +184,53 @@ A,B の除外は `single_letter_digits_except_ab` のみに適用する（`lette
 「正規化済みラベル全体」に変更した（`judgment` のみが必要なカテゴリは内部で
 `_judgment_text()` を都度計算する）。
 
+### 追加パターン（`ADDED_EXCLUSION_PATTERNS` / `ADDED_DESIGNATOR_PATTERNS`、v1.8.0）
+
+ユーザー提供の速記記法（`reference_deginator_pattern_added.txt`）で書かれた
+「除外リスト」「機器符号リスト」を `_compile_shorthand_pattern()` で正規表現へ
+変換して取り込む。既存の意味的カテゴリ分類（`_COMMON_NOUNS` 等）は根拠が曖昧で
+困難だったため、追加分はカテゴリー分けせず原文の記法のまま **フラットに** 保持する
+（2026-07-26 ユーザー指摘）。
+
+**記法**: `a`=英大文字1字（`[A-Z]`）／ `n`=数字1字（`[0-9]`）／ `*`=直前トークンの
+1回以上繰り返し（`+`）／ `.*`=任意の0文字以上・カッコやハイフン等の記号を含む
+（正規表現の `.*` そのもの）／それ以外の英大文字・ハイフンは文字通り一致。
+
+**判定基準**: 既存の `EXCLUSION_*_CATEGORIES`/`CONFIRMED_PATTERN_CATEGORIES` の
+大半が判定用文字列（judgment＝括弧より前）を基準にするのに対し、追加パターンは
+正規化済みラベル**全体**（括弧を含む）を基準に判定する。
+
+**優先順位**（`classify_judgment_detailed()` に実装）:
+
+1. 候補形ゲート（`CANDIDATE_PATTERN`、judgment基準）— 不一致なら no_match
+2. 既存の除外リスト（`EXCLUSION_EXACT/REGEX_CATEGORIES`、judgment基準）— 一致すれば
+   excluded。追加機器符号パターンと同じ語幹が衝突しても既存除外が優先される
+   （例: `MOT.*` は追加機器符号だが `MOTOR` は普通名詞除外のまま／`PG.*` は
+   追加機器符号だが `PGND` は回路説明語除外のまま。「英単語はそのまま除外、
+   `MOT1`・`PG1` 等の記号形だけ救済する」というユーザー判断）
+3. 追加の機器符号パターン（`ADDED_DESIGNATOR_PATTERNS`、ラベル全体基準）— 一致
+   すれば candidate かつ確定（自動採用）。4) の追加除外パターンより優先する
+   （例: `DC12A3` は `DCn*.*` 除外より `DCnnan` 機器符号が優先され確定する）
+4. 追加の除外パターン（`ADDED_EXCLUSION_PATTERNS`、ラベル全体基準）— 一致すれば
+   excluded（例 `DC12`、`K1`、`O5`、`I9`）
+5. いずれにも該当しなければ candidate（従来どおり `CONFIRMED_PATTERN_CATEGORIES`
+   で確定/未確定に分岐。確定カテゴリ名の記録は既存カテゴリを優先し、追加機器符号
+   パターンは既存確定パターンに一致しない場合のみ使う。後方互換のため。例:
+   `CN3` は追加パターン `CN.*` にも一致するが、既存の `cn_single_digit` を
+   優先して記録する）
+
+`matched_added_designator_category(label)` / `matched_added_exclusion_category(label)`
+が判定関数。カテゴリ名は意味づけによる分類をしないため、仕様文字列そのものを
+使う（例 `added_desig:CN.*`、`added_excl:ETC-JPn*`）。冗長な重複エントリ
+（元ファイルの `AMP.*` の重複、`ACTA.*` に包含される `ACTAa*`、`Fn*.*` に包含
+される `Fnnnaa.*`）は除去済み（ユーザー承認）。
+
+`tools/reference_designator_analyzer.py` の `ExclusionPatterns`/`ConfirmedPatterns`
+シートにも追加パターンを反映済み（種別列に「正規表現（追加パターン）」と表示）。
+
+回帰テスト: `tests/regression/test_ref_designator.py`（追加パターン・優先順位の
+衝突ケース・既存挙動への無回帰を検証）。
+
 ---
 
 ## 判断ログ（採用/非採用の記録・蓄積、`model/decision_log.py`、v1.7.0）

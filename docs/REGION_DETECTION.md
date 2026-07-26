@@ -732,8 +732,15 @@ LINE #1518 上部の実在ラベル `MFFX` が「（名称候補なし）」に�
 判定すると `'no_match'` と `'excluded'` を区別できず、複数語の正当な領域名まで
 丸ごとブロックする回帰を起こすため使わない（実装中に発覚・訂正。詳細は
 `model/region_detector.py` の `_is_valid_name_candidate()` 内コメント参照）。
-`ref_designator.py` は `region_detector.py` を import しているため、
-`_is_valid_name_candidate()` 内では循環 import を避けるため遅延 import する。
+`_is_valid_name_candidate()` は `classify_judgment_detailed()`/
+`matched_confirmed_category()` を `model/ref_designator_patterns.py`
+（ezdxf/region_detector.py に依存しない純粋な分類ロジックのみを持つモジュール、
+v1.9.18で `ref_designator.py` から分離）からモジュールレベルで直接importする。
+分離前は `ref_designator.py`（DXF抽出パイプライン全体）が `region_detector.py`
+に依存しており、両者は循環依存の関係にあったため、`_is_valid_name_candidate()`
+内で関数内 `from . import ref_designator` の遅延importにより回避していたが、
+v1.9.18の分離でこの遅延import自体が不要になった（詳細は
+`model/ref_designator_patterns.py` のモジュール docstring 参照）。
 
 **`unit_names` カテゴリの例外扱い（2026-07-26 追加確認）**: `DE5327-405-26A.dxf`
 図面1/領域2で `CTC`（LINE #24A 直上）が領域名候補にならない不具合が発覚。`CTC`

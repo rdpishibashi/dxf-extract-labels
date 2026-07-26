@@ -114,6 +114,17 @@
 定義の正。同ファイルは `/Users/ryozo/Dropbox/Workspace/Reference Designator/Labels/` に
 ある（本リポジトリ外・実データからパターンを検討した作業ファイル）。
 
+> **実装ファイルの所在（v1.9.18〜）**: 本節で挙げるパターン定義
+> （`PATTERN_CATEGORIES`・`EXCLUSION_*_CATEGORIES`・`CONFIRMED_PATTERN_CATEGORIES`・
+> `ADDED_*_PATTERNS`・`classify_judgment_detailed()` 等）の実体は、モジュール分割に
+> より `model/ref_designator.py` ではなく `model/ref_designator_patterns.py` に
+> ある（`region_detector.py` との循環依存を解消するため、ezdxf/`region_detector.py`
+> に依存しない純粋な分類ロジックのみを切り出した。詳細は
+> [OVERVIEW.md](OVERVIEW.md) のディレクトリ構成節を参照）。パターンを追加・変更
+> する際は `ref_designator_patterns.py` を編集すること。`model/ref_designator.py`
+> は後方互換のため全シンボルを再エクスポートしており、`ref_designator.PATTERN_CATEGORIES`
+> 等の既存の参照方法はそのまま使える（本ドキュメントの以降の記述もこの参照名で統一する）。
+
 ### 候補パターン（`CANDIDATE_PATTERN`）
 
 判定は NFKC 正規化・括弧より前の部分（`R10(2.2K)` → `R10`）に対して行う。

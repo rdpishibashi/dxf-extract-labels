@@ -36,7 +36,7 @@ def _read_github_secrets():
     except Exception:
         return None
 
-APP_VERSION = '1.9.17'
+APP_VERSION = '1.9.18'
 
 # 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
 # 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
@@ -360,7 +360,8 @@ def _render_dangling_edges_section(region_dangling):
         st.code('\n'.join(lines))
 
 
-def app():
+def _render_intro():
+    """タイトル・フォント調整CSS・「プログラム説明」パネルを表示する。"""
     st.title('DXF Extract Labels - 機器符号抽出')
 
     # 日本語の文字だけを英数字より小さく（94%）表示する。
@@ -429,6 +430,10 @@ def app():
             "- TB Listシート（端子一覧を抽出時）：端子台ごとの端子番号一覧",
         ]))
 
+
+def _render_upload_section():
+    """ファイルアップロードUIを表示し、アップロードされたファイルのリストを返す
+    （空/Noneの場合は呼び出し元が早期returnする）。"""
     # ============================================================
     # ファイルアップロード
     # ============================================================
@@ -441,13 +446,12 @@ def app():
         accept_multiple_files=True,
         key=f"dxf_uploader_{st.session_state['uploader_version']}",
     )
+    return uploaded_files
 
-    if not uploaded_files:
-        st.info("DXFファイルをアップロードしてください")
-        return
 
-    st.success(f"{len(uploaded_files)}個のファイルが選択されました")
-
+def _render_options_section():
+    """オプション欄（機器符号以外も抽出・図番等抽出・領域検出・端子一覧抽出・
+    並び替え・出力ファイル名）を表示し、選択値を dict で返す。"""
     # ============================================================
     # オプション
     # ============================================================
@@ -538,7 +542,21 @@ def app():
         )
         if not output_filename.endswith('.xlsx'):
             output_filename += '.xlsx'
+    return {
+        'also_extract_non_circuit': also_extract_non_circuit,
+        'extract_all_option': extract_all_option,
+        'extract_drawing_numbers_option': extract_drawing_numbers_option,
+        'extract_title_option': extract_title_option,
+        'enable_region_detection': enable_region_detection,
+        'extract_terminal_option': extract_terminal_option,
+        'sort_value': sort_value,
+        'output_filename': output_filename,
+    }
 
+
+def _render_region_config_form(enable_region_detection):
+    """「領域検出の詳細設定」フォームを表示し、確定済みの region_cfg を返す
+    （「設定完了」が押されるまでは保存済み設定 or 既定値を返す）。"""
     # ============================================================
     # 領域検出の詳細設定（フォーム形式 — 「設定完了」で確定）
     # ============================================================
@@ -656,7 +674,12 @@ def app():
 
     if enable_region_detection and st.session_state.get('region_cfg_is_saved'):
         st.caption("✅ 詳細設定：保存済み")
+    return region_cfg
 
+
+def _render_region_detection_trigger(uploaded_files, enable_region_detection, region_cfg, extract_all_option):
+    """「領域を検出」ボタンを表示し、押されたら各ファイルを解析して
+    `st.session_state['region_analyses']` に格納する。"""
     # ============================================================
     # 領域を検出
     # ============================================================
@@ -692,6 +715,9 @@ def app():
             except Exception as e:
                 handle_error(e)
 
+
+def _render_region_confirmation_section(enable_region_detection):
+    """「領域の確認」セクション（検出済み領域ごとの名称候補チェックボックス群）を表示する。"""
     # ============================================================
     # 領域の確認
     # ============================================================
@@ -771,6 +797,23 @@ def app():
                     on_change=_on_change_none,
                     args=(fname, reg['id'], len(cands))
                 )
+
+
+def _handle_extract_button(uploaded_files, region_cfg, opts):
+    """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常 ×
+    機器符号候補のみ/機器符号以外も抽出）に応じた抽出処理を実行する。
+
+    `opts` の中身をローカル変数へ展開してから本体（元の app() 内コードと
+    完全に同一）を実行する——本体側は変更せず、置換によるキーワード引数名
+    （例: `extract_labels(extract_drawing_numbers_option=True, ...)`)との
+    衝突リスクを避けるため。"""
+    extract_terminal_option = opts['extract_terminal_option']
+    also_extract_non_circuit = opts['also_extract_non_circuit']
+    sort_value = opts['sort_value']
+    extract_drawing_numbers_option = opts['extract_drawing_numbers_option']
+    extract_title_option = opts['extract_title_option']
+    output_filename = opts['output_filename']
+    extract_all_option = opts['extract_all_option']
 
     # ============================================================
     # ラベルを抽出
@@ -889,6 +932,9 @@ def app():
         except Exception as e:
             handle_error(e)
 
+
+def _render_unclassified_and_completion_section(sort_value):
+    """「未確定ラベル」一覧（機器符号候補パイプラインのみ）と「選択完了」ボタンを表示する。"""
     # ============================================================
     # 未確定ラベル（機器符号（候補）パイプラインのみ、選択完了までの間表示）
     # ============================================================
@@ -1061,6 +1107,9 @@ def app():
             except Exception as e:
                 handle_error(e)
 
+
+def _render_results_section():
+    """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。"""
     # ============================================================
     # 抽出結果
     # ============================================================
@@ -1169,6 +1218,31 @@ def app():
                 prefixes=_RESTART_CLEAR_PREFIXES)
             st.session_state['uploader_version'] = st.session_state.get('uploader_version', 0) + 1
             st.rerun()
+
+
+def app():
+    _render_intro()
+
+    uploaded_files = _render_upload_section()
+    if not uploaded_files:
+        st.info("DXFファイルをアップロードしてください")
+        return
+    st.success(f"{len(uploaded_files)}個のファイルが選択されました")
+
+    opts = _render_options_section()
+
+    region_cfg = _render_region_config_form(opts['enable_region_detection'])
+
+    _render_region_detection_trigger(
+        uploaded_files, opts['enable_region_detection'], region_cfg, opts['extract_all_option'])
+
+    _render_region_confirmation_section(opts['enable_region_detection'])
+
+    _handle_extract_button(uploaded_files, region_cfg, opts)
+
+    _render_unclassified_and_completion_section(opts['sort_value'])
+
+    _render_results_section()
 
 
 if __name__ == "__main__":

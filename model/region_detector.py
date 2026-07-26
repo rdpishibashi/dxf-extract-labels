@@ -29,7 +29,8 @@ from collections import Counter, defaultdict
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
-from .common_utils import filter_non_circuit_symbols, normalize_width
+from .common_utils import filter_non_circuit_symbols, normalize_width, select_layout_result
+from .ref_designator_patterns import classify_judgment_detailed, matched_confirmed_category
 
 
 # ============================================================
@@ -102,45 +103,6 @@ _MAX_FACE_NODES = 200_000  # 半面探索の暴走ループ防止: 頂点数が�
 # ============================================================
 # 2. DXFジオメトリ収集
 # ============================================================
-
-def select_layout_result(doc, collect_from_layout, is_empty):
-    """Model Space を優先し、`collect_from_layout(layout)` の結果が
-    `is_empty(result)` を満たす（＝空）場合のみ Model 以外のレイアウトを
-    順に試す共通ヘルパー。**同一レイアウト内で完結した収集結果のみを返す**
-    （レイアウトをまたいで混在させない）。
-
-    Model Space と Paper Space は完全に独立した座標系であり、一方の
-    レイアウトで見つけた図面枠のbboxを、別レイアウトのラベル・図形に対する
-    「枠内か」の判定に使うと、座標が対応せず正しい要素が誤って除外される
-    （`EE6892-455B.dxf`: 図面枠はPaper Space〈`ICADSX Layout`〉のみに存在する
-    一方、実際の機器符号ラベル`CB001`等はModel Spaceにあり、Paper Space
-    由来の枠bboxでModel Spaceのラベルをフィルタすると大半が「枠外」と誤判定
-    され出力から消える不具合が発生した。2026-07-14ユーザー報告。
-    `region_detector.py`・`ref_designator.py`・`terminal_detector.py` の
-    3モジュールに共通する設計方針のため、ここに集約する）。
-
-    Args:
-        doc: ezdxf Document
-        collect_from_layout: layout を受け取り、その1レイアウトに閉じた
-            収集結果を返す関数（呼び出し側で定義する。戻り値の型は自由）
-        is_empty: collect_from_layout の戻り値を受け取り、「内容が空か」を
-            判定する関数
-    """
-    result = collect_from_layout(doc.modelspace())
-    if not is_empty(result):
-        return result
-
-    try:
-        for layout in doc.layouts:
-            if layout.name != 'Model':
-                alt_result = collect_from_layout(layout)
-                if not is_empty(alt_result):
-                    return alt_result
-    except Exception:
-        pass
-
-    return result
-
 
 def _is_continuous_linetype(e, doc):
     """エンティティの線種が実質的に Continuous（実線）かどうかを判定する。
@@ -1077,14 +1039,15 @@ def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
         #   - 'candidate' かつ未確定（`RemainingUnclassified` 相当、例
         #     `MFFX`・`FB`）→ 除外しない（今回の主目的）
         # `RACK1` はこの判定に到達する前に `circuit_keep_terms=('RACK',)` の
-        # 分岐で既にバイパスされるため無関係。`ref_designator` は
-        # region_detector を import しているため、循環 import を避けるため
-        # ここで遅延 import する。
-        from . import ref_designator
-        status, cat = ref_designator.classify_judgment_detailed(up, up)
+        # 分岐で既にバイパスされるため無関係。分類ロジックは
+        # `ref_designator_patterns`（ezdxf/region_detector.py に依存しない
+        # 純粋な文字列判定モジュール、2026-07-26 分割）から使う——
+        # `ref_designator.py`（DXF抽出パイプライン）は region_detector.py に
+        # 依存するため、そちらを import すると循環依存になる。
+        status, cat = classify_judgment_detailed(up, up)
         if status == 'excluded' and cat != 'unit_names':
             return False
-        if status == 'candidate' and ref_designator.matched_confirmed_category(up) is not None:
+        if status == 'candidate' and matched_confirmed_category(up) is not None:
             return False
     return True
 

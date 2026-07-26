@@ -24,6 +24,7 @@ DXF-extract-labels/
 ├── model/                      # Model層: streamlit非依存のドメインロジック（v1.9.5でutils/から改名）
 │   ├── extract_labels.py       # DXF ラベル抽出コア（共有モジュール）
 │   ├── ref_designator.py       # 機器符号（候補）抽出パイプライン（DXF-extract-labels 専用、v1.6.0）
+│   ├── ref_designator_patterns.py  # 機器符号パターン判定ロジックのみ（v1.9.18で ref_designator.py から分離）
 │   ├── region_detector.py      # 矩形領域検出アルゴリズム（DXF-extract-labels 専用）
 │   ├── terminal_detector.py    # 端子台(TB)矩形検出・端子番号抽出（DXF-extract-labels 専用、v1.8.0）
 │   ├── excel_output.py         # Excel 出力生成（通常モード・領域モード両対応）
@@ -34,38 +35,56 @@ DXF-extract-labels/
 ```
 
 > `model/` 配下は streamlit に依存しない（`app.py` からのみ import される）。
-> ただし `extract_labels.py` / `ref_designator.py` / `region_detector.py` /
-> `terminal_detector.py` / `excel_output.py` / `common_utils.py` はいずれも
-> パッケージ内相対import（`.common_utils` 等）のみを使うため、`utils/` から
+> ただし `extract_labels.py` / `ref_designator.py` / `ref_designator_patterns.py` /
+> `region_detector.py` / `terminal_detector.py` / `excel_output.py` / `common_utils.py`
+> はいずれもパッケージ内相対import（`.common_utils` 等）のみを使うため、`utils/` から
 > `model/` への改名はファイル内容に一切影響しない（他プロジェクトとのバイト一致
 > コピー対象である `extract_labels.py` の同期状態にも影響なし）。
 >
 > `extract_labels.py` / `common_utils.py` は DXF-label-diff / DXF-diff-processor / DXF-tools 等と
 > 同一ロジックを持つ共有モジュール。修正時は関連プロジェクトへの伝播が必要。
-> `ref_designator.py` / `region_detector.py` / `terminal_detector.py` / `excel_output.py` は
-> DXF-extract-labels 専用で共有対象外。`ref_designator.py` は `extract_labels.py` の
-> `extract_text_from_entity()` / `_block_has_text_content()` のみ再利用し、図面枠・
-> フォーマットブロック検出・ラベル収集の**アルゴリズム本体**は完全に自前実装する
+> `ref_designator.py` / `ref_designator_patterns.py` / `region_detector.py` /
+> `terminal_detector.py` / `excel_output.py` は DXF-extract-labels 専用で共有対象外。
+> `ref_designator.py` は `extract_labels.py` の `extract_text_from_entity()` /
+> `_block_has_text_content()` のみ再利用し、図面枠・フォーマットブロック検出・
+> ラベル収集の**アルゴリズム本体**は完全に自前実装する
 > （`extract_labels.py`／`region_detector.py` の図面枠検出ロジックそのものを変更しない
-> ため。詳細は「機器符号（候補）抽出パイプライン」節）。ただし `region_detector.py` が
+> ため。詳細は「機器符号（候補）抽出パイプライン」節）。ただし `common_utils.py` が
 > 提供する小さな汎用ヘルパー（`select_layout_result()`＝Model/Paper Space の
-> 選択方針、`_label_rotation_angle()`＝90°回転判定）は `ref_designator.py`・
-> `terminal_detector.py` の両方から再利用する（v1.8.4でレイアウト選択ロジックの
-> 重複を解消する形で整理。ドメイン固有のアルゴリズム本体とは異なりレイアウト非依存の
-> 汎用処理のため、独立性の原則を損なわない）。
+> 選択方針）は `region_detector.py`・`ref_designator.py`・`terminal_detector.py` の
+> 3モジュールから再利用する（v1.8.4でレイアウト選択ロジックの重複を解消する形で
+> 整理、v1.9.18で `region_detector.py` から `common_utils.py` へ再移設——3モジュール
+> 共通の依存先としてドメイン特化モジュールより適切なため。`_label_rotation_angle()`
+> ＝90°回転判定は引き続き `region_detector.py` にあり `terminal_detector.py` が再利用）。
+>
+> **`ref_designator.py` と `ref_designator_patterns.py` の分割（v1.9.18）**:
+> 純粋な文字列パターン判定（`PATTERN_CATEGORIES`・`EXCLUSION_*_CATEGORIES`・
+> `CONFIRMED_PATTERN_CATEGORIES`・`classify_judgment_detailed()` 等、ezdxf/
+> `region_detector.py` に一切依存しない部分）を `ref_designator_patterns.py` へ
+> 分離した。`region_detector.py` の `_is_valid_name_candidate()`（領域名候補の
+> 機器符号除外判定）がこの分類ロジックを必要とする一方、旧 `ref_designator.py`
+> （DXF抽出パイプライン）は `region_detector.py` に依存しており、両者は循環依存の
+> 関係にあった（旧実装は関数内 `from . import ref_designator` の遅延importで
+> 回避していたが、循環依存そのものは解消していなかった）。分離後は
+> `region_detector.py` が `ref_designator_patterns.py` をモジュールレベルで
+> import でき、遅延import・循環依存いずれも解消した。`ref_designator.py` は
+> 後方互換のため `ref_designator_patterns.py` の全シンボルを再エクスポートして
+> おり、既存の `ref_designator.classify_judgment_detailed` 等の呼び出し方は
+> 変更不要。
 
 ### モジュール責務
 
 | ファイル | 責務 |
 |---------|------|
-| `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示） |
+| `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示。v1.9.18で単一の809行 `app()` 関数を `_render_*`/`_handle_*` の10関数へ分割）|
 | `extract_labels.py` | DXF エンティティからのテキスト抽出・図番判別・タイトル抽出 |
-| `ref_designator.py` | 機器符号（候補）パターン・除外リスト・確定リスト・図面枠/フォーマットブロック検出・候補/確定/未確定ラベルの分類と集計（v1.6.0、確定リストは v1.6.3、連動採用は v1.7.1）|
+| `ref_designator.py` | 機器符号（候補）DXF抽出パイプライン（図面枠/フォーマットブロック検出・候補/確定/未確定ラベルの分類と集計。v1.6.0、確定リストは v1.6.3、連動採用は v1.7.1、パターン判定ロジックは v1.9.18で `ref_designator_patterns.py` へ分離）|
+| `ref_designator_patterns.py` | 機器符号（候補）パターン・除外リスト・確定リストの判定ロジックのみ（ezdxf/region_detector.py に非依存。v1.9.18新設）|
 | `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出・集計（`build_region_results` / `build_region_label_summary`。「以外も抽出」ON 時のみ使用）|
 | `terminal_detector.py` | 端子台(TB)矩形検出（LINE+CIRCLE橋渡し）・ラベル-矩形対応判定・端子番号抽出・集計（`analyze_dxf_terminals` / `build_terminal_rows`。「端子一覧を抽出」オプション時のみ使用、v1.8.0）|
 | `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_ref_designator_excel_output` / `create_region_excel_output`）|
 | `decision_log.py` | 未確定ラベルの採用/非採用の記録（`build_entries` / `record` / `GitHubBackend` / `FileBackend`。v1.7.0）|
-| `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。出力ラベルの機器符号判定に使用。v1.9.17〜、領域名候補の除外判定には使わず `ref_designator.py` ベースの判定に置き換え済み）・ファイル保存・エラー処理 |
+| `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。出力ラベルの機器符号判定に使用。v1.9.17〜、領域名候補の除外判定には使わず `ref_designator_patterns.py` ベースの判定に置き換え済み）・レイアウト選択（`select_layout_result`、v1.9.18〜）・ファイル保存・エラー処理 |
 
 ---
 
@@ -411,4 +430,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-26 (v1.9.17) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-26 (v1.9.18) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

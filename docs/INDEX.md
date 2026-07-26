@@ -16,6 +16,14 @@
 
 ---
 
+最終更新: 2026-07-26（モジュラリティ改善リファクタ v1.9.18: `select_layout_result()`
+を `region_detector.py` から `common_utils.py` へ移設、`ref_designator.py` を
+純粋パターン判定（`ref_designator_patterns.py`、新設）とDXF抽出パイプラインに分割
+（`region_detector.py` との循環依存を解消）、`app.py` の809行単一 `app()` 関数を
+`_render_*`/`_handle_*` の10関数へ分割。いずれもロジック変更なしの純粋な
+コード移動で、全439件のテスト（Playwrightエンドツーエンドテスト2件含む）で
+無回帰を確認。OVERVIEW.md・REGION_DETECTION.md・REF_DESIGNATOR.md に反映）
+
 最終更新: 2026-07-26（REGION_DETECTION.md に、領域名候補の機器符号除外判定を
 `filter_non_circuit_symbols()` から `ref_designator.py` ベース（CONFIRMED
 reference designatorのみ除外、`unit_names`カテゴリは例外扱い）に変更した修正

@@ -1008,3 +1008,81 @@ def test_label_on_region_boundary_is_assigned_not_dropped():
     assigned = assign_region_labels(a['labels'], named)
     cnpg01_regions = next(names for (t, _x, _y, names) in assigned if t == 'CNPG01')
     assert 'SYSTEM I/F BOX' in cnpg01_regions
+
+
+# ---------------------------------------------------------------------------
+# 領域名候補の並び順（距離→中央→頻度→Tier、2026-07-26 追加確定）
+# ---------------------------------------------------------------------------
+#
+# 従来は「Tier→Tier内で距離」（Tier1=下辺が常にTier2=上辺より優先）だったが、
+# 実データで Tier2 候補の方が明らかに正しい・Tier1 候補の方が明らかに正しい
+# 両方の実例が見つかり、「境界線からの距離→辺の中央からの距離→同一ファイル内
+# 全フレームを横断した出現頻度→Tier」の順に変更した（ユーザー確定）。
+# `region_name_candidates()`（distance→center→tier）と
+# `_apply_cross_frame_frequency_ranking()`（頻度を最優先キーとして重ねがけ）の
+# 2段構成。DXF-viewer の `core/region_detector.py` にも同日移植済み。
+
+DE5027_SY12RX = _find_sample('DE5027-558-01B.dxf')  # SY12 RXケース: Tier2が正解
+
+
+@pytest.mark.skipif(not os.path.exists(DE5027_SY12RX), reason='サンプル DXF が無い')
+def test_distance_and_center_priority_over_tier():
+    """`DE5027-558-01B.dxf` 図面3/領域5: 'SY12 RX (NX-SOD400)'〈距離4.5、
+    辺の中央からのオフセット2.5＝ほぼ中央、Tier2/上辺〉が、'IOG B7'〈距離7.3、
+    オフセット26.5＝辺の端、Tier1/下辺〉より直感的に正しい名称。旧Tier優先
+    方式では IOG B7 が常に先着していた（2026-07-26 ユーザー報告で発覚）。"""
+    a = analyze_dxf_regions(DE5027_SY12RX)
+    assert a['error'] is None
+    target = next(
+        r for r in a['regions']
+        if r['frame'] == 2 and abs(r['area_pct'] - 1.5) < 1
+        and any(t == 'SY12 RX (NX-SOD400)' for _d, t in r['name_candidates']))
+    assert target['default_name'] == 'SY12 RX (NX-SOD400)'
+
+
+EE6892_POLLUTED = _find_sample('EE6892-039-05B.dxf')  # SYSTEM I/F BOXケース: Tier1が正解・頻度で救済
+
+
+@pytest.mark.skipif(not os.path.exists(EE6892_POLLUTED), reason='サンプル DXF が無い')
+def test_cross_frame_frequency_rescues_correct_tier1_candidate():
+    """`EE6892-039-05B.dxf` 図面1/領域0（L字型ポリゴンの切り欠きに、検出漏れの
+    入れ子小領域の名称ラベル 'SENSOR I/F B.D-Ⅲ'〈距離1.2、Tier2/切り欠き〉が
+    紛れ込んだケース）。距離だけなら 'SENSOR I/F B.D-Ⅲ' が
+    'SYSTEM I/F BOX'〈距離3.6、Tier1〉より先着してしまうが、'SYSTEM I/F BOX'
+    は図面2/3/4の大領域候補（面積74.0%/37.3%/47.7%）にも一貫して登場するため、
+    出現頻度優先の並び替えで正しく既定名称になる（2026-07-26 ユーザー報告で
+    発覚。`test_level_pollution_fallback_recovers_frame` が同じ回復結果を
+    別の側面から検証している）。"""
+    a = analyze_dxf_regions(EE6892_POLLUTED)
+    assert a['error'] is None
+    frame0 = next(r for r in a['regions'] if r['frame'] == 0 and r['area_pct'] > 50)
+    assert frame0['default_name'] == 'SYSTEM I/F BOX'
+    assert any(t == 'SENSOR I/F B.D-Ⅲ' for _d, t in frame0['name_candidates'])
+
+
+EE6868_MPD = _find_sample('EE6868-500-01C.dxf')  # MPD RACK2 PANEL LIMITケース: 既知の限界
+
+
+@pytest.mark.skipif(not os.path.exists(EE6868_MPD), reason='サンプル DXF が無い')
+def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1():
+    """既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: `EE6868-500-01C.dxf`
+    図面1/領域2 の正解は 'MPD RACK2 PANEL LIMIT'〈距離8.5、Tier1/下辺〉だが、
+    'XO00 (NX-ID5442)'〈距離4.5、Tier2/上辺、かつ辺の中央により近い〉の方が
+    距離・中央度のいずれでも上回り、しかも両候補ともこのファイル内で他に
+    登場しない（頻度はどちらも1で判別不可）ため、現行の
+    距離→中央→頻度→Tier方式では 'XO00 (NX-ID5442)' が既定名称になってしまう。
+    距離・中央・頻度のいずれの局所ジオメトリ的手がかりでも正解に到達できない
+    唯一確認されたケースであり、DE5027・EE6892 の2件の実例で新方式がもたらす
+    改善の方が実利が大きいと判断し、この1件は既知の限界として受容する
+    （ユーザー判断）。DXF-viewer 側の `tests/regression/test_region_search.py`
+    にも同じ限界が 'MPD' 検索件数の期待値コメントとして記録されている。
+    仕様の後退時にこのテストが失敗し、判断が再度必要になったことに気づける
+    よう、変化を検知するテストとして残す。"""
+    a = analyze_dxf_regions(EE6868_MPD)
+    assert a['error'] is None
+    target = next(
+        r for r in a['regions']
+        if r['frame'] == 0
+        and any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in r['name_candidates']))
+    assert target['default_name'] == 'XO00 (NX-ID5442)'
+    assert any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in target['name_candidates'])

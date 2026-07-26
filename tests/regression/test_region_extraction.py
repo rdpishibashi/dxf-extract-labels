@@ -1176,3 +1176,47 @@ def test_cross_frame_frequency_counts_distinct_frames_not_regions():
         and any(t == 'SY15 FX (NX-SOD400)' for _d, t in r['name_candidates'])
         and any(t == 'IOG B7' for _d, t in r['name_candidates']))
     assert target['default_name'] == 'SY15 FX (NX-SOD400)'
+
+
+@pytest.mark.skipif(not os.path.exists(DE5027_IOG), reason='サンプル DXF が無い')
+def test_mffx_not_misclassified_as_circuit_symbol():
+    """`DE5027-563-03A.dxf` 図面1/領域3（id=2）: LINE #1518 上部の 'MFFX' ラベルが
+    領域名候補にならず「（名称候補なし）」になっていた不具合（2026-07-26 ユーザー
+    報告）。原因は `_is_valid_name_candidate()` の機器符号除外が
+    `filter_non_circuit_symbols()`（`common_utils.py` の `^[A-Za-z]{2,}$` 含む
+    汎用機器符号パターン）を使っており、MFFX のような英字のみの正当な領域名まで
+    機器符号扱いしていたこと。判定を reference designator パターン
+    （`ref_designator.classify_judgment_detailed`）ベースに切り替え、
+    CONFIRMED reference designator（例: GND, MOTOR, CN3）のときのみ除外する
+    方式に修正した。MFFX は3パターンには一致する（'candidate'）が
+    `CONFIRMED_PATTERN_CATEGORIES` のいずれにも一致しない（未確定）ため、
+    領域名候補として許可されるのが正しい。
+    """
+    a = analyze_dxf_regions(DE5027_IOG, config={'area_ratio': 0.05, 'group_area_ratio': 0.10})
+    assert a['error'] is None
+    target = next(r for r in a['regions'] if r['frame'] == 0 and r['id'] == 2)
+    assert any(t == 'MFFX' for _d, t in target['name_candidates'])
+    assert target['default_name'] == 'MFFX'
+
+
+DE5327_CTC = _find_sample('DE5327-405-26A.dxf')  # unit_names（CTC）誤除外ケース
+
+
+@pytest.mark.skipif(not os.path.exists(DE5327_CTC), reason='サンプル DXF が無い')
+def test_unit_names_category_not_excluded_from_name_candidates():
+    """`DE5327-405-26A.dxf` 図面1/領域2（id=1）: LINE #24A 直上の 'CTC' ラベルが
+    領域名候補にならず「（名称候補なし）」になっていた不具合（2026-07-26 ユーザー
+    報告）。`test_mffx_not_misclassified_as_circuit_symbol` の修正で
+    `_is_valid_name_candidate()` は 'excluded' 判定を一律ブロックする方式に
+    したが、`CTC` は `ref_designator.py` の `unit_names` 除外カテゴリ
+    （CTC/EFEM/CASE/FOUP/SHIELD等の「ユニット/モジュール名」）に属しており、
+    このカテゴリは「機器符号（候補）ではない」判定用であって領域名としては
+    むしろ正当な候補である。common_nouns/cable_colors/titleblock_terms等の
+    他の除外カテゴリ（GND・MOTOR等）は引き続きブロックし、`unit_names` のみを
+    例外扱いするよう修正した。
+    """
+    a = analyze_dxf_regions(DE5327_CTC, config={'area_ratio': 0.05, 'group_area_ratio': 0.10})
+    assert a['error'] is None
+    target = next(r for r in a['regions'] if r['frame'] == 0 and r['id'] == 1)
+    assert any(t == 'CTC' for _d, t in target['name_candidates'])
+    assert target['default_name'] == 'CTC'

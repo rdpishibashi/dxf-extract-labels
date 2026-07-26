@@ -1116,3 +1116,36 @@ def test_detect_frames_with_shared_left_edge_different_heights():
     efem = next((r for r in a['regions'] if r['default_name'] == 'EFEM UPPER'), None)
     assert efem is not None, '枠B内の大面積領域 EFEM UPPER が検出されていない'
     assert round(efem['area_pct'], 0) == 74.0
+
+
+EE6868_ROTATED_NESTED = _find_sample('EE6868-516-01A.dxf')  # EFEM UPPER内部の入れ子矩形
+
+
+@pytest.mark.skipif(not os.path.exists(EE6868_ROTATED_NESTED), reason='サンプル DXF が無い')
+def test_known_limitation_nested_regions_require_both_escalations():
+    """既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: `EE6868-516-01A.dxf`
+    の `EFEM UPPER`〈73.8%〉の内部には、`#FEC`〈x:85.3-630.8〉・
+    `#FEB`〈x:110.3-618.0〉をそれぞれ辺とする、互いに辺を共有しない2つの
+    入れ子矩形が存在する（ユーザー報告）。これらは「LWPOLYLINE追加」と
+    「横ギャップ橋渡し」の両方が同時に有効なときのみ閉じる（上辺の一部分節が
+    LWPOLYLINE由来かつ複数に分断されているため）。しかし
+    `analyze_dxf_regions()` の両エスカレーションゲートはいずれも独立に
+    「そのフレームがまだ1件も area_ratio を満たす候補を持たない
+    （zero_fis）」場合のみ発動する。フレーム1は既に `EFEM UPPER` という
+    ヒットを1件持つため、どちらのゲートも発動せず、入れ子矩形（`SBS1`等の
+    名称を持つはずの領域）は検出されない。`_detect_regions()` に両条件を
+    直接渡せば正しく検出できることを確認済みだが、ゲート条件の見直しは
+    影響範囲が広いため、既知の限界として受容する（`model/region_detector.py`
+    の該当ゲート直前のコメント参照）。"""
+    a = analyze_dxf_regions(EE6868_ROTATED_NESTED)
+    assert a['error'] is None
+    efem = next((r for r in a['regions'] if r['default_name'] == 'EFEM UPPER'), None)
+    assert efem is not None
+    # 入れ子矩形（#FEC: x:85.3-630.8, #FEB: x:110.3-618.0）はいずれも
+    # 現状では独立領域として検出されない（既知の限界）
+    nested_bboxes = {
+        (round(min(p[0] for p in r['polygon'])), round(max(p[0] for p in r['polygon'])))
+        for r in a['regions'] if r['frame'] == efem['frame']
+    }
+    assert (85, 631) not in nested_bboxes
+    assert (110, 618) not in nested_bboxes

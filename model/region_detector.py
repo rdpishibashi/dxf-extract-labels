@@ -2139,6 +2139,23 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         # 候補〔LA CHAMBER 13.59%等〕が5%を満たすため回転橋渡しパスがスキップされ、
         # 本来27.89%まで正しく検出されるはずの `CN I/F B.D TYPE3 (CN-IF3-1A)` が
         # 0.94%の断片のまま埋もれて消えていた不具合。2026-07-14 発見・修正）。
+        # 既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: このゲート
+        # （zero_fis のみ）と直前の LWPOLYLINE 追加ゲートは、いずれも独立に
+        # 「ゼロヒットのフレームのみ」で発動する。あるフレームが1件でも
+        # area_ratio を満たす候補（例 EFEM UPPER）を見つけた時点でどちらの
+        # ゲートも素通りするため、「LWPOLYLINE 追加」と「横ギャップ橋渡し」の
+        # "両方" が揃って初めて閉じる入れ子領域（`EE6868-516-01A.dxf` の
+        # `EFEM UPPER` 内部、`#FEC`〈x:85.3-630.8〉・`#FEB`〈x:110.3-618.0〉を
+        # 辺とする2つの入れ子矩形。上辺の一部が LWPOLYLINE 由来かつ複数分節に
+        # 分かれている）は、フレームが既に1件ヒット済みのため両ゲートとも発動
+        # せず、検出されないまま残る（`_detect_regions()` に両方の条件を直接
+        # 渡せば正しく検出できることを確認済み）。「各図面枠は最低1件見つければ
+        # 良い」という現行のエスカレーション設計の構造的な限界であり、解消には
+        # ゲート条件自体の見直し（全フレームで常に両パスを試して結果を合算する
+        # 等）が必要で影響範囲が広いため、既知の限界として受容する
+        # （ユーザー判断。`test_region_extraction.py` の
+        # `test_known_limitation_nested_regions_require_both_escalations`
+        # 参照）。
         det_cfg = cfg
         zero_fis = _zero_hit_frame_indices(frame_cands, gate_ratio)
         if zero_fis and rotated:

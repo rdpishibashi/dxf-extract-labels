@@ -106,8 +106,13 @@ def test_excel_result_persists_after_select_complete(streamlit_server, browser):
         page.locator('input[type="file"]').set_input_files(SAMPLE_DXF)
         page.wait_for_timeout(1500)
 
-        page.get_by_text('図面番号・タイトル・サブタイトルを抽出', exact=False).click()
-        page.get_by_text('端子一覧を抽出', exact=False).click()
+        # Streamlit のチェックボックスはネイティブ input を画面外へ視覚的に隠し、
+        # 独自スタイルの box（同じ label 内の兄弟要素）を表示する実装のため、
+        # input への click()（force=True でも）は要素がビューポート外にあり失敗する。
+        # input に click イベントを直接ディスパッチすることで、実際のマウス座標に
+        # 依存せず確実にチェック状態を切り替える。
+        page.get_by_role('checkbox', name='図面番号・タイトル・サブタイトルを抽出').dispatch_event('click')
+        page.get_by_role('checkbox', name='端子一覧を抽出').dispatch_event('click')
         page.wait_for_timeout(300)
 
         page.get_by_role('button', name='ラベルを抽出').click()
@@ -124,5 +129,51 @@ def test_excel_result_persists_after_select_complete(streamlit_server, browser):
         assert page.get_by_role('button', name='Excelをダウンロード').count() > 0, (
             '選択完了後にExcelダウンロードボタンが表示されない'
             '（excel_resultが「領域を検出」OFFガードで誤って消されるバグの再発）')
+    finally:
+        page.close()
+
+
+def test_region_mode_excel_result_produced(streamlit_server, browser):
+    """領域検出モード（「領域を検出」ON）+「機器符号（候補）以外も抽出」ONで、
+    領域検出→ラベル抽出までエラーなくExcel出力されることを確認する。
+
+    `app.py` の 809行の単一 `app()` 関数を `_render_intro`/`_render_upload_section`/
+    `_render_options_section`/`_render_region_config_form`/
+    `_render_region_detection_trigger`/`_render_region_confirmation_section`/
+    `_handle_extract_button`/`_render_unclassified_and_completion_section`/
+    `_render_results_section` へ分割した際（2026-07-26、モジュラリティ改善）の
+    回帰確認。`test_excel_result_persists_after_select_complete` は「領域を検出」
+    OFFの既定パスのみを通るため、本テストは領域検出モード側の関数群
+    （`_render_region_config_form`・`_render_region_detection_trigger`・
+    `_render_region_confirmation_section`）を実際に経由する。
+    """
+    page = browser.new_page(viewport={'width': 1400, 'height': 1000})
+    try:
+        page.goto(streamlit_server, wait_until='networkidle')
+        page.wait_for_timeout(1000)
+
+        page.locator('input[type="file"]').set_input_files(SAMPLE_DXF)
+        page.wait_for_timeout(1500)
+
+        page.get_by_role('checkbox', name='機器符号（候補）以外も抽出').dispatch_event('click')
+        page.get_by_role('checkbox', name='領域を検出').dispatch_event('click')
+        page.wait_for_timeout(500)
+
+        # exact=True: 素の name マッチは部分一致のため、チェックボックス脇の
+        # ヘルプアイコン（アクセシブルネーム "Help for 領域を検出"）とも
+        # 曖昧一致してしまう。
+        page.get_by_role('button', name='領域を検出', exact=True).click()
+        page.wait_for_timeout(4000)
+
+        assert page.get_by_text('領域の確認', exact=False).count() > 0, (
+            '領域の確認セクションが表示されていない（テストの前提が崩れている）')
+
+        page.get_by_role('button', name='ラベルを抽出').click()
+        page.wait_for_timeout(6000)
+
+        assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
+            'ラベル抽出後にエラーが表示された（領域検出モードの回帰）')
+        assert page.get_by_role('button', name='Excelをダウンロード').count() > 0, (
+            '領域検出モードでExcelダウンロードボタンが表示されない')
     finally:
         page.close()

@@ -514,31 +514,65 @@ def detect_drawing_frames(
 ) -> list[tuple[float, float, float, float]]:
     """lineweight=100・color=7 の線分（呼び出し元の `_collect_region_geometry` で
     既にこの2条件で絞り込まれている）から図面枠（複数可）を検出する。
-    枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
+    戻り値: [(xl,xr,y0,y1), ...]
 
-    注: 枠の縦辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
+    注: 枠の辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
     いるケース）でも正しく検出できるよう、分類後に共線セグメントを結合してから
-    高さ判定を行う。
+    判定する。
 
-    `min_side`（既定0=フィルタなし）: 2026-06-24以前は400.0固定で、縦辺の高さが
-    これ未満の枠（実例: EE6097-039-06C.dxf、高さ277）を取り落としていた。
-    color=7 条件を追加導入したことで、無関係な短い lineweight=100 線分（実例:
-    色5の小さな線分群、サンプル137件で確認）が混入しなくなったため、高さに
-    よる足切りは不要になった。
+    横辺（上辺・下辺）のペアで x スパンが一致するものを1つの枠の候補とし、
+    その両端 x に対応する縦辺（左辺・右辺）が実在するかを確認して初めて枠として
+    採用する（2026-07-26、高さの異なる複数枠が同一 x 位置に左辺を共有する
+    ケースで不具合発覚・修正）。
+
+    旧実装は縦辺のみを使い「全枠が同じ y 範囲を共有する」ことを前提に x 座標を
+    左右ペアへクラスタ化していたが、`_merge_collinear` は同一 x（レベル）上で
+    y 範囲が重なる線分を無条件で1本に結合するため、高さの異なる2つの枠が
+    左辺を共有する場合（`EE6868-516-01A.dxf`: 枠A x:[25,584] y:[10,410]・
+    枠B x:[25,821] y:[20,574]、両枠とも左辺が x≈25）に、枠A・枠Bの左辺
+    （y:[10,410] と y:[20,574]、x=25で重複）が y:[10,574] という実在しない
+    1本の縦辺へ誤結合され、さらに x クラスタが `[25,584,821]` の奇数個（本来
+    4個のはずが左辺の共有で3個）になることでペアリングが崩れ、枠Bの右辺
+    （821）が捨てられて枠Bが検出されず、実際には大面積の領域（`EFEM UPPER`・
+    `SBS1`）を含む枠が丸ごと検出漏れになっていた。横辺は枠A・枠Bで y レベルが
+    異なるため誤結合せず、x スパンの一致で正しく枠ごとに区別できる。
     """
-    _, V = _split_axis_aligned(frame_lines, eps)
-    # 接触/重複する同一 x 上の線分を 1 本に統合してから高さ判定
-    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されているケース）
-    Vm = _merge_collinear(V, eps, bridge=False)
-    tall = [v for v in Vm if (v[2] - v[1]) >= min_side]
-    if len(tall) < 2:
+    H, V = _split_axis_aligned(frame_lines, eps)
+    # 接触/重複する同一レベル上の線分を1本に統合してから判定
+    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で2分割されているケース）
+    Hm = _merge_collinear(H, eps, bridge=False)  # [(y, x0, x1), ...]
+    Vm = _merge_collinear(V, eps, bridge=False)  # [(x, y0, y1), ...]
+    if len(Hm) < 2 or len(Vm) < 2:
         return []
-    xedges = _cluster_1d([v[0] for v in tall], eps)
-    ys = [v[1] for v in tall] + [v[2] for v in tall]
-    y0, y1 = min(ys), max(ys)
+
+    def _has_vertical_coverage(x, y0, y1):
+        return any(abs(vx - x) <= eps and vy0 - eps <= y0 and y1 <= vy1 + eps
+                   for (vx, vy0, vy1) in Vm)
+
+    Hs = sorted(Hm, key=lambda h: h[0])
+    n = len(Hs)
+    used = set()
     frames = []
-    for i in range(0, len(xedges) - 1, 2):
-        frames.append((xedges[i], xedges[i + 1], y0, y1))
+    for i in range(n):
+        if i in used:
+            continue
+        y_i, x0_i, x1_i = Hs[i]
+        for j in range(i + 1, n):
+            if j in used:
+                continue
+            y_j, x0_j, x1_j = Hs[j]
+            if abs(x0_i - x0_j) > eps or abs(x1_i - x1_j) > eps:
+                continue
+            y0, y1 = min(y_i, y_j), max(y_i, y_j)
+            if (y1 - y0) < min_side:
+                continue
+            xl, xr = min(x0_i, x1_i), max(x0_i, x1_i)
+            if _has_vertical_coverage(xl, y0, y1) and _has_vertical_coverage(xr, y0, y1):
+                frames.append((xl, xr, y0, y1))
+                used.add(i)
+                used.add(j)
+                break
+    frames.sort(key=lambda f: (f[0], f[2]))
     return frames
 
 

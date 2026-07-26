@@ -1086,3 +1086,33 @@ def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1(
         and any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in r['name_candidates']))
     assert target['default_name'] == 'XO00 (NX-ID5442)'
     assert any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in target['name_candidates'])
+
+
+# ---------------------------------------------------------------------------
+# 図面枠検出（detect_drawing_frames、2026-07-26 バグ修正）
+# ---------------------------------------------------------------------------
+
+EE6868_ROTATED = _find_sample('EE6868-516-01A.dxf')  # 高さの異なる2枠が左辺を共有
+
+
+@pytest.mark.skipif(not os.path.exists(EE6868_ROTATED), reason='サンプル DXF が無い')
+def test_detect_frames_with_shared_left_edge_different_heights():
+    """`EE6868-516-01A.dxf`: 高さの異なる2つの図面枠（枠A x:[25,584] y:[10,410]・
+    枠B x:[25,821] y:[20,574]）が左辺を共有するケース（2026-07-26 ユーザー報告）。
+
+    旧実装は縦辺のみを使い「全枠が同じy範囲を共有する」ことを前提にx座標を
+    左右ペアへクラスタ化していたが、`_merge_collinear` が同一x（レベル）上で
+    y範囲が重なる線分を無条件で1本に結合するため、枠A・枠Bの左辺
+    （y:[10,410]とy:[20,574]、x=25で重複）が実在しないy:[10,574]の1本の
+    縦辺へ誤結合され、xクラスタが奇数個になってペアリングが崩れ、枠Bの
+    右辺が捨てられて枠Bが丸ごと検出漏れになっていた（「面積条件を満たす
+    領域が検出されませんでした」というエラーになり、枠B内の大面積領域
+    `EFEM UPPER`〈73.8%〉が失われる）。横辺（xスパン一致）を起点に矩形を
+    再構築する方式に変更して解消した。"""
+    a = analyze_dxf_regions(EE6868_ROTATED)
+    assert a['error'] is None
+    assert len(a['frames']) == 2
+    assert len(a['regions']) >= 1
+    efem = next((r for r in a['regions'] if r['default_name'] == 'EFEM UPPER'), None)
+    assert efem is not None, '枠B内の大面積領域 EFEM UPPER が検出されていない'
+    assert round(efem['area_pct'], 0) == 74.0

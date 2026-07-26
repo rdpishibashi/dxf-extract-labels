@@ -49,7 +49,11 @@
    さらに除く。残ったものが「機器符号（候補）」（`reference_designator_candidates.xlsx`
    の RemainingUnclassified シートと同じ母集団）。3パターンいずれにも一致しない
    文字列（`(2/5)` 等の記号・注記）・除外パターンに該当したもの（`GND`・`TITLE`・
-   `N24` 等）はいずれも機器符号（候補）に含めない＝画面に一切表示しない。
+   `N24` 等）はいずれも機器符号（候補）に含めない＝画面に一切表示しない。ただし
+   除外パターンに該当したもの（`classify_excluded_labels()`）は、「機器符号（候補）
+   以外も抽出」OFF時の出力Excelの「除外符号」シートに一覧表示される（v1.9.16、
+   詳細は [OVERVIEW.md](OVERVIEW.md) の Excel 出力仕様を参照）。3パターン非一致
+   （'no_match'）はこのシートにも含まれない。
 6. **確定パターン適用**（v1.6.3）: 5 の機器符号（候補）のうち、確実に Reference
    Designator と判定してよい形（`CONFIRMED_PATTERN_CATEGORIES`、後述）に一致した
    ものは「確定」として自動採用され、「未確定ラベル」UI には表示しない。

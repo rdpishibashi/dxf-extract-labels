@@ -35,11 +35,19 @@
                            には `_on_change_radio`（v1.5.5）が即時に選択を伝播する。
                            候補群の末尾に「（領域選択しない）」チェックボックスを追加
                            （`_on_change_none`、v1.9.4）。ONにすると同一領域の名称候補
-                           チェックボックスを全てOFFにする（他領域への同期は行わない
-                           ——この領域固有の判断のため）。既存の「全候補未選択」時の
+                           チェックボックスを全てOFFにする。既存の「全候補未選択」時の
                            挙動（`build_region_results()` がその領域をどのラベルにも
                            割り当てない）をそのまま利用するため、バックエンド側の
                            変更は不要だった。
+                           v1.9.16 で他領域への同期を追加: 同じ候補テキストを持つ他領域
+                           （同一ファイル内で重なりのある領域を除く。候補1件のみ＝自動
+                           確定の領域も対象に含める点が `_on_change_radio` のON伝播とは
+                           異なる）の該当チェックボックスもOFFにし、その結果その他領域の
+                           候補が全てOFFになった場合は、その領域自身の「領域選択しない」
+                           も自動でONにする（ユーザー報告: OFF化のみだと「この領域では
+                           不採用にした名称が別領域では採用済みのまま」という矛盾状態や、
+                           「どの候補も選ばれていないのに『選択しない』もOFF」という宙に
+                           浮いた状態が生じていた）。
                            名称候補なし・または「選択しない」選択 → Excel 出力時に
                            「no name #」（連番）で自動命名 or その領域には割り当てない
                            （前者は候補ゼロ、後者は候補はあるが未選択で挙動が異なる。
@@ -693,23 +701,55 @@ DXF図番ではない。当初「図面番号」への改称が検討された�
 | `name_min_letters` | 3 | 名称候補に必要な英字数 |
 | `name_exclude_terms` | (NOTE, ☆) | これらの語を含むラベルを候補から除外 |
 | `name_exclude_lowercase` | True | 英小文字を含むラベルを候補から除外（領域名は大文字想定）|
-| `exclude_circuit_symbols` | True | 機器符号(候補)パターンのラベルを候補から除外 |
+| `exclude_circuit_symbols` | True | CONFIRMED reference designator（`ref_designator.py`）に該当するラベルを候補から除外（v1.9.17〜。判定方式は下記参照）|
 | `circuit_symbol_keep_terms` | (RACK,) | 上記除外の例外。この語を含むラベルは機器符号扱いしない（例 RACK1）|
 
 > (H) ラベル所属（`assign_region_labels`）は閾値を持たず、点-多角形内包判定のみ。
 
-### 機器符号フィルタ正規表現パターン（`filter_non_circuit_symbols`。領域名候補の除外判定にのみ使用）
+### 名称候補の機器符号除外判定（`_is_valid_name_candidate`。v1.9.17〜 `ref_designator.py` ベース）
 
-領域名候補（本節の名称候補抽出）から機器符号らしいラベルを除外するための判定に使う
-（`common_utils.py`）。出力の「機器符号（候補）」パイプライン本体は使わず、
-そちらは下記「機器符号（候補）抽出パターン」を使う（v1.6.0 以降は別物）。
+領域名候補（本節の名称候補抽出）から機器符号らしいラベルを除外する判定は、
+v1.9.17 で `common_utils.py` の `filter_non_circuit_symbols()`（"英字2文字以上"
+等の粗い正規表現）から `ref_designator.classify_judgment_detailed()` /
+`matched_confirmed_category()` ベースへ変更した。
 
-| パターン種別 | 例 |
-|------------|-----|
-| 英文字のみ（2 文字以上）| `FB`、`CNCNT` |
-| 英文字+数字 | `R10`、`CN3` |
-| 英文字+数字+英文字 | `X14A`、`RMSS2A` |
-| 括弧付き | `FB()`、`R10(2.2K)`、`MSS(MOTOR)` |
+**変更理由（ユーザー報告、2026-07-26）**: `DE5027-563-03A.dxf` 図面1/領域3で、
+LINE #1518 上部の実在ラベル `MFFX` が「（名称候補なし）」になっていた。原因は
+`filter_non_circuit_symbols()` の `^[A-Za-z]{2,}$`（英字のみ2文字以上）パターンに
+`MFFX` が一致し、機器符号として除外されていたこと。
+
+**新しい判定**（`classify_judgment_detailed()` の3状態を使う）:
+
+| status | 例 | 領域名候補から除外するか |
+|--------|-----|------------------------|
+| `'no_match'`（3パターンの形状に不一致。スペース・スラッシュ等を含む） | `EFEM UPPER`、`SYSTEM I/F BOX` | しない |
+| `'excluded'` かつ `unit_names` 以外（機器符号の形はしているが既知の非designator語） | `GND`、`MOTOR` | する |
+| `'excluded'` かつ `unit_names`（ユニット/モジュール名） | `CTC`、`EFEM`、`CASE`、`FOUP`、`SHIELD` | しない |
+| `'candidate'` かつ確定 Reference Designator（`matched_confirmed_category()` が None でない） | `R10`、`CN3`、`CNCNT`（追加機器符号パターン `added_desig:CN.*` に一致）| する |
+| `'candidate'` かつ未確定（`RemainingUnclassified` 相当） | `MFFX`、`FB` | しない |
+
+`is_ref_designator_candidate()`（'candidate' のみ True を返すラッパー）だけで
+判定すると `'no_match'` と `'excluded'` を区別できず、複数語の正当な領域名まで
+丸ごとブロックする回帰を起こすため使わない（実装中に発覚・訂正。詳細は
+`model/region_detector.py` の `_is_valid_name_candidate()` 内コメント参照）。
+`ref_designator.py` は `region_detector.py` を import しているため、
+`_is_valid_name_candidate()` 内では循環 import を避けるため遅延 import する。
+
+**`unit_names` カテゴリの例外扱い（2026-07-26 追加確認）**: `DE5327-405-26A.dxf`
+図面1/領域2で `CTC`（LINE #24A 直上）が領域名候補にならない不具合が発覚。`CTC`
+は `ref_designator.py` の `unit_names` 除外カテゴリ（`_UNIT_NAMES` =
+CASE/CTC/EFEM/FOUP/LA/LB/LINEA/LINEB/LL/SH/SHIELD/TM）に属し 'excluded' と
+判定される。このカテゴリは「機器符号（候補）ではない」という機器符号抽出
+パイプライン向けの判定であり、領域名としてはむしろ正当な候補（ユニット/
+モジュール名はまさに箱の名前になりやすい）であるため、`unit_names` だけを
+例外として除外しない。`common_nouns`/`cable_colors`/`titleblock_terms` 等
+他の除外カテゴリ（`GND`・`MOTOR`等）は引き続き除外する。
+
+DXF-viewer（`core/region_detector.py`）には `ref_designator.py` 自体が無い
+（DXF抽出パイプライン全体に依存し丸ごと移植できない）ため、分類ロジックのみを
+抜粋した `core/ref_designator.py`（新設）を移植先に置き、同じ判定を行う
+（移植方針は同ファイルのモジュール docstring 参照。パターン変更時はここへの
+手動反映が必要）。
 
 > 機器符号妥当性チェック（旧 `validate_circuit_symbols`）は v1.6.0 で削除した
 > （「未確定ラベル」UI での人手選択に置き換え）。

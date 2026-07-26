@@ -16,6 +16,14 @@
 
 ---
 
+最終更新: 2026-07-26（REGION_DETECTION.md に、領域名候補の機器符号除外判定を
+`filter_non_circuit_symbols()` から `ref_designator.py` ベース（CONFIRMED
+reference designatorのみ除外、`unit_names`カテゴリは例外扱い）に変更した修正
+（MFFX・CTCの誤除外バグ対応）を反映、v1.9.17）
+
+最終更新: 2026-07-26（REGION_DETECTION.md に「領域選択しない」のOFF同期・
+OVERVIEW.md に「除外符号」シート追加を反映、v1.9.16）
+
 最終更新: 2026-07-26（REGION_DETECTION.md に、領域名称候補の出現頻度の集計
 単位を「領域数」から「別フレーム数」に変更した修正を反映、v1.9.15）
 

@@ -65,7 +65,7 @@ DXF-extract-labels/
 | `terminal_detector.py` | 端子台(TB)矩形検出（LINE+CIRCLE橋渡し）・ラベル-矩形対応判定・端子番号抽出・集計（`analyze_dxf_terminals` / `build_terminal_rows`。「端子一覧を抽出」オプション時のみ使用、v1.8.0）|
 | `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_ref_designator_excel_output` / `create_region_excel_output`）|
 | `decision_log.py` | 未確定ラベルの採用/非採用の記録（`build_entries` / `record` / `GitHubBackend` / `FileBackend`。v1.7.0）|
-| `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。領域名候補の除外判定にのみ使用）・ファイル保存・エラー処理 |
+| `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。出力ラベルの機器符号判定に使用。v1.9.17〜、領域名候補の除外判定には使わず `ref_designator.py` ベースの判定に置き換え済み）・ファイル保存・エラー処理 |
 
 ---
 
@@ -230,6 +230,16 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 シート順 `Summary` → `Total` → `<ファイル名>...`（フィルタなし・図面枠制限なしの全ラベル）
 
 シート名: 元ファイル名の拡張子除去、31 文字以内に切り詰め。
+
+**除外符号シート（「機器符号（候補）以外も抽出」OFF時、v1.9.16）**: `Total`
+シート直後（領域モードでは `領域別ラベル一覧` 直後、`TB List` シートより前）に
+`除外符号` シート（`ラベル` / `個数` / `ファイル名`）を追加。機器符号（候補）の
+3パターン（`PATTERN_CATEGORIES`）には一致したが、除外パターン
+（`EXCLUSION_*_CATEGORIES`/`ADDED_EXCLUSION_PATTERNS`）に該当し Reference
+Designator ではないと判断されたラベル（`ref_designator.classify_excluded_labels()`）
+の一覧。ラベル昇順、ファイル名は複数ある場合カンマ区切り（ABC順）で結合する。
+「機器符号（候補）以外も抽出」ON時は `excluded_rows` を持たないため（ref_designator
+の分類パイプラインを通らない）、該当データが無ければシート自体を作らない。
 
 **TB List シート（「端子一覧を抽出」ON、v1.8.0）**: `Total` シート直後
 （領域モードでは `領域別ラベル一覧` 直後）に `TB List` シート（`端子台` /
@@ -401,4 +411,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-14 (v1.9.0) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-26 (v1.9.17) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

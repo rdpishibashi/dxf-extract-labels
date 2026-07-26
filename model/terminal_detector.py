@@ -62,8 +62,8 @@ from collections import Counter, defaultdict
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_labels
-from .common_utils import normalize_width
-from .region_detector import _label_rotation_angle, select_layout_result
+from .common_utils import normalize_width, select_layout_result
+from .region_detector import _label_rotation_angle
 
 
 TB_LINE_WEIGHT = 25
@@ -110,7 +110,7 @@ class _UnionFind:
 
 def _collect_geometry(doc):
     """INSERT展開を含めてラベル(テキスト+回転角)・矩形辺LINE・橋渡しCIRCLEを
-    収集する。レイアウトの選び方は `region_detector.select_layout_result()`
+    収集する。レイアウトの選び方は `common_utils.select_layout_result()`
     を参照（Model Space に何かあれば常にそちらを使い、完全に空の場合のみ
     他レイアウトを順に試す。レイアウトをまたいで混在させない）。
     """

@@ -192,7 +192,26 @@ return）レンダーツリーから一時的に外れるが、`key` を固定�
    の `core/region_detector.py` にも同じ変更を移植済み（ただしDXF-viewer
    側は元々 Model/Paper Space 自動選択〈上記〉が未移植のため、この移植は
    Model Space のみを対象にした従来の挙動の範囲内）。
-2. **領域境界線**: `lineweight=25` かつ `color=2`(ACI黄) の線分。**かつ線種(linetype)が
+
+   **既知の限界（複数VIEWPORTを持つ組立図、`EE6892-455B.dxf`・
+   `EE6892-916-01A.dxf`・`EE6888-339-03A.dxf`、2026-07-27・ユーザー承認済み・
+   対応見送り）**: これら（主に組立図）は、図面枠矩形（`lineweight=100`・
+   `color=7`、例 ブロック`JZB_0001`/`JZB_0002`）が **Paper Space
+   （`ICADSX Layout`）にのみ**存在し、Model Space側には一切存在しない
+   （全ブロック定義を再帰的に確認して確認済み）。さらにこの Paper Space は
+   AutoCAD標準の複数VIEWPORT構成（`EE6892-455B.dxf`で34個確認）を持ち、
+   1枚の用紙に「Model Spaceの異なる範囲・倍率を映す複数の窓」を配置する
+   運用になっている。つまり Paper Space側の枠は「印刷用紙の外枠」であって、
+   電気回路図のような「Model Space内の1図面を囲む罫線」とは構造が異なり、
+   単純な矩形検出では対応できない（VIEWPORTごとの座標変換を新たに実装する
+   必要があり、既存の図面枠検出とは別種の機能になる）。**Reference
+   Designator抽出（既定モード、`ref_designator.extract_ref_designator_data()`）
+   はこの状況に既に対応済み**——`collect_in_frame_labels()`が枠なしを
+   検出すると`_collect_all_labels_fallback()`にフォールバックし、警告
+   付きで正常に機器符号を抽出する（実データ確認: `EE6892-455B.dxf`で
+   103件、`EE6888-339-03A.dxf`で20件を正しく抽出）。**「領域を検出」
+   （矩形領域への名称付け）のみがこの種の図面に原理的に適用できない**、
+   というのが実態であり、ユーザー確認の上で対応を見送った。
    実質的に Continuous（実線）であること（`_is_continuous_linetype`、v1.5.10）**。
    `linetype='ByLayer'` の場合はレイヤーの既定線種まで解決する。PHANTOM（二点鎖線）等の
    装飾的な線種は、lineweight/color が境界線条件に一致していても閉領域の壁を表すもの

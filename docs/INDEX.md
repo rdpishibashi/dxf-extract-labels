@@ -16,6 +16,12 @@
 
 ---
 
+最終更新: 2026-07-27（REGION_DETECTION.md・TERMINAL_DETECTION.md に、「領域を検出」
+ON時の出力Excelに `Total` シート（`Summary` 直後、全ファイル横断のラベル合計一覧）を
+追加した機能追加を反映。従来は `領域一覧`・`領域別ラベル一覧` で代替する設計だったが、
+ユーザー要望により追加した。TERMINAL_DETECTION.md の「領域モード（`Total`シートが無い）」
+という記述も訂正。v1.9.19）
+
 最終更新: 2026-07-26（モジュラリティ改善リファクタ v1.9.18: `select_layout_result()`
 を `region_detector.py` から `common_utils.py` へ移設、`ref_designator.py` を
 純粋パターン判定（`ref_designator_patterns.py`、新設）とDXF抽出パイプラインに分割

@@ -280,8 +280,43 @@ def test_create_region_excel_output_returns_bytes():
 def test_create_region_excel_output_sheet_names():
     wb = _load_wb(create_region_excel_output(_make_region_results()))
     assert 'Summary' in wb.sheetnames
+    assert 'Total' in wb.sheetnames
     assert '領域一覧' in wb.sheetnames
     assert 'circuit' in wb.sheetnames
+
+
+def test_create_region_excel_output_total_sheet_position_and_values():
+    """`Total` シートは `Summary` 直後に配置され、全ファイル横断でラベルを
+    ユニーク集計する（`rows` の『領域』列の値は無視して個数のみ合算）。"""
+    wb = _load_wb(create_region_excel_output(_make_region_results()))
+    assert wb.sheetnames.index('Total') == wb.sheetnames.index('Summary') + 1
+
+    ws = wb['Total']
+    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    assert header == ['ラベル', '個数', '図番']
+    rows = {row[0].value: row[1].value for row in ws.iter_rows(min_row=2)}
+    assert rows == {'R10': 2, 'CN3': 1}
+
+
+def test_create_region_excel_output_total_sheet_drawing_number_merge():
+    """複数ファイルにまたがる同一ラベルは、Total シートの図番列で
+    ABC順・カンマ区切りに結合される（`drawing_number` 未抽出時はファイル名
+    〔拡張子なし〕にフォールバック）。"""
+    results = {}
+    results.update(_make_region_results('a.dxf'))
+    results.update(_make_region_results('b.dxf'))
+    wb = _load_wb(create_region_excel_output(results))
+    rows = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    assert rows['R10'] == 'a, b'
+
+
+def test_create_region_excel_output_total_sheet_absent_when_no_labels():
+    """全ファイルにラベルが1件も無い場合、Total シート自体が作られない
+    （他モードの Total と同じ `skip_if_empty` 挙動）。"""
+    results = _make_region_results()
+    results['circuit.dxf']['rows'] = []
+    wb = _load_wb(create_region_excel_output(results))
+    assert 'Total' not in wb.sheetnames
 
 
 def test_create_region_excel_output_summary_row_count():
@@ -308,7 +343,7 @@ def test_create_region_excel_output_sorted_by_filename():
     summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
     assert summary_filenames == ['aaa.dxf', 'zzz.dxf']
     data_sheets = [n for n in wb.sheetnames
-                  if n not in ('Summary', '領域一覧', '領域別ラベル一覧')]
+                  if n not in ('Summary', 'Total', '領域一覧', '領域別ラベル一覧')]
     assert data_sheets == ['aaa', 'zzz']
 
 

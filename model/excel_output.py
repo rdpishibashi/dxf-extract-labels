@@ -285,6 +285,12 @@ def create_region_excel_output(region_results, terminal_results=None):
     UNIT内結線図を判定〉が領域モード出力に対して機能できない欠落だった。
     サブタイトル・流用元図番は今回のスコープ外— region モードの解析結果には
     元々流用元図番を持たないため追加しない）。
+
+    `Summary` 直後に `Total` シート（全ファイル横断のラベル・個数・図番の
+    ユニーク集計、v1.9.19）を追加する。他の2モードと同じ
+    `_accumulate_total_counts`/`_build_total_rows` を再利用し、各ファイルの
+    `rows`（既に半角正規化・最終集計済み）を `drawing_number`（未抽出時は
+    ファイル名）で紐付けて集計する。
     """
     region_results = dict(sorted(region_results.items(), key=lambda kv: kv[0]))
     output = BytesIO()
@@ -314,6 +320,17 @@ def create_region_excel_output(region_results, terminal_results=None):
         _write_header_row(summary_ws, summary_df.columns.values, header_format)
         _write_summary_hyperlinks(summary_ws, list(region_results.keys()), link_format)
         summary_ws.set_column('A:A', 28)
+
+        total_counter = Counter()
+        label_drawing_numbers = {}
+        for fname, data in region_results.items():
+            ident = data.get('drawing_number') or os.path.splitext(fname)[0]
+            _accumulate_total_counts(
+                total_counter, label_drawing_numbers,
+                ((r['ラベル'], r['個数']) for r in data.get('rows', [])), ident)
+        total_data = _build_total_rows(total_counter, label_drawing_numbers)
+        _write_label_count_sheet(writer, 'Total', total_data, header_format,
+                                 columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
 
         reg_rows = []
         for fname, data in region_results.items():

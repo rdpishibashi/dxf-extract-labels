@@ -231,6 +231,18 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 
 > 回帰テスト: `tests/regression/test_title_extraction.py`
 
+**呼び出し側は`extract_drawing_numbers_option=True`を必ずセットで渡すこと（v1.9.20）**:
+上記2「グループキーによる候補制限」は`extract_labels()`に`extract_drawing_numbers_option=True`
+を渡した場合にのみ計算される`main_drawing_group`に依存する。`extract_title_option=True`
+だけを渡し`extract_drawing_numbers_option`を省略（False）すると、この制限が働かず
+全ラベル横断でタイトル候補を探してしまい、複数タイトルブロックが1ファイルに存在する
+図面（同一図番のシートが横並びで対象シートだけタイトル行が欠落している等）で誤抽出
+する。本プロジェクトの全呼び出し箇所は元々両オプションをセットで渡しているため実害は
+無いが、`DXF-diff-manager`側の呼び出しがこれを渡し忘れており2026-07-29に不具合として
+発覚した（共有ファイル自体はbyte一致でも、呼び出し側のオプション指定が食い違うと
+結果が食い違う）。渡し忘れに気付けるよう、この組み合わせで`warnings.warn()`する
+予防チェックを追加した（抽出ロジック・戻り値は無変更）。
+
 ---
 
 

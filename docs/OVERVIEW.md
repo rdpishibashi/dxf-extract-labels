@@ -243,6 +243,11 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 結果が食い違う）。渡し忘れに気付けるよう、この組み合わせで`warnings.warn()`する
 予防チェックを追加した（抽出ロジック・戻り値は無変更）。
 
+> クロスプロジェクト回帰テスト（v1.9.21）: `tests/regression/test_title_extraction_cross_project.py`
+> が、primaryの正しい呼び出し方を基準にDXF-diff-manager・DXF-visual-diffの実際の
+> 呼び出しパス経由のTitle/Subtitleを突き合わせる（`region_detector.py`の
+> `test_region_naming_cross_project.py`と同じ枠組み）。呼び出し側の変更を行ったら実行すること。
+
 ---
 
 

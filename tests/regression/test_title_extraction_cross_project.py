@@ -21,10 +21,13 @@
 
 DXF-diff-manager / DXF-visual-diff が見つからない環境ではそれぞれスキップする。
 
-DXF-visual-diff は本テスト新設時点（2026-07-29）で `utils/label_diff.py` が
-`extract_drawing_numbers_option=True` を渡しておらず、既知の未修正バグとして
-`DE3527-553-10E.dxf` のケースを `xfail` にしている（別タスクとして対応予定。
-`~/.claude/projects/.../memory/project_dxf_visual_diff_label_diff_title_bug.md` 参照）。
+追記（2026-07-29、同日中）: 本テスト新設時点では `DXF-visual-diff/utils/label_diff.py` が
+`extract_drawing_numbers_option=True` を渡しておらず7件で誤抽出することを確認し
+`xfail` にしていたが、その後 primary 側で根本対応（v1.9.22、`extract_title_option=True`
+であれば内部的にタイトルブロックグループ判定を行う設計変更）を行い `extract_labels.py`
+を同期した結果、`label_diff.py` 自体は無変更のままこの不具合が副次的に解消された
+（`xfail` が `XPASS(strict)` に転じたため撤去）。**共有ファイルの根本対応は、呼び出し側を
+直接修正していないプロジェクトにも波及し得る**、という実例として記録しておく。
 """
 import glob
 import importlib
@@ -126,44 +129,21 @@ def test_title_extraction_matches_diff_manager(dxf_path):
     )
 
 
-# DXF-visual-diff/utils/label_diff.py が extract_drawing_numbers_option=True を渡して
-# いないため、複数タイトルブロックが1ファイルに存在する図面でTitle/Subtitleを誤抽出
-# する既知の未修正バグ（2026-07-29発覚、別タスクとして対応予定。
-# ~/.claude/projects/.../memory/project_dxf_visual_diff_label_diff_title_bug.md 参照）。
-# sample-dxf/problems/*.dxf 18件中、本テスト新設時点でこの7件が該当することを確認済み。
-_KNOWN_VISUAL_DIFF_TITLE_BUG_FILES = {
-    'DE3527-553-10E.dxf',
-    'EE5322-455-01B.dxf',
-    'EE5322-455-07A.dxf',
-    'EE6888-602-01A.dxf',
-    'EE6888-637-01A.dxf',
-    'EE6888-639-01A.dxf',
-    'EE6892-455B.dxf',
-}
-
-
-def _visual_diff_param(path):
-    basename = os.path.basename(path)
-    if basename in _KNOWN_VISUAL_DIFF_TITLE_BUG_FILES:
-        return pytest.param(
-            path, id=basename,
-            marks=pytest.mark.xfail(
-                reason="DXF-visual-diff/utils/label_diff.py が extract_drawing_numbers_option=True "
-                       "を渡していない既知の未修正バグ（別タスクとして対応予定）",
-                strict=True,
-            ),
-        )
-    return pytest.param(path, id=basename)
-
+# 2026-07-29時点でDXF-visual-diff/utils/label_diff.pyはextract_drawing_numbers_option=True
+# を渡していなかったが（18件中7件で誤抽出を確認しxfail(strict=True)としていた）、
+# 同日中にprimary側の根本対応（v1.9.22、extract_title_option=Trueであれば内部的に
+# タイトルブロックグループ判定を行う設計変更）をextract_labels.pyに同期したところ、
+# label_diff.py自体は未変更のままこの不具合が副次的に解消された（xfailがXPASSに
+# 転じたため、このparametrize特別扱いを撤去し通常のassertに戻した）。
 
 @pytest.mark.skipif(
     not _visual_diff_available,
     reason="DXF-visual-diff が見つからないためクロスプロジェクトテストをスキップ",
 )
-@pytest.mark.parametrize("dxf_path", [_visual_diff_param(p) for p in _sample_problem_files()])
+@pytest.mark.parametrize("dxf_path", _sample_problem_files(), ids=lambda p: os.path.basename(p))
 def test_title_extraction_matches_visual_diff(dxf_path):
     """DXF-visual-diff の compute_label_differences() が返すTitle/Subtitleが、
-    primaryの正しい呼び出し方と一致すること（既知バグの1件はxfail）。"""
+    primaryの正しい呼び出し方と一致すること。"""
     expected = _reference_title_subtitle(dxf_path)
     actual = _call_visual_diff_compute_label_differences(dxf_path)
     assert actual == expected, (

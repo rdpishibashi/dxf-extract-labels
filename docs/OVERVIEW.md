@@ -231,17 +231,23 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 
 > 回帰テスト: `tests/regression/test_title_extraction.py`
 
-**呼び出し側は`extract_drawing_numbers_option=True`を必ずセットで渡すこと（v1.9.20）**:
-上記2「グループキーによる候補制限」は`extract_labels()`に`extract_drawing_numbers_option=True`
-を渡した場合にのみ計算される`main_drawing_group`に依存する。`extract_title_option=True`
-だけを渡し`extract_drawing_numbers_option`を省略（False）すると、この制限が働かず
-全ラベル横断でタイトル候補を探してしまい、複数タイトルブロックが1ファイルに存在する
-図面（同一図番のシートが横並びで対象シートだけタイトル行が欠落している等）で誤抽出
-する。本プロジェクトの全呼び出し箇所は元々両オプションをセットで渡しているため実害は
-無いが、`DXF-diff-manager`側の呼び出しがこれを渡し忘れており2026-07-29に不具合として
-発覚した（共有ファイル自体はbyte一致でも、呼び出し側のオプション指定が食い違うと
-結果が食い違う）。渡し忘れに気付けるよう、この組み合わせで`warnings.warn()`する
-予防チェックを追加した（抽出ロジック・戻り値は無変更）。
+**`extract_title_option=True`だけで正しく動く（v1.9.22、呼び出し側の内部結合解消）**:
+上記2「グループキーによる候補制限」はかつて`extract_labels()`に
+`extract_drawing_numbers_option=True`も明示的に渡した場合にのみ計算される
+`main_drawing_group`に依存していた。`extract_title_option=True`だけを渡し
+`extract_drawing_numbers_option`を省略（False）すると、この制限が働かず全ラベル
+横断でタイトル候補を探してしまい、複数タイトルブロックが1ファイルに存在する図面
+（同一図番のシートが横並びで対象シートだけタイトル行が欠落している等）で誤抽出
+する不具合があった。本プロジェクトの全呼び出し箇所は元々両オプションをセットで
+渡していたため実害は無かったが、`DXF-diff-manager`側の呼び出しがこれを渡し忘れて
+おり2026-07-29に不具合として発覚した（共有ファイル自体はbyte一致でも、呼び出し側
+のオプション指定が食い違うと結果が食い違う）。v1.9.20では渡し忘れに気付ける
+`warnings.warn()`を追加したが、v1.9.22で根本対応: `extract_title_option=True`で
+あれば`extract_drawing_numbers_option`の指定に関わらず、内部的に図番候補の収集・
+`main_drawing_group`の計算・`extract_title_and_subtitle()`への`drawing_numbers`
+引数渡しを行うようにした（`info`の公開キー`main_drawing_number`等は従来どおり
+`extract_drawing_numbers_option=True`のときのみ設定し後方互換性を維持）。呼び出し側
+がオプションの組み合わせを気にする必要が無くなったため、v1.9.20の警告は削除した。
 
 > クロスプロジェクト回帰テスト（v1.9.21）: `tests/regression/test_title_extraction_cross_project.py`
 > が、primaryの正しい呼び出し方を基準にDXF-diff-manager・DXF-visual-diffの実際の

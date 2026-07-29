@@ -249,6 +249,11 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 `extract_drawing_numbers_option=True`のときのみ設定し後方互換性を維持）。呼び出し側
 がオプションの組み合わせを気にする必要が無くなったため、v1.9.20の警告は削除した。
 
+**軽量ラッパー`get_title_and_subtitle()`（v1.9.23）**: タイトル・サブタイトルだけが
+必要な呼び出し元向けに、`extract_labels()`を正しいオプションの組み合わせで呼ぶ
+`get_title_and_subtitle(dxf_file, original_filename=None)`を追加した。ラベル一覧が
+不要な場面（例: 完全新規図面のTitle補完）ではこちらを使うことを推奨する。
+
 > クロスプロジェクト回帰テスト（v1.9.21）: `tests/regression/test_title_extraction_cross_project.py`
 > が、primaryの正しい呼び出し方を基準にDXF-diff-manager・DXF-visual-diffの実際の
 > 呼び出しパス経由のTitle/Subtitleを突き合わせる（`region_detector.py`の

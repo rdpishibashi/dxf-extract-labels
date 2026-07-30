@@ -1,16 +1,29 @@
-"""機器符号（候補）抽出（model/ref_designator.py）の回帰テスト。
+"""機器符号抽出パイプライン（model/ref_designator.py）の回帰テスト。
 
-検証済み仕様（2026-07-10 確定、reference_designator_candidates.xlsx が正）:
-  - パターン: 英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ
-  - 判定は括弧より前の部分に対して行う（R10(2.2K) → R10 で判定）
-  - 除外: 単一英大文字・末尾+-・AWG・RACK*・図番・JIS/DWG*・A/B+数字・PE+数字・
-    L/N/P+数字・X+英字・数字4桁以上連続（配線ラベル、2026-07-11追加）、および
-    普通名詞/回路説明/ユニット名/ケーブル色/図面情報枠語の完全一致リスト
-  - 図面枠 = lineweight=frame_lineweight かつ color=7（region_detector と同条件。
-    lineweight単独では無関係な線分を拾い検出が壊れることを実データで確認済み）
-  - 図面情報欄・枠外位置記号は、図面枠線を直接の子に持つ「フォーマットブロック」
-    （実データでは JZB_*）の INSERT 由来であることを利用して構造的に除外する
-    （人名リストは持たない）
+**2026-07-30 判定条件の簡素化（ユーザー指定）**: 以下のパイプラインに一本化した。
+
+  1. 図面枠内、かつ図面情報枠（タイトルブロック）外のラベルをスコープとする
+  2. ラベル末尾に括弧で閉じた文字列がある場合は、その括弧より前の部分で
+     判定する（出力は原文のまま）
+  3. 3つの候補パターン（英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン
+     任意、または英字繰返しのみ）のいずれかに一致するラベルを、除外や
+     確認なしにそのまま全件出力する
+
+除外パターン・追加パターン・確定パターン・「未確定ラベル」UIでのレビュー・
+連動採用・判断ログは廃止した。これらのパターン判定ロジック自体は
+`region_detector.py` の領域名候補フィルタが引き続き利用しているため
+`ref_designator_patterns.py` に残っており、対応する回帰テストは
+`tests/regression/test_ref_designator_patterns.py` にある。
+
+図面情報枠（タイトルブロック）の除外は、旧来の構造的除外（図面枠線を
+直接の子に持つ「フォーマットブロック」由来のテキストを丸ごと除外）から、
+幾何検出（図面枠の右下、右辺・底辺が図面枠に接する矩形をタイトル項目名の
+並びから特定する）に置き換えた。詳細は `_detect_info_frame_bbox()` の
+docstring、および比較検証（旧方式 vs 新方式、実データ156件、
+`sample-dxf/` 配下）の結果を参照。
+
+図面枠 = lineweight=frame_lineweight かつ color=7（region_detector と同条件。
+lineweight単独では無関係な線分を拾い検出が壊れることを実データで確認済み）。
 
 実 DXF（プロジェクト直下のサンプル）を使ったブラックボックステストも含む。
 サンプルが無い環境ではスキップする。
@@ -39,17 +52,22 @@ def _find_sample(name):
 
 
 # ---------------------------------------------------------------------------
-# is_ref_designator_candidate — パターン一致
+# classify_labels — 3候補パターンに一致すれば全件そのまま出力（除外なし）
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('label', [
-    'R10', 'CN3', 'D4', 'CN1',                   # 英字+数字（A/Bは機器端子として除外対象）
-    'FB', 'CNCNT', 'MSS',                        # 英字のみ
-    'CN-IF2-1', 'AAC1B4-07', 'AB-CD12',           # 英字-英字+数字(+ハイフン任意)
+    'R10', 'CN3', 'D4', 'CN1', 'A1', 'B12',       # 英字+数字（除外なしなのでA/Bも通る）
+    'FB', 'CNCNT', 'MSS',                          # 英字のみ
+    'CN-IF2-1', 'AAC1B4-07', 'AB-CD12',            # 英字-英字+数字(+ハイフン任意)
     'R10(2.2K)', 'FB()', 'MSS(MOTOR)', 'U23B(DAC)',  # 括弧付き（括弧前で判定）
+    'GND', 'POWER', 'MOTOR', 'TITLE', 'DATE',      # 旧除外パターン該当語（新仕様では候補になる）
+    'AWG14', 'RACK1', 'W1234', 'XRST',             # 旧除外パターン該当語（同上）
 ])
-def test_candidate_pattern_matches(label):
-    assert ref_designator.is_ref_designator_candidate(label) is True
+def test_classify_labels_keeps_all_pattern_matches(label):
+    """3候補パターンに一致するものはすべて出力される（除外パターンは廃止）。"""
+    labels = [(label, 0.0, 0.0)]
+    result = ref_designator.classify_labels(labels)
+    assert result == labels
 
 
 @pytest.mark.parametrize('label', [
@@ -59,269 +77,28 @@ def test_candidate_pattern_matches(label):
     'R 10',       # スペースを含む
     'あいう',      # 英数字以外
 ])
-def test_candidate_pattern_rejects(label):
-    assert ref_designator.is_ref_designator_candidate(label) is False
+def test_classify_labels_rejects_non_pattern_matches(label):
+    labels = [(label, 0.0, 0.0)] if label else []
+    result = ref_designator.classify_labels(labels)
+    assert result == []
+
+
+def test_classify_labels_judges_before_parenthesis_but_outputs_original():
+    """括弧より前の部分で判定し、出力は原文のまま（例: 'R10(1234)' は
+    判定用文字列 'R10' がパターンに一致するため候補になり、出力は
+    括弧付きの原文 'R10(1234)' のまま）。"""
+    labels = [('R10(1234)', 1.0, 2.0)]
+    assert ref_designator.classify_labels(labels) == labels
 
 
 # ---------------------------------------------------------------------------
-# is_ref_designator_candidate — 除外パターン（ExclusionPatterns シートが正）
+# normalize_labels
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('label,reason', [
-    ('A', 'single_letter_position'),
-    ('R10-', 'trailing_sign'),
-    ('AWG14', 'wire_gauge'),
-    ('AWG', 'wire_gauge'),
-    ('RACK1', 'rack_prefix'),
-    ('RACK1-2', 'rack_prefix'),
-    ('EE1234-500-01A', 'drawing_number'),
-    ('DE3527-553-05B', 'drawing_number'),
-    ('JIS123', 'jis_dwg_prefix'),
-    ('DWGNO', 'jis_dwg_prefix'),
-    ('A1', 'terminal_row_letter_digit'),
-    ('B12', 'terminal_row_letter_digit'),
-    ('PE1', 'earth_terminal_digit'),
-    ('L1', 'phase_rail_letter_digit'),
-    ('N24', 'phase_rail_letter_digit'),
-    ('P24', 'phase_rail_letter_digit'),
-    ('XRST', 'io_signal_x_prefix'),
-    ('XMCON', 'io_signal_x_prefix'),
-    ('GND', 'circuit_description'),
-    ('POWER', 'circuit_description'),
-    ('ALARM', 'common_nouns'),
-    ('MOTOR', 'common_nouns'),
-    ('CTC', 'unit_names'),
-    ('SHIELD', 'unit_names'),
-    ('BK', 'cable_colors'),
-    ('RD', 'cable_colors'),
-    ('TITLE', 'titleblock_terms'),
-    ('DATE', 'titleblock_terms'),
-    ('W1234', 'wiring_digit_run'),
-    ('ETC-JP2', 'added_excl:ETC-JPn*'),
-])
-def test_exclusion_categories(label, reason):
-    assert ref_designator.is_ref_designator_candidate(label) is False, (
-        f'{label} should be excluded ({reason})')
-
-
-def test_x_plus_digit_is_not_excluded():
-    """X+数字（X1, X24）はIEC上の正規の端子/コネクタ記号であり、
-    X+英字（io_signal_x_prefix）とは区別して候補に残す。"""
-    assert ref_designator.is_ref_designator_candidate('X1') is True
-    assert ref_designator.is_ref_designator_candidate('X24') is True
-
-
-@pytest.mark.parametrize('label', ['OUT2', 'IN1', 'COM3', 'GND9', 'POWER5'])
-def test_circuit_description_excludes_keyword_plus_single_digit(label):
-    """circuit_description のキーワードは末尾に数字1桁があっても除外対象
-    （例 OUT2, IN1, COM3。2026-07-10 ユーザー指摘）。"""
-    assert ref_designator.is_ref_designator_candidate(label) is False
-    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
-
-
-@pytest.mark.parametrize('label', ['GND12'])
-def test_circuit_description_two_digit_suffix_not_excluded(label):
-    """数字2桁以上は circuit_description の除外対象外（候補として残る）。
-
-    OUT12/IN10 はかつてこの対象だったが、追加除外パターン OUTn*/I.*
-    （reference_deginator_pattern_added.txt、2026-07-26）が桁数を問わず
-    除外するため対象から外れた。GND12 は追加除外リストに GND 系の
-    プレフィックスが無いため、引き続き候補として残る
-    （`test_added_exclusion_overrides_two_digit_suffix_exception` 参照）。
-    """
-    status, _category = ref_designator.classify_judgment_detailed(label)
-    assert status != 'excluded'
-
-
-@pytest.mark.parametrize('label,category', [
-    ('OUT12', 'added_excl:O.*'),   # O.* が OUTn* より先に定義されており先に一致
-    ('IN10', 'added_excl:I.*'),
-])
-def test_added_exclusion_overrides_two_digit_suffix_exception(label, category):
-    """追加除外パターン（reference_deginator_pattern_added.txt、2026-07-26）は
-    桁数を問わず除外するため、OUT12/IN10 は 2026-07-10 の「数字2桁以上は
-    circuit_description の除外対象外」という既存方針の例外だったが、今回
-    追加リストを優先する方針（2026-07-26 ユーザー確定）でこの2件は除外に
-    転じた。"""
-    status, actual_category = ref_designator.classify_judgment_detailed(label)
-    assert status == 'excluded'
-    assert actual_category == category
-
-
-# ---------------------------------------------------------------------------
-# 除外パターン追加分（2026-07-10: circuit_description 追加語 / phase_rail 拡張）
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize('label', [
-    'AOUT', 'LG', 'MR', 'MRR', 'RX', 'TX', 'CLR', 'ZERO', 'YOUT', 'AG',
-])
-def test_circuit_description_new_keywords_excluded(label):
-    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
-
-
-@pytest.mark.parametrize('label', ['AG1', 'ZERO1', 'RX9'])
-def test_circuit_description_new_keywords_plus_single_digit_excluded(label):
-    assert ref_designator.classify_judgment_detailed(label) == ('excluded', 'circuit_description')
-
-
-@pytest.mark.parametrize('label', ['ZERO12', 'AG12'])
-def test_circuit_description_new_keywords_two_digit_suffix_not_excluded(label):
-    status, _category = ref_designator.classify_judgment_detailed(label)
-    assert status != 'excluded'
-
-
-@pytest.mark.parametrize('label', ['N24AB', 'L1XY', 'P24Z', 'N1A'])
-def test_phase_rail_letter_digit_allows_repeated_trailing_letters(label):
-    """L/N/P+数字繰り返し+英大文字繰り返し（2026-07-10: 末尾の英大文字を
-    0字以上に拡張。従来は0-1字までしか許容していなかった）。"""
-    assert ref_designator.classify_judgment_detailed(label) == (
-        'excluded', 'phase_rail_letter_digit')
-
-
-def test_person_name_not_excluded_by_content_filter():
-    """人名リストは実装に持たない（図面情報枠の構造的除外で対応する設計）ため、
-    単体の is_ref_designator_candidate は人名を弾かない。"""
-    assert ref_designator.is_ref_designator_candidate('KURIHARA') is True
-
-
-# ---------------------------------------------------------------------------
-# 除外パターン追加分（2026-07-11: wiring_digit_run＝数字4桁以上連続の配線ラベル）
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize('label', [
-    'W1234', 'CN2345', 'D1000', 'R1000', 'AB1234-5', 'GND1234',
-])
-def test_wiring_digit_run_excludes_four_or_more_consecutive_digits(label):
-    assert ref_designator.classify_judgment_detailed(label) == (
-        'excluded', 'wiring_digit_run')
-
-
-@pytest.mark.parametrize('label', ['R100', 'D100', 'CN123', 'X999'])
-def test_wiring_digit_run_allows_up_to_three_consecutive_digits(label):
-    """数字3桁までは配線ラベル除外の対象外（候補として残る）。"""
-    status, _category = ref_designator.classify_judgment_detailed(label)
-    assert status != 'excluded'
-
-
-def test_wiring_digit_run_requires_digits_to_be_consecutive():
-    """ハイフン等で分断された数字は合算しない（連続4桁以上のみ対象）。
-    'AB12-34' は '12'・'34' がそれぞれ2桁ずつで、連続した4桁は存在しない。"""
-    status, _category = ref_designator.classify_judgment_detailed('AB12-34')
-    assert status != 'excluded'
-
-
-def test_wiring_digit_run_ignores_parenthetical_digits():
-    """括弧内の数字は判定対象外（括弧より前の判定用文字列のみで判定）。
-    'R10(1234)' は判定用文字列が 'R10' のため除外されない。"""
-    assert ref_designator.is_ref_designator_candidate('R10(1234)') is True
-
-
-# ---------------------------------------------------------------------------
-# 確定パターン（CONFIRMED_PATTERN_CATEGORIES / matched_confirmed_category /
-# is_confirmed_designator / split_confirmed）— 未確定ラベルUIのレビュー不要判定
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize('label,expected', [
-    ('R10', 'letters_digits_2or3'),
-    ('R100', 'letters_digits_2or3'),
-    ('CN3', 'cn_single_digit'),           # CN+数字1桁（2026-07-10 追加）
-    ('R10A', 'letters_digits_2or3_letter'),
-    ('CN-IF21', 'cn_if_prefix'),          # "CN-IF"+任意の文字が優先判定される
-    ('CN-IF2-1', 'cn_if_prefix'),         # 2026-07-10: 末尾に続きがあっても確定対象
-    ('D1', 'single_letter_digits_except_ab'),
-    ('D1000', 'single_letter_digits_except_ab'),   # 桁数不問
-    ('A1', None),                         # A,Bは対象外（単一英字パターンのみ）
-    ('B12', 'letters_digits_2or3'),       # A,B除外は単一英字パターン限定
-    ('FB', None),                         # 英字のみ（数字を要求するパターンはいずれも不一致）
-])
-def test_matched_confirmed_category(label, expected):
-    assert ref_designator.matched_confirmed_category(label) == expected
-
-
-# ---------------------------------------------------------------------------
-# 確定パターン追加分（2026-07-10: CN+数字1桁 / "CN-IF"+任意 / R(...) / VR(...)）
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize('label,expected', [
-    ('CN1', 'cn_single_digit'),
-    ('CN9', 'cn_single_digit'),
-    ('CN12', 'letters_digits_2or3'),          # 数字2桁は cn_single_digit の対象外
-    ('CN-IF1-1A', 'cn_if_prefix'),
-    ('CN-IFX', 'cn_if_prefix'),
-])
-def test_confirmed_cn_patterns(label, expected):
-    assert ref_designator.matched_confirmed_category(label) == expected
-
-
-@pytest.mark.parametrize('label,expected', [
-    ('R10(2.2K)', 'r_paren_suffix'),
-    ('R1(2.2K)', 'r_paren_suffix'),
-    ('R1000(2.2K)', 'r_paren_suffix'),
-    ('R10()', 'r_paren_suffix'),              # 括弧の中身は任意（空文字も可）
-    ('VR5(10K)', 'vr_paren_suffix'),
-    ('VR100(10K)', 'vr_paren_suffix'),
-])
-def test_confirmed_paren_suffix_patterns_use_full_label(label, expected):
-    """R(...)/VR(...) は括弧の中身自体を問うため、`_judgment_text()` で
-    括弧を取り除いた文字列ではなく正規化済みラベル全体（括弧含む）に対して
-    判定する（basis='full'）。"""
-    assert ref_designator.matched_confirmed_category(label) == expected
-
-
-def test_confirmed_paren_suffix_requires_parens():
-    """R10/VR5 単体（括弧なし）は r_paren_suffix/vr_paren_suffix の対象外。
-    R10 は既存の letters_digits_2or3 で確定するが、VR5 はどの判定基準にも
-    一致せず未確定のまま。"""
-    assert ref_designator.matched_confirmed_category('R10') == 'letters_digits_2or3'
-    assert ref_designator.matched_confirmed_category('VR5') is None
-
-
-def test_is_confirmed_designator_requires_candidate_first():
-    """is_confirmed_designator は機器符号候補であることが前提。除外パターン
-    該当のラベルは、たとえ確定パターンの正規表現に文字列として一致しても
-    確定扱いにしない。"""
-    assert ref_designator.is_confirmed_designator('R10') is True
-    assert ref_designator.is_confirmed_designator('FB') is False   # 候補だが確定でない
-    assert ref_designator.is_confirmed_designator('GND') is False   # 除外パターン該当
-
-
-def test_split_confirmed():
-    labels = [('R10', 0, 0), ('FB', 1, 1), ('D100', 2, 2)]
-    confirmed, review = ref_designator.split_confirmed(labels)
-    assert confirmed == [('R10', 0, 0), ('D100', 2, 2)]
-    assert review == [('FB', 1, 1)]
-
-
-# ---------------------------------------------------------------------------
-# normalize_label / split_candidates
-# ---------------------------------------------------------------------------
-
-def test_normalize_label_nfkc_and_strip():
-    assert ref_designator.normalize_label('　ＣＮ１　') == 'CN1'
-    assert ref_designator.normalize_label('') == ''
-    assert ref_designator.normalize_label(None) == ''
-
-
-def test_split_candidates():
-    """候補（＝未確定ラベルUIでのレビュー対象）は Patterns 一致・除外非該当のみ。
-    除外パターン該当（GND・TITLE）は結果に含まれない
-    （2026-07-10 ユーザー指摘: RemainingUnclassified シートの中身を実データで
-    再確認し、GND/TITLE等は除外カテゴリ付与済み＝候補に含まれないことを確定）。"""
-    candidates = ref_designator.split_candidates(['R10', 'GND', 'CN3', 'TITLE'])
-    assert candidates == ['R10', 'CN3']
-
-
-def test_split_candidates_drops_non_pattern_matches():
-    """3パターン（Patterns シート）のいずれにも一致しない文字列（説明文・記号等）も
-    結果に含まれない。"""
-    candidates = ref_designator.split_candidates(
-        ['R10', 'GND', '(2/5)', '(-039-01)2/3', 'これは説明文'])
-    assert candidates == ['R10']
-
-
-def test_summarize_labels_counts_and_sorts():
-    result = ref_designator.summarize_labels(['R10', 'R10', 'CN3'])
-    assert result == [('CN3', 1), ('R10', 2)]
+def test_normalize_labels_nfkc_and_strip():
+    labels = [('　ＣＮ１　', 0.0, 0.0), ('', 1.0, 1.0), ('R10', 2.0, 2.0)]
+    result = ref_designator.normalize_labels(labels)
+    assert result == [('CN1', 0.0, 0.0), ('R10', 2.0, 2.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +180,155 @@ def test_build_region_output_counts_and_sorts():
 
 
 # ---------------------------------------------------------------------------
-# 図面枠検出・フォーマットブロック除外（実 DXF）
+# build_ref_designator_final / build_ref_designator_region_results（合成データ）
+# ---------------------------------------------------------------------------
+
+def test_build_ref_designator_final():
+    ref_data_by_file = {
+        'a.dxf': {
+            'labels': [('R10', 0, 0), ('CN3', 1, 1)],
+            'total_in_frame': 5,
+            'warning': None,
+            'main_drawing_number': 'EE1234-500-01A',
+            'source_drawing_number': None,
+            'title': 'TITLE-A',
+            'subtitle': None,
+        },
+    }
+    ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value='asc')
+    assert ref_final['a.dxf']['rows'] == [
+        {'ラベル': 'CN3', '個数': 1}, {'ラベル': 'R10', '個数': 1}]
+    assert ref_final['a.dxf']['total_in_frame'] == 5
+    assert ref_final['a.dxf']['main_drawing_number'] == 'EE1234-500-01A'
+    assert ref_final['a.dxf']['title'] == 'TITLE-A'
+
+
+def test_build_ref_designator_region_results():
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    ref_data_by_file = {
+        'a.dxf': {'labels': [('R10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 4},
+    }
+    region_analyses = {
+        'a.dxf': {
+            'frames': [(0, 0, 0, 0)],
+            'regions': [{'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
+                         'name_candidates': [(1.0, 'RACK1')]}],
+            'main_drawing_number': 'EE1234-500-01A',
+        },
+    }
+    name_selections_by_file = {'a.dxf': {('a.dxf', 0): ['RACK1']}}
+    results = ref_designator.build_ref_designator_region_results(
+        ref_data_by_file, region_analyses, name_selections_by_file, sort_value='asc')
+    r = results['a.dxf']
+    assert r['total_in_frame'] == 4
+    assert r['final_count'] == 2   # R10 + CN3
+    assert r['filtered_count'] == 2   # total_in_frame(4) - final_count(2)
+    by_label = {row['ラベル']: row for row in r['rows']}
+    assert by_label['R10']['領域'] == 'RACK1'
+    assert by_label['CN3']['領域'] == ''
+
+
+# ---------------------------------------------------------------------------
+# 図面情報枠（タイトルブロック）の幾何検出（合成データ）
+# ---------------------------------------------------------------------------
+
+def _make_standard_title_block_lines(xr, y0, width=175.0, height=64.0):
+    """右辺=xr・底辺=y0に接する標準的なタイトルブロック矩形の境界線を返す。"""
+    left = xr - width
+    top = y0 + height
+    return [
+        ((left, y0), (xr, y0)),   # 底辺
+        ((xr, y0), (xr, top)),    # 右辺
+        ((left, y0), (left, top)),  # 左辺
+        ((left, top), (xr, top)),  # 上辺
+    ]
+
+
+def test_detect_info_frame_bbox_uses_boundary_line_when_available():
+    """タイトル項目名が3件以上一致し、境界線も見つかる場合はその境界線を
+    情報枠のbboxとして使う。"""
+    xl, xr, y0, y1 = 0.0, 200.0, 0.0, 300.0
+    block_lines = _make_standard_title_block_lines(xr, y0)
+    label_points = [
+        ('TITLE', 150.0, 20.0), ('DATE', 160.0, 30.0), ('NAME', 170.0, 40.0),
+    ]
+    bbox = ref_designator._detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1)
+    assert bbox == (xr - 175.0, xr, y0, y0 + 64.0)
+
+
+def test_detect_info_frame_bbox_returns_none_when_too_few_title_terms():
+    """タイトル項目名の一致が最小数未満なら情報枠なしとみなす（None）。"""
+    xl, xr, y0, y1 = 0.0, 200.0, 0.0, 300.0
+    label_points = [('TITLE', 150.0, 20.0), ('DATE', 160.0, 30.0)]  # 2件のみ
+    bbox = ref_designator._detect_info_frame_bbox([], label_points, xl, xr, y0, y1)
+    assert bbox is None
+
+
+def test_detect_info_frame_bbox_exact_match_only_avoids_substring_false_positive():
+    """部分一致ではなく完全一致で判定するため、回路内容の説明文にたまたま
+    'CHECK' 等の語が部分文字列として含まれていても誤マッチしない
+    （実データ EE6333-610-07B.dxf で確認: 'SNM-5 DI2 SET POINT (OUT CHECK)'）。"""
+    xl, xr, y0, y1 = 0.0, 200.0, 0.0, 300.0
+    label_points = [
+        ('SNM-5 DI2 SET POINT (OUT CHECK)', 100.0, 200.0),  # 部分文字列としてCHECKを含むが除外
+        ('TITLE', 150.0, 20.0), ('DATE', 160.0, 30.0),
+    ]
+    bbox = ref_designator._detect_info_frame_bbox([], label_points, xl, xr, y0, y1)
+    assert bbox is None  # 3件に満たない（誤マッチしていれば3件になってしまう）
+
+
+def test_detect_info_frame_bbox_picks_bottom_cluster_not_unrelated_top_labels():
+    """底辺(y0)から離れた位置にある同名ラベル群（「流用元図番」の履歴テーブル等）は
+    除外し、底辺に接する最初の連続クラスタのみを情報枠の判定に使う
+    （実データ EE6868-405C.dxf で確認: y=266付近に無関係な TITLE/DWG No. の
+    繰り返しがあり、これを含めるとタイトルブロックのbboxが誤って
+    図面全体近くまで拡大してしまっていた）。"""
+    xl, xr, y0, y1 = 0.0, 200.0, 0.0, 300.0
+    block_lines = _make_standard_title_block_lines(xr, y0)
+    label_points = [
+        # 底辺に接するタイトルブロック本体
+        ('TITLE', 150.0, 20.0), ('DATE', 160.0, 30.0), ('NAME', 170.0, 40.0),
+        # 遠く離れた無関係なクラスタ（y=266、y_gap=20を大きく超える）
+        ('TITLE', 50.0, 266.0), ('DATE', 60.0, 266.0), ('NAME', 70.0, 266.0),
+    ]
+    bbox = ref_designator._detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1)
+    assert bbox == (xr - 175.0, xr, y0, y0 + 64.0)
+
+
+def test_detect_info_frame_bbox_picks_rightmost_cluster_when_side_by_side():
+    """タイトルブロックが横並びに複数存在する図面（旧版タイトルブロックとの
+    比較表示等）では、右辺xrに近い側のクラスタのみを採用する
+    （実データ EE6868-516-01A.dxf で確認: 「流用元図番」を含む旧版
+    タイトルブロックが左に、現行タイトルブロックが右に並んでいた）。"""
+    xl, xr, y0, y1 = 0.0, 800.0, 0.0, 500.0
+    block_lines = _make_standard_title_block_lines(xr, y0)
+    label_points = [
+        # 右側（本来のタイトルブロック、xrに接する）
+        ('TITLE', 750.0, 20.0), ('DATE', 760.0, 30.0), ('NAME', 770.0, 40.0),
+        # 左側（横並びの別タイトルブロック、y範囲は同じだがxが離れている）
+        ('TITLE', 400.0, 20.0), ('DATE', 410.0, 30.0), ('NAME', 420.0, 40.0),
+    ]
+    bbox = ref_designator._detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1)
+    assert bbox == (xr - 175.0, xr, y0, y0 + 64.0)
+
+
+def test_detect_info_frame_bbox_falls_back_to_label_bbox_when_no_boundary_line():
+    """境界線が見つからない場合はラベルbbox+マージンでフォールバックする。"""
+    xl, xr, y0, y1 = 0.0, 200.0, 0.0, 300.0
+    label_points = [
+        ('TITLE', 150.0, 20.0), ('DATE', 160.0, 30.0), ('NAME', 170.0, 40.0),
+    ]
+    bbox = ref_designator._detect_info_frame_bbox([], label_points, xl, xr, y0, y1)
+    assert bbox is not None
+    left, right, bottom, top = bbox
+    assert right == xr
+    assert bottom == y0
+    assert left <= 150.0  # ラベルbbox左端(150)-マージン以下
+    assert top >= 40.0    # ラベルbbox上端(40)+マージン以上
+
+
+# ---------------------------------------------------------------------------
+# 図面枠検出・図面情報枠の幾何検出（実 DXF）
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('sample_name', [
@@ -411,8 +336,8 @@ def test_build_region_output_counts_and_sorts():
     'EE6097-039-06C.dxf',   # 3図面
 ])
 def test_titleblock_content_excluded_from_real_sample(sample_name):
-    """図面情報欄内のラベル（TITLE/DATE/REVISION/人名等）が機器符号候補
-    （確定＋未確定ラベルUIでのレビュー対象）に一切現れないこと（構造的除外の検証）。"""
+    """図面情報枠内のラベル（TITLE/DATE/REVISION/人名等）が機器符号抽出結果に
+    一切現れないこと（幾何検出による情報枠除外の検証）。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
@@ -420,8 +345,7 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
     assert data['warning'] is None
-    all_texts = {t for t, _x, _y in data['confirmed_labels']} | \
-        {t for t, _x, _y in data['review_labels']}
+    all_texts = {t for t, _x, _y in data['labels']}
 
     titleblock_leakage = {'TITLE', 'DATE', 'REVISION', 'APPRV', 'CHECK', 'DESIG',
                            'DRAW', 'MARK', 'REMARKS', 'SCALE', 'NAME',
@@ -434,34 +358,20 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     'EE6868-500-01C.dxf',
     'EE6097-039-06C.dxf',
 ])
-def test_candidate_labels_all_match_base_pattern_and_exclude_known_words(sample_name):
-    """機器符号（候補）＝確定＋未確定ラベルUIでのレビュー対象は (1) Patterns（3パターン）に
-    一致したものだけで (2) 除外パターン該当（GND・INPUT・TITLE等）は一切含まれず、
-    (3) 確定と未確定は互いに排他であること（2026-07-10 ユーザー指摘のバグ修正の
-    回帰検証。実データで RemainingUnclassified シートの中身を再確認し、
-    GND/INPUT/TITLE等には除外カテゴリが付与されている＝候補に含まれないのが
-    正しい動作と確定）。"""
+def test_output_labels_all_match_candidate_pattern(sample_name):
+    """出力される機器符号はすべて3候補パターンのいずれかに一致すること
+    （判定は括弧より前の部分に対して行う）。除外パターンは廃止されたため、
+    ここでは形式一致のみを検証する。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
 
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
-    excluded_words = {'GND', 'INPUT', 'OUTPUT', 'TITLE', 'POWER', 'ALARM'}
-    confirmed_texts = {t for t, _x, _y in data['confirmed_labels']}
-    review_texts = {t for t, _x, _y in data['review_labels']}
-    assert confirmed_texts.isdisjoint(review_texts)
-    for text, _x, _y in list(data['confirmed_labels']) + list(data['review_labels']):
+    for text, _x, _y in data['labels']:
         judgment = ref_designator._judgment_text(text)
         assert ref_designator.CANDIDATE_PATTERN.match(judgment), (
             f'{text!r} does not match CANDIDATE_PATTERN')
-        assert text not in excluded_words, (
-            f'{text!r} matches ExclusionPatterns but leaked into candidate pool')
-    for text in confirmed_texts:
-        # matched_confirmed_category は正規化済みラベル全体（括弧を含みうる）を
-        # 受け取る想定のため、judgment に切り詰めずそのまま渡す
-        # （r_paren_suffix/vr_paren_suffix は括弧の中身自体を問うため）。
-        assert ref_designator.matched_confirmed_category(text) is not None
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
@@ -475,6 +385,9 @@ def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
     result = ref_designator.collect_in_frame_labels(path, frame_lineweight=100)
     assert result['error'] is None
     assert len(result['frames']) == 13
+    # 実データ検証（sample-dxf/全156件比較）で全13枠が175×64の標準タイトル
+    # ブロックとして検出できることを確認済み（frames_without_info_frame=0）。
+    assert result['frames_without_info_frame'] == 0
 
 
 @pytest.mark.parametrize('sample_name', [
@@ -518,8 +431,7 @@ def test_cb001_not_dropped_by_paper_space_frame_coordinate_mismatch():
         pytest.skip('sample DXF not found: EE6892-455B.dxf')
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename='EE6892-455B.dxf')
-    all_labels = {t for t, _x, _y in data['confirmed_labels']} | \
-        {t for t, _x, _y in data['review_labels']}
+    all_labels = {t for t, _x, _y in data['labels']}
     assert 'CB001' in all_labels
     assert len(all_labels) > 50
 
@@ -533,115 +445,21 @@ def test_extract_ref_designator_rows_end_to_end():
         path, frame_lineweight=100, original_filename='EE6491-039-04A.dxf')
     assert result['filename'] == 'EE6491-039-04A.dxf'
     assert result['warning'] is None
-    assert len(result['confirmed_rows']) > 0
-    assert len(result['review_rows']) > 0
+    assert len(result['rows']) > 0
     # 行データは {'ラベル': str, '個数': int} の形
-    for sample in (result['confirmed_rows'][0], result['review_rows'][0]):
+    for sample in result['rows'][:5]:
         assert set(sample.keys()) == {'ラベル', '個数'}
 
 
-# ---------------------------------------------------------------------------
-# 追加パターン（reference_deginator_pattern_added.txt、2026-07-26 追加確定）
-# ---------------------------------------------------------------------------
-#
-# 優先順位: 候補形ゲート → 既存除外（judgment基準）→ 追加機器符号
-# （ADDED_DESIGNATOR_PATTERNS、ラベル全体基準）→ 追加除外
-# （ADDED_EXCLUSION_PATTERNS、ラベル全体基準）。
-# 既存除外が「英単語」を優先的に除外し（MOTOR等）、追加機器符号は
-# 追加除外より優先される（DC12A3等）。model/ref_designator.py の
-# 「2b. 追加パターン」節冒頭コメント参照。
-
-def test_compile_shorthand_pattern_notation():
-    """独自記法（a=英大文字1字, n=数字1字, *=1回以上繰返し, .*=任意0文字以上）
-    の変換が正しいことを直接検証する。"""
-    rx = ref_designator._compile_shorthand_pattern('DCnnan')
-    assert rx.match('DC12A3')
-    assert not rx.match('DC1A3')     # 数字が1桁少ない
-    assert not rx.match('DC123A34')  # 長さ不一致
-
-    rx2 = ref_designator._compile_shorthand_pattern('Kn')
-    assert rx2.match('K1')
-    assert not rx2.match('K12')      # 'n' に * が無いので数字は1桁のみ
-
-    rx3 = ref_designator._compile_shorthand_pattern('SW.*')
-    assert rx3.match('SW')
-    assert rx3.match('SW1')
-    assert rx3.match('SW(ABC)')      # .* は括弧を含む
-
-
-@pytest.mark.parametrize('label,expected_category', [
-    ('MOT1', 'added_desig:MOT.*'),
-    ('PG1', 'added_desig:PG.*'),
-    ('SW1', 'added_desig:SW.*'),
-    ('CB001', 'letters_digits_2or3'),      # 既存確定パターンが先に一致
-    ('LS1', 'added_desig:LS.*'),
-    ('OS1', 'added_desig:OS.*'),
-    ('DC12A3', 'added_desig:DCnnan'),      # A衝突: 追加機器符号が追加除外に優先
-])
-def test_added_designator_patterns_confirmed(label, expected_category):
-    """追加の機器符号パターンに一致するラベルは候補かつ確定（自動採用）になる。"""
-    assert ref_designator.is_ref_designator_candidate(label) is True
-    assert ref_designator.matched_confirmed_category(label) == expected_category
-
-
-@pytest.mark.parametrize('label,expected_category', [
-    ('DC12', 'added_excl:DCn*.*'),   # DCnnan(機器符号)には一致しないため除外のまま
-    ('K1', 'added_excl:Kn'),
-    ('O5', 'added_excl:O.*'),
-    ('I9', 'added_excl:I.*'),
-    ('CM100', 'added_excl:CM.*'),
-])
-def test_added_exclusion_patterns_excluded(label, expected_category):
-    """追加の除外パターンに一致し、追加の機器符号パターンで救済されない
-    ラベルは除外される。"""
-    assert ref_designator.is_ref_designator_candidate(label) is False
-    status, category = ref_designator.classify_judgment_detailed(
-        ref_designator._judgment_text(label), label)
-    assert status == 'excluded'
-    assert category == expected_category
-
-
-@pytest.mark.parametrize('label', ['MOTOR', 'PGND', 'SWITCH', 'CONTROL', 'THERMOCOUPLE'])
-def test_existing_exclusion_wins_over_added_designator_prefix(label):
-    """B衝突: 既存の除外語リスト（普通名詞・回路説明語）に完全一致する語は、
-    その語幹が追加の機器符号パターン（MOT.*/PG.*/SW.*/CON.*/TH.* 等）に
-    一致していても除外が優先される（英単語はそのまま除外、MOT1等の記号形
-    だけ追加機器符号として救済する、2026-07-26 ユーザー確定）。"""
-    assert ref_designator.is_ref_designator_candidate(label) is False
-
-
-def test_added_patterns_do_not_affect_untouched_existing_labels():
-    """追加パターンに一切関与しない既存ラベルの判定は変化しない（無回帰）。"""
-    assert ref_designator.is_ref_designator_candidate('R10') is True
-    assert ref_designator.matched_confirmed_category('R10') == 'letters_digits_2or3'
-    assert ref_designator.is_ref_designator_candidate('GND') is False
-    assert ref_designator.matched_confirmed_category('CN3') == 'cn_single_digit'
-
-
-# ---------------------------------------------------------------------------
-# classify_excluded_labels（除外符号シート用、2026-07-26 追加）
-# ---------------------------------------------------------------------------
-
-def test_classify_excluded_labels_returns_only_excluded_status():
-    """3パターンには一致したが除外パターンに該当したラベルのみを返す。
-    candidate（機器符号候補）・no_match（記号・注記）はいずれも含まない。"""
-    labels = [
-        ('GND', 0, 0),        # excluded (circuit_description)
-        ('MOTOR', 1, 1),      # excluded (common_nouns)
-        ('R10', 2, 2),        # candidate
-        ('(2/5)', 3, 3),      # no_match
-    ]
-    excluded = ref_designator.classify_excluded_labels(labels)
-    assert excluded == [('GND', 0, 0), ('MOTOR', 1, 1)]
-
-
-def test_extract_ref_designator_data_includes_excluded_labels():
-    """`extract_ref_designator_data()` の戻り値に `excluded_labels` キーが
-    含まれ、除外判定されたラベルが正しく収集される。"""
-    path = _find_sample('EE6491-039-04A.dxf')
+def test_formerly_excluded_words_now_appear_when_outside_info_frame():
+    """旧仕様では除外パターンにより弾かれていた語（GND 等の回路説明語）が、
+    図面情報枠の外にある限り新仕様では出力に含まれること
+    （2026-07-30 ユーザー承認の仕様変更そのものの検証。除外パターン廃止の
+    直接の帰結）。"""
+    path = _find_sample('EE6868-500-01C.dxf')
     if not path:
-        pytest.skip('sample DXF not found: EE6491-039-04A.dxf')
+        pytest.skip('sample DXF not found: EE6868-500-01C.dxf')
     data = ref_designator.extract_ref_designator_data(
-        path, frame_lineweight=100, original_filename='EE6491-039-04A.dxf')
-    assert 'excluded_labels' in data
-    assert isinstance(data['excluded_labels'], list)
+        path, frame_lineweight=100, original_filename='EE6868-500-01C.dxf')
+    all_labels = {t for t, _x, _y in data['labels']}
+    assert 'GND' in all_labels

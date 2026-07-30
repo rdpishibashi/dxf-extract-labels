@@ -1,129 +1,124 @@
-# REF_DESIGNATOR.md — 機器符号（候補）抽出
+# REF_DESIGNATOR.md — 機器符号抽出
 
 > 全体構成・アーキテクチャは [OVERVIEW.md](OVERVIEW.md) を参照。
 
-## 機器符号（候補）抽出パイプライン（`model/ref_designator.py`、v1.6.0・既定モード）
+## 機器符号抽出パイプライン（`model/ref_designator.py`、v2.0.0・既定モード）
 
-`reference_designator_candidates.xlsx`（`Patterns` / `ExclusionPatterns` シート）を
-正としたパターン・除外リストを実装する。処理はファイル単位で以下の順に行う。
+**2026-07-30 判定条件の簡素化（ユーザー指定）**: 除外パターン・追加パターン・
+確定パターン・「未確定ラベル」UIでの人手レビュー・連動採用（兄弟ラベル）・
+判断ログ（採用/非採用の記録・蓄積）をすべて廃止し、以下の単純なパイプラインに
+一本化した。
 
 1. **図面枠検出**: 「領域検出の詳細設定」の「図面枠の太さ」（`frame_lineweight`）と
-   `color=7` を満たす LINE（modelspace 直置き + フォーマットブロックの INSERT 展開）を
+   `color=7` を満たす LINE（modelspace 直置き + テンプレートブロックの INSERT 展開）を
    `region_detector.detect_drawing_frames()` で 4 辺 1 組に集約する。
    **color 条件は必須**（lineweight 単独では無関係な線分を拾って誤検出することを
    `EE6868-500-01C.dxf` で確認済み: lineweight単独=772本→誤検出31枠、
    lineweight+color=7=52本→正しく13枠。2026-07-10）。
    **Model Space に何らかの内容（frame_lines・label_entities のいずれか）が
-   あれば常に Model Space のみを対象にする**（v1.8.1・v1.8.2で方針確定）。
-   図面枠線を直接の子に持つフォーマットブロック（`JZB_0001`）が Model Space
-   ではなく `ICADSX Layout` という Paper Space レイアウトにのみ INSERT
-   されている図面が実データに存在する（`EE5322-455-01B.dxf`・
-   `EE5322-455-07A.dxf` 等）。Model Space が**完全に空の場合のみ**、他の
-   レイアウトを順に試し、内容が見つかったレイアウト自身の frame_lines・
-   label_entities のペアを使う（レイアウトをまたいで混在させない）。
-
-   **重要**: Model Space と Paper Space は独立した座標系のため、一方の
-   レイアウトの図面枠bboxをもう一方のレイアウトのラベルに適用してはならない。
-   v1.8.0では両レイアウトの図形を無条件にまとめて収集していたが、
-   `EE6892-455B.dxf`（実際の機器符号ラベル`CB001`等はModel Spaceにあり、
-   図面枠だけPaper Spaceにある図面）で、Paper Space由来の枠bboxをModel
-   Spaceのラベルに適用してしまい、`CB001`等の大半が「枠外」と誤判定され
-   出力から消える不具合が発生した（2026-07-14ユーザー報告）。v1.8.2で
-   「Model Spaceに何かあれば常にModel Spaceのみを使う」方針に修正して
-   解消。この場合`EE5322-455-01B.dxf`等は再び「図面枠が見つかりません
-   でした」という警告が表示されるが、次項7の枠なしフォールバックで
-   Model Space全ラベルが正しく抽出されるため実害はない。
-2. **フォーマットブロックの構造的除外**: 図面枠線を直接の子として持つブロック
-   （実データでは `JZB_*`）を「フォーマットブロック」と判定し、その INSERT 由来の
-   TEXT/MTEXT を丸ごと除外する。図面情報欄（タイトル・日付・改訂履歴・設計者名等）と
-   図面枠外の位置記号（A-F, 1-8 等）はいずれもこのブロック内に存在することを
-   サンプル18件で検証済み。**人名の個別リストは持たない**（増減するため。図面情報欄が
-   丸ごと除外されるので人名も自動的に除外される）。
+   あれば常に Model Space のみを対象にする**（v1.8.1・v1.8.2で方針確定、詳細は
+   `dxf-electrical-circuit` スキルの2節参照）。
+2. **図面情報枠（タイトルブロック）の幾何検出**（v2.0.0、後述）: 各図面枠の右下、
+   右辺・底辺が図面枠に接する矩形をタイトルブロックとみなし、この矩形内のラベルを
+   スコープから除外する。旧来の構造的除外（図面枠線を直接の子に持つ「テンプレート
+   ブロック」由来のテキストを丸ごと除外）から置き換えた（後述「図面情報枠の幾何検出」
+   節参照）。
 3. **図面枠内判定**: 残った TEXT/MTEXT のうち、検出済み図面枠の bbox（±1 マージン）
    内にあるものだけを対象にする（複数図面ファイルは全枠が対象）。
 4. **正規化・パターン判定**: NFKC 正規化（全角→半角）・前後空白除去した上で、
    **括弧より前の部分**でパターン判定する（`R10(2.2K)` → `R10` で判定、出力は
    `R10(2.2K)` のまま）。3パターンのいずれかに一致するか判定する:
    `^(?:[A-Z]+-[A-Z]+[0-9]+[A-Z0-9-]*|[A-Z]+[0-9]+[A-Z0-9-]*|[A-Z]+)$`
-5. **除外パターン適用**: 4 で一致したものから、除外パターン（後述）に該当するものを
-   さらに除く。残ったものが「機器符号（候補）」（`reference_designator_candidates.xlsx`
-   の RemainingUnclassified シートと同じ母集団）。3パターンいずれにも一致しない
-   文字列（`(2/5)` 等の記号・注記）・除外パターンに該当したもの（`GND`・`TITLE`・
-   `N24` 等）はいずれも機器符号（候補）に含めない＝画面に一切表示しない。ただし
-   除外パターンに該当したもの（`classify_excluded_labels()`）は、「機器符号（候補）
-   以外も抽出」OFF時の出力Excelの「除外符号」シートに一覧表示される（v1.9.16、
-   詳細は [OVERVIEW.md](OVERVIEW.md) の Excel 出力仕様を参照）。3パターン非一致
-   （'no_match'）はこのシートにも含まれない。
-6. **確定パターン適用**（v1.6.3）: 5 の機器符号（候補）のうち、確実に Reference
-   Designator と判定してよい形（`CONFIRMED_PATTERN_CATEGORIES`、後述）に一致した
-   ものは「確定」として自動採用され、「未確定ラベル」UI には表示しない。
-7. **「未確定ラベル」UI でのレビュー**: 6 で確定しなかった残りを「未確定ラベル」と
-   して `st.data_editor` に表示する（初期状態は全て未選択）。ユーザーがチェックし
-   「選択完了」した分と、6 で自動採用された確定分を合わせたものが最終的な
-   機器符号として出力される。表示レイアウト（固定幅テーブルのブラウザー幅に
-   応じたレスポンシブな横並び）は v1.6.6 参照。
-7. **図面枠が検出できない場合**: 警告を出し、図面枠フィルタなしでファイル全体
+5. **一致すれば全件出力**: 4 で一致したラベルは、除外・確認なしにそのまま全件が
+   機器符号として出力される（GND・SYSTEM 等の英字のみラベルも、図面情報枠外にあれば
+   出力に含まれる。旧仕様からの意図的な変更）。
+6. **図面枠が検出できない場合**: 警告を出し、図面枠フィルタなしでファイル全体
    （Model Space + Model 以外の全レイアウトの TEXT/MTEXT 全件）を対象に
    フォールバックする。
+7. **図面枠は検出できたが図面情報枠が検出できない場合**: 警告を出し、該当する
+   図面枠については情報枠内ラベルを除外せずに抽出する（`frames_without_info_frame`
+   カウントに基づく）。
 
 > 「機器符号（候補）以外も抽出」ON のときは、このパイプラインを使わず
 > `process_multiple_dxf_files()`（図面枠制限なし・フィルタなし）で全ラベルを抽出する。
 
-#### 連動採用（兄弟ラベル・全ファイル横断、v1.7.1）
+### 図面情報枠（タイトルブロック）の幾何検出（`_detect_info_frame_bbox()`、v2.0.0）
 
-「未確定ラベル」UI で1件チェック/解除すると、以下の条件に一致する他のラベルへ
-アップロード済み**全ファイルにわたって**即座に連動する（`model/ref_designator.py`）。
+各ページの右下の長方形エリアで、右辺と底辺が図面枠に接している矩形を図面情報枠
+（タイトルブロック）とみなす。検出手順:
 
-- **兄弟ラベル**（`sibling_key()`）: NFKC 正規化後、末尾が数字1〜2桁で、その前の
-  文字列が一致するラベル（例: `CN1`・`CN2`・`CN10` は同じキー `CN`）。末尾3桁以上
-  （`CB001`）・末尾が数字でない（`X14A`）・数字のみ（`10`）は対象外（`sibling_key()`
-  が `None` を返す）。
-- **同一ラベル**（全角/半角の表記違いを含む、NFKC正規化後の一致）: 兄弟ラベルの
-  対象外の形でも、別ファイルに同じラベルがあれば同期する。
-- 他ファイルに存在しないラベルへ勝手に追加されることはない
-  （`propagate_selection_all_files()` は既存キーのみ更新）。
+1. **タイトル項目名の完全一致収集**: 図面枠内のラベルのうち、以下のタイトル項目名
+   （全角/半角の両方の可能性があるため NFKC 正規化して照合。**完全一致のみ**、
+   部分一致ではない）に一致するものを集める。
 
-**実装方式（正本 dict + キー再生成）**: 初回実装は `st.data_editor` の
-`on_change` コールバックから**別インスタンスの `session_state`（`edited_rows`）を
-直接書き換える**方式だったが、ブラウザ⇔サーバー間の無限同期フィードバックループで
-画面全体が例外なしにフリーズする不具合が発生し撤回した。代わりに、チェック状態の
-正本を通常の `session_state`（`unclassified_checked`）に持ち、data_editor の
-`key` に `unclassified_ver`（バージョンカウンタ）を含める方式に変更した。
+   ```
+   貼, DWG.No, DATE, NAME, 流用元図番, 計算計量, TOLERANCES, UNLESS NOTED,
+   MARK, REMARKS, REVISION, APPRV, CHECK, DESIG, DRAW, TITLE,
+   承認, 検図, 設計, 製図, SCALE, MFG No., DWG No.
+   ```
 
-```
-1. data_editor は正本 unclassified_checked から作った初期値で描画
-   （key = f"unclassified_editor_{unclassified_ver}_{fname}_{suffix}"）
-2. rerun時、data_editor の返り値と正本を比較して差分（deltas）を検出
-3. 差分があれば ref_designator.propagate_selection_all_files() で正本を更新
-   → unclassified_ver を +1 → st.rerun()
-4. 次のrunでは新しいkeyの別ウィジェットとして再生成される
-   （旧インスタンスはブラウザ側でも破棄され、同期し返す相手が存在しない）
-```
+   **完全一致が必須な理由**: 部分一致（`in` 判定）で実装すると、回路内容の説明文に
+   たまたまタイトル項目名が部分文字列として含まれるケースを誤マッチする。実データ
+   `EE6333-610-07B.dxf` で `SNM-5 DI2 SET POINT (OUT CHECK)` というラベルが
+   `CHECK` を部分文字列に含み、`(OUT CHECK)` を情報枠と誤認識する不具合を実装中に
+   発見・修正した。
 
-差分がない run（再描画直後・「選択完了」クリック時）は何もしないため、再実行が
-連鎖することはない。「選択完了」時の採用集合は、data_editor の返り値ではなく
-`unclassified_checked`（正本）から直接収集する。汎用パターンとしては
-`~/.claude/skills/streamlit/SKILL.md` §6「st.data_editor 間のライブ連動」に記録済み。
+2. **最小一致数の判定**: 一致数が 3 件未満なら情報枠なしとみなす（`None` を返す）。
 
-> 単体テスト: `tests/unit/test_sibling_autocheck.py`（16件）。
+3. **y方向クラスタリング（底辺に接する最初の連続クラスタのみ採用）**: 一致した
+   ラベルを y 昇順でソートし、隣接ラベルとの y 差が `_INFO_FRAME_Y_GAP`（20.0）
+   以内である連続クラスタのうち、最も y が小さい（底辺 y0 に近い）クラスタだけを
+   採用する。これにより「流用元図番」の履歴テーブル等、タイトルブロックとは別の
+   位置（Y方向に大きく離れた場所）にある同名ラベル群を除外する。実データ
+   `EE6868-405C.dxf` で、「流用元図番」履歴テーブル（y≈266）が主タイトルブロック
+   （y≈15〜83）とは無関係な位置に存在し、これを含めると情報枠のbboxが図面全体
+   近くまで誤って拡大する不具合を実装中に発見・修正した。
+
+4. **x方向クラスタリング（右辺に近い側の連続クラスタのみ採用）**: 3 のクラスタを
+   さらに x 降順でソートし、隣接ラベルとの x 差が `_INFO_FRAME_X_GAP`（30.0）
+   以内である連続クラスタのうち、最も x が大きい（右辺 xr に近い）クラスタだけを
+   採用する。タイトルブロックが横並びに複数存在する図面（旧版タイトルブロックとの
+   比較表示等）で、右側の枠だけを情報枠として採用するため。実データ
+   `EE6868-516-01A.dxf` で、「流用元図番」を含む旧版タイトルブロックが左に、
+   現行タイトルブロックが右に並んで配置されており、これを区別しないと情報枠の
+   bboxが図面全体近くまで誤って拡大する不具合を実装中に発見・修正した。
+
+5. **境界線の探索**: 4 のクラスタのbbox（`bbox_left`＝最小x、`bbox_top`＝最大y）を
+   もとに、図面枠と同じテンプレートブロック由来の全線分（lineweight/colorは問わない）
+   から、右辺 xr に接する水平線（y が `bbox_top` 以上で最小のもの）・底辺 y0 に
+   接する垂直線（x が `bbox_left` 以下で最大のもの）を探し、情報枠の上辺・左辺とする。
+   境界線が見つからない場合は、ラベルbbox + マージン（2.0）でフォールバックする。
+
+実データ156件で検証したところ、ULVAC標準テンプレートでは全286枠（Paper Space
+限定で図面枠自体が検出できない3ファイルを除く）が一貫して**幅175×高さ64**の
+矩形として検出された。旧方式（構造的除外）と新方式（幾何検出）の出力差分を
+全156件で比較したところ:
+- 位置記号（A-F等）の意図しない漏れは**0件**
+- 旧方式では出力されていたが新方式では出力されなくなったラベルは12件（`TAKEDA`
+  等の設計者名）のみで、これらはいずれも「図面枠線を直接持たないブロック
+  （`JZB_0159`等）内に配置されていたため、旧方式の構造的除外（ブロック名ベース）
+  が効かず候補に混入していた」ケースであり、新方式（座標ベースの幾何判定）では
+  この抜け穴が塞がれる**改善**だった（回帰ではない）
+
+> 単体テスト: `tests/unit/`（合成データでのクラスタリング・境界線探索の検証）。
+> 回帰テスト: `tests/regression/test_ref_designator.py`（実データでの図面情報枠
+> 検出・全286枠175×64一致の検証を含む）。
 
 
-## 機器符号（候補）抽出パターン（`model/ref_designator.py`、v1.6.0）
+## 機器符号抽出パターン（`model/ref_designator.py`、v1.6.0）
 
-`reference_designator_candidates.xlsx`（`Patterns` / `ExclusionPatterns` シート）が
-定義の正。同ファイルは `/Users/ryozo/Dropbox/Workspace/Reference Designator/Labels/` に
-ある（本リポジトリ外・実データからパターンを検討した作業ファイル）。
+`reference_designator_candidates.xlsx`（`Patterns` シート）が定義の正。同ファイルは
+`/Users/ryozo/Dropbox/Workspace/Reference Designator/Labels/` にある（本リポジトリ外・
+実データからパターンを検討した作業ファイル）。
 
-> **実装ファイルの所在（v1.9.18〜）**: 本節で挙げるパターン定義
-> （`PATTERN_CATEGORIES`・`EXCLUSION_*_CATEGORIES`・`CONFIRMED_PATTERN_CATEGORIES`・
-> `ADDED_*_PATTERNS`・`classify_judgment_detailed()` 等）の実体は、モジュール分割に
-> より `model/ref_designator.py` ではなく `model/ref_designator_patterns.py` に
-> ある（`region_detector.py` との循環依存を解消するため、ezdxf/`region_detector.py`
-> に依存しない純粋な分類ロジックのみを切り出した。詳細は
-> [OVERVIEW.md](OVERVIEW.md) のディレクトリ構成節を参照）。パターンを追加・変更
-> する際は `ref_designator_patterns.py` を編集すること。`model/ref_designator.py`
-> は後方互換のため全シンボルを再エクスポートしており、`ref_designator.PATTERN_CATEGORIES`
-> 等の既存の参照方法はそのまま使える（本ドキュメントの以降の記述もこの参照名で統一する）。
+> **実装ファイルの所在（v1.9.18〜）**: 3候補パターンの定義（`PATTERN_CATEGORIES`・
+> `CANDIDATE_PATTERN`）の実体はモジュール分割により `model/ref_designator.py` では
+> なく `model/ref_designator_patterns.py` にある（`region_detector.py` との循環依存を
+> 解消するため、ezdxf/`region_detector.py` に依存しない純粋な分類ロジックのみを
+> 切り出した。詳細は [OVERVIEW.md](OVERVIEW.md) のディレクトリ構成節を参照）。
+> `model/ref_designator.py` は `ref_designator_patterns.py` から `CANDIDATE_PATTERN`・
+> `normalize_label`・`_judgment_text` の3つのみを import して使う（v2.0.0、判定条件の
+> 簡素化に伴い除外・追加・確定パターンは使わなくなった）。
 
 ### 候補パターン（`CANDIDATE_PATTERN`）
 
@@ -140,255 +135,31 @@
 | 英字繰返しのみ | `FB`、`CNCNT` |
 | 括弧付き（括弧より前で判定、出力は原文） | `FB()`、`R10(2.2K)`、`MSS(MOTOR)` |
 
-### 除外パターン（`EXCLUSION_REGEX_CATEGORIES` / `EXCLUSION_EXACT_CATEGORIES`）
+3パターンのいずれかに一致すれば、除外や確認なしにそのまま機器符号として出力される
+（v2.0.0）。3パターンいずれにも一致しない文字列（`(2/5)` 等の記号・注記）は出力に
+含まれない。
 
-| カテゴリ | 種別 | パターン/内容 | 例 |
-|---------|------|--------------|-----|
-| 図形枠外の位置記号 | 正規表現 | `^[A-Z]$` | `A` |
-| 電源端子（末尾記号） | 正規表現 | `.*[+-]$` | `R10-` |
-| ケーブル線径 | 正規表現 | `^AWG[0-9]*$` | `AWG14` |
-| ユニット名（RACK） | 正規表現 | `^RACK[0-9]*(-[0-9]+)?$` | `RACK1`、`RACK1-2` |
-| 図番 | 正規表現 | `^[A-Z]{2}[0-9]{4}-[0-9]{3}(-[0-9]{2})?[A-Z]?$` | `EE1234-500-01A` |
-| 図面情報枠（JIS/DWG） | 正規表現 | `^(JIS\|DWG)[A-Z0-9]*$` | `JIS123` |
-| 機器端子の行番号 | 正規表現 | `^[AB][0-9]+$` | `A1`、`B12` |
-| 保護接地端子 | 正規表現 | `^PE[0-9]+$` | `PE1`、`PE2` |
-| 相線・電源レール | 正規表現（v1.6.4で拡張） | `^[LNP][0-9]+[A-Z]*$` | `L1`、`N24`、`P24`、`N24AB`（末尾英大文字は0字以上） |
-| PLC/内部信号名 | 正規表現 | `^X[A-Z]+$` | `XRST`、`XMCON`（`X1`等 `X+数字` は除外対象外） |
-| 回路の説明 | 正規表現（v1.6.3、語追加はv1.6.4） | キーワード+数字1桁まで許容（例 `^(?:GND\|POWER\|...)[0-9]?$`） | `GND`、`POWER`、`COM`、`OUT2`、`IN1`、`AOUT`、`LG`、`MR`、`MRR`、`RX`、`TX`、`CLR`、`ZERO`、`YOUT`、`AG`（`OUT12`等2桁以上は対象外） |
-| 普通名詞 | 完全一致（約100語） | 端子/スイッチの機能説明語 | `ALARM`、`MOTOR` |
-| ユニット/モジュール名 | 完全一致 | `CTC`、`EFEM`、`SHIELD`、`LA`、`LB`、`CASE`、`SH` 等 | |
-| ケーブル色 | 完全一致 | JIS配線色略号 | `BK`、`WH`、`RD` 等 |
-| 図面情報枠タイトル項目 | 完全一致 | `TITLE`、`DATE`、`REVISION` 等 | |
+### 廃止された除外/追加/確定パターン（v2.0.0で判定に使わなくなった）
 
-**構造的除外が優先**: 図面情報欄・図面枠外の位置記号は、上記コンテンツベースの除外
-リストに加えて「機器符号（候補）抽出パイプライン」節の手順2（フォーマットブロック
-除外）で構造的にも除外される。人名は増減するため個別リストを持たず、構造的除外のみで
-対応する。
+除外パターン（`EXCLUSION_*_CATEGORIES`）・追加パターン（`ADDED_*_PATTERNS`）・
+確定パターン（`CONFIRMED_PATTERN_CATEGORIES`）は、`model/ref_designator.py`
+（本DXF抽出パイプライン）では**使わなくなった**が、これらのパターン判定ロジック
+自体は `model/ref_designator_patterns.py` に残っている。理由は、`region_detector.py`
+の領域名候補フィルタ（`_is_valid_name_candidate()`/`_filter_eligible_labels()`。
+矩形領域の名称候補から「機器符号らしいラベル」を除外する機能）が、`classify_judgment_detailed()`・
+`matched_confirmed_category()` を経由してこれらのパターンを引き続き必要とするため。
 
-> 除外パターンの検討過程・実データでの件数検証は
-> `reference_designator_candidates.xlsx` の `ExclusionPatterns` シートを参照。
-
-### 確定パターン（`CONFIRMED_PATTERN_CATEGORIES`、v1.6.3・4パターン追加はv1.6.4）
-
-機器符号（候補）のうち、確実に Reference Designator と判定してよい形。一致した
-ラベルは「未確定ラベル」UI でのレビューを経ずに自動採用される（`matched_confirmed_category()`
-/ `is_confirmed_designator()` / `split_confirmed()`）。より限定的なパターンを先に
-判定する順でリストされており（下表の掲載順＝判定順）、いずれか1つでも一致すれば
-確定扱いとなる（複数一致した場合は最初に一致したカテゴリ名が記録される）。
-
-| カテゴリ | 判定基準 | 正規表現 | 例 |
-|---------|---------|--------|-----|
-| cn_single_digit（v1.6.4） | judgment | `^CN[0-9]$` | `CN1`、`CN3` |
-| cn_if_prefix（v1.6.4） | judgment | `^CN-IF.*$` | `CN-IF21`、`CN-IF2-1` |
-| r_paren_suffix（v1.6.4） | full | `^R[0-9]+\(.*\)$` | `R10(2.2K)`、`R1000(2.2K)` |
-| vr_paren_suffix（v1.6.4） | full | `^VR[0-9]+\(.*\)$` | `VR5(10K)` |
-| letters_digits_2or3 | judgment | `^[A-Z]+[0-9]{2,3}$` | `R10`、`D100` |
-| letters_digits_2or3_letter | judgment | `^[A-Z]+[0-9]{2,3}[A-Z]$` | `R10A`、`A007A` |
-| hyphen_letters_digits_notail | judgment | `^[A-Z]+-[A-Z]+[0-9]+$` | `CN-IF21`（cn_if_prefixが先に一致するため実際はcn_if_prefix扱い） |
-| single_letter_digits_except_ab | judgment | `^[C-Z][0-9]+$` | `D1`、`D1000`（桁数不問） |
-
-A,B の除外は `single_letter_digits_except_ab` のみに適用する（`letters_digits_2or3`
-系には適用しない。A1/B12 等は既存の `terminal_row_letter_digit` 除外パターンで
-確定パターン判定より前に除外されるため実害はない）。
-
-**判定基準（`basis`）**: ほとんどのカテゴリは括弧より前の判定用文字列（`judgment`、
-候補パターン・除外パターンと同じ基準）に対して正規表現を適用するが、
-`r_paren_suffix`/`vr_paren_suffix` は括弧の中身自体を問うパターンのため、
-正規化済みラベル全体（`full`、括弧を含む）に対して判定する。このため
-`matched_confirmed_category()` の引数は v1.6.4 で「判定用文字列（judgment）」から
-「正規化済みラベル全体」に変更した（`judgment` のみが必要なカテゴリは内部で
-`_judgment_text()` を都度計算する）。
-
-### 追加パターン（`ADDED_EXCLUSION_PATTERNS` / `ADDED_DESIGNATOR_PATTERNS`、v1.8.0）
-
-ユーザー提供の速記記法（`reference_deginator_pattern_added.txt`）で書かれた
-「除外リスト」「機器符号リスト」を `_compile_shorthand_pattern()` で正規表現へ
-変換して取り込む。既存の意味的カテゴリ分類（`_COMMON_NOUNS` 等）は根拠が曖昧で
-困難だったため、追加分はカテゴリー分けせず原文の記法のまま **フラットに** 保持する
-（2026-07-26 ユーザー指摘）。
-
-**記法**: `a`=英大文字1字（`[A-Z]`）／ `n`=数字1字（`[0-9]`）／ `*`=直前トークンの
-1回以上繰り返し（`+`）／ `.*`=任意の0文字以上・カッコやハイフン等の記号を含む
-（正規表現の `.*` そのもの）／それ以外の英大文字・ハイフンは文字通り一致。
-
-**判定基準**: 既存の `EXCLUSION_*_CATEGORIES`/`CONFIRMED_PATTERN_CATEGORIES` の
-大半が判定用文字列（judgment＝括弧より前）を基準にするのに対し、追加パターンは
-正規化済みラベル**全体**（括弧を含む）を基準に判定する。
-
-**優先順位**（`classify_judgment_detailed()` に実装）:
-
-1. 候補形ゲート（`CANDIDATE_PATTERN`、judgment基準）— 不一致なら no_match
-2. 既存の除外リスト（`EXCLUSION_EXACT/REGEX_CATEGORIES`、judgment基準）— 一致すれば
-   excluded。追加機器符号パターンと同じ語幹が衝突しても既存除外が優先される
-   （例: `MOT.*` は追加機器符号だが `MOTOR` は普通名詞除外のまま／`PG.*` は
-   追加機器符号だが `PGND` は回路説明語除外のまま。「英単語はそのまま除外、
-   `MOT1`・`PG1` 等の記号形だけ救済する」というユーザー判断）
-3. 追加の機器符号パターン（`ADDED_DESIGNATOR_PATTERNS`、ラベル全体基準）— 一致
-   すれば candidate かつ確定（自動採用）。4) の追加除外パターンより優先する
-   （例: `DC12A3` は `DCn*.*` 除外より `DCnnan` 機器符号が優先され確定する）
-4. 追加の除外パターン（`ADDED_EXCLUSION_PATTERNS`、ラベル全体基準）— 一致すれば
-   excluded（例 `DC12`、`K1`、`O5`、`I9`）
-5. いずれにも該当しなければ candidate（従来どおり `CONFIRMED_PATTERN_CATEGORIES`
-   で確定/未確定に分岐。確定カテゴリ名の記録は既存カテゴリを優先し、追加機器符号
-   パターンは既存確定パターンに一致しない場合のみ使う。後方互換のため。例:
-   `CN3` は追加パターン `CN.*` にも一致するが、既存の `cn_single_digit` を
-   優先して記録する）
-
-`matched_added_designator_category(label)` / `matched_added_exclusion_category(label)`
-が判定関数。カテゴリ名は意味づけによる分類をしないため、仕様文字列そのものを
-使う（例 `added_desig:CN.*`、`added_excl:ETC-JPn*`）。冗長な重複エントリ
-（元ファイルの `AMP.*` の重複、`ACTA.*` に包含される `ACTAa*`、`Fn*.*` に包含
-される `Fnnnaa.*`）は除去済み（ユーザー承認）。
-
-`tools/reference_designator_analyzer.py` の `ExclusionPatterns`/`ConfirmedPatterns`
-シートにも追加パターンを反映済み（種別列に「正規表現（追加パターン）」と表示）。
-
-回帰テスト: `tests/regression/test_ref_designator.py`（追加パターン・優先順位の
-衝突ケース・既存挙動への無回帰を検証）。
+除外/追加/確定パターンの内容・回帰テストは `tests/regression/test_ref_designator_patterns.py`
+に移設した（詳細な仕様表は移設前の本ファイルの記述、または同テストファイルの
+docstring・パラメータ化テストケースを参照）。[REGION_DETECTION.md](REGION_DETECTION.md)
+の「領域名候補の機器符号除外判定」節も参照。
 
 ---
 
-## 判断ログ（採用/非採用の記録・蓄積、`model/decision_log.py`、v1.7.0）
-
-「未確定ラベル」UI でユーザーが行った採用/非採用の判断を蓄積し、確定パターン・
-除外パターンの完成度向上（`CONFIRMED_PATTERN_CATEGORIES`/`EXCLUSION_*_CATEGORIES`
-の見直し）に活用するための記録機能。「選択完了」ボタン押下時、レビュー対象だった
-未確定ラベル全件（採用したもの・しなかったもの両方）をエントリ化して記録する
-（確定パターンで自動採用された分は対象外＝人手判断の記録のみ）。
-
-### 記録エントリのスキーマ
-
-`build_entries()` が生成する CSV 行（列: `timestamp, source, file_name,
-drawing_number, label, decision, count, app_version, patterns_version`）。
-
-- `decision`: `adopted`（採用）/ `rejected`（非採用）
-- `count`: そのファイル内でのラベルの出現個数
-- `patterns_version`: 記録時点の `ref_designator.PATTERNS_VERSION`
-  （パターンリストを変更したら値を上げる。パターン更新後もまだ人手判断され続けて
-  いるラベルの特定に使う）
-- 追記型・重複排除なし（同一ラベルの判断頻度が分析上の信号になるため）
-
-### バックエンドの自動選択（`pick_backend()`）
-
-| 環境 | バックエンド | 保存先 |
-|------|------------|--------|
-| Streamlit Community Cloud | `GitHubBackend` | `st.secrets['github']`（`token`/`repo`/`path`/`branch`）で指定したログ専用リポジトリの CSV（GitHub Contents API で追記）|
-| ローカル・Windows アプリ | `FileBackend`（既定） | `~/Documents/DXF-extract-labels/decision_log.csv`。環境変数 `DXF_DECISION_LOG_PATH` で変更可（Dropbox 等の共有フォルダを指定すれば複数 PC のログを一元化できる）|
-
-`st.secrets['github']` が読めない・未設定（`secrets.toml` が存在しないローカル環境
-を含む）の場合は例外を握りつぶし `FileBackend` にフォールバックする。
-
-**ログ専用リポジトリはアプリ本体のリポジトリとは別にする**（現在の運用先:
-`rdpishibashi/dxf-label-decisions`、private）。本体リポジトリの `decision_log.csv`
-にコミットすると、コミットのたびに Streamlit Community Cloud がアプリを
-再デプロイしてしまうため。
-
-`GitHubBackend.append()` は競合（他セッションが同時に追記し `sha` が古くなった
-場合、HTTP 409/422）時に `sha` を取り直して1回だけリトライする。
-
-### Streamlit Cloud での Secrets 設定例
-
-```toml
-# .streamlit/secrets.toml（ローカル動作確認用。Cloud では管理画面の Secrets に設定）
-[github]
-token = "ghp_..."            # 対象リポジトリへの contents:write 権限を持つ PAT
-repo = "rdpishibashi/dxf-label-decisions"
-# path, branch は省略可（既定 decision_log.csv / main）
-```
-
-### 記録失敗時のフォールバック
-
-`decision_log.record()` は例外を外に出さず `(成功?, メッセージ)` を返す。記録に
-失敗しても抽出処理・Excel ダウンロードは止めない。失敗時は抽出結果セクションに
-警告を表示し、そのエントリを CSV として個別ダウンロードできるボタン
-（`entries_to_csv_bytes()`）を提供する。
-
-### 判断ログの分析（`tools/reference_designator_analyzer.py`）
-
-蓄積した `decision_log.csv` を集計し、確定パターン・除外パターンの候補を機械的に
-提案する「判断ログ分析」タブ。詳細は「開発用ツール」節を参照。
-
-回帰テスト: `tests/unit/test_decision_log.py`（バックエンド・エントリ構築の単体
-テスト）。
-
----
-
-
-## 開発用ツール（`tools/`）
-
-本体アプリ（`app.py`）とは別に、機器符号（候補）パターン・除外パターンを検討する
-ための独立した Streamlit ツールを `tools/` 配下に置く。deploy 対象の本体アプリの
-一部ではなく、開発者がパターンを見直す際に使うローカル/内部向けツール。
-
-### `reference_designator_analyzer.py`（v1.6.0、確定パターンは v1.6.2〜v1.6.3）
-
-```
-streamlit run tools/reference_designator_analyzer.py
-```
-
-複数の `extracted_labels*.xlsx`（本体アプリの「機器符号（候補）以外も抽出」ON で
-出力した Excel。`Total` シートにラベル・個数を持つ）を入力とし、
-`reference_designator_candidates.xlsx` と同じ7シート構成（`ReferenceDesignators` /
-`Patterns` / `PatternSignatures` / `ExclusionPatterns` / `ConfirmedPatterns` /
-`ConfirmedDesignators` / `RemainingUnclassified`）の分析用 Excel を生成する。
-
-- **入力**: `st.file_uploader`（複数可）とローカルフォルダパス（1行1つ、glob パターン・
-  再帰検索の有無を指定可）を併用できる。
-- **パターン・除外・確定リストの定義**: `model/ref_designator.py`（本体アプリの判定
-  ロジック）を単一の正として参照する。本ツール独自にパターン・除外語・確定パターンを
-  定義し直さない。`model/ref_designator.py` に `PATTERN_CATEGORIES` /
-  `EXCLUSION_REGEX_CATEGORIES` / `EXCLUSION_EXACT_CATEGORIES` /
-  `CONFIRMED_PATTERN_CATEGORIES` / `classify_judgment_detailed()` /
-  `matched_pattern_name()` / `matched_confirmed_category()` を公開 API として
-  追加し、本ツールと本体アプリが常に同じ判定結果を返すようにしている
-  （確定パターンは v1.6.2 で本ツール専用として導入し、v1.6.3 で
-  `model/ref_designator.py` 側にも取り込んで本体アプリの判定に反映した。
-  「確定パターン」節参照）。
-- **`ConfirmedPatterns` シート**（`ExclusionPatterns` と `ConfirmedDesignators` の間）:
-  確定パターン4カテゴリの正規表現・該当ラベル数・該当個数合計。
-- **`ConfirmedDesignators` シート**（v1.6.3、`ConfirmedPatterns` の直後）: 確定パターンに
-  実際に一致したラベルの一覧（ラベル・個数・出現ファイル数・一致した確定カテゴリ、
-  個数降順）。
-- **パターン表記**（`PatternSignatures` シート）: 数字列の前の部分はそのまま、直後の数字は
-  桁数表記（1桁→`1`、2桁→`12`…）、後ろに続きがなければ `+1*` に集約、続きがあれば
-  `+` の後に英字繰返し=`A*`／数字繰返し=`1*`／ハイフンはそのまま、というノーテーション
-  （2026-07 ユーザーと確定。本体アプリでは使わない分析専用の表記のため
-  `model/ref_designator.py` には持ち込まず本ツールに閉じている）。
-- **本体アプリとの違い（既知の制限）**: 本ツールは集計済みラベル一覧（座標情報なし）
-  だけを見るため、本体アプリが行う図面枠・図面情報欄の構造的除外はできない。人名は
-  個別リストを持たない設計のため、図面情報欄由来のラベル（人名等）がパターン一致・
-  除外非該当のまま `RemainingUnclassified` に残ることがある。パターン表記のみ本ツール
-  専用の分析ロジック（本体アプリの実際の抽出結果には影響しない）。
-
-回帰テスト: `tests/regression/test_reference_designator_analyzer.py`（集計・分類・
-Excel出力の配線を検証。パターン/除外/確定リストの定義自体は `test_ref_designator.py` 側で検証）。
-
-#### 判断ログ分析タブ（v1.7.0）
-
-`app()` はタブ構成（「extracted_labels 集計」/「判断ログ分析」）になり、上記は
-`_app_extracted_labels()` に、判断ログ分析は `_app_decision_log()` に分離されている。
-
-本体アプリが蓄積した `decision_log.csv`（「判断ログ」節参照）を読み込み、ラベル
-ごとの採用率・非採用率から確定パターン候補・除外パターン候補を提案する。
-
-- **入力**: `st.file_uploader`（複数可）・ローカル/Dropbox フォルダパス指定（glob
-  `decision_log*.csv`）・GitHub のログ専用リポジトリから直接取得（`repo`/`path`/
-  `branch`/トークンを指定。トークン省略時は `st.secrets['github']['token']` を使用）
-  の3方式を併用できる。
-- **集計**（`aggregate_decision_log()`）: 正規化ラベル単位で `adopted`/`rejected`
-  の個数を合算する。
-- **提案**（`build_decision_log_suggestions()`）: 合計出現回数が
-  `最小出現回数`（既定3）未満は「様子見（サンプル不足）」。採用率が
-  `確定パターン候補とする採用率の下限`（既定1.0=常に採用）以上なら「確定パターン
-  候補」。非採用率が `除外パターン候補とする非採用率の下限`（既定1.0）以上なら
-  「除外パターン候補」。閾値は UI のスライダーで調整可能。
-- **出力**: `DecisionLogSummary` 1シートの Excel（`build_decision_log_workbook()`）。
-- 提案はあくまで機械的な集計に基づく候補であり、実際にパターンへ反映するかは
-  `model/ref_designator.py` の `CONFIRMED_PATTERN_CATEGORIES` /
-  `EXCLUSION_*_CATEGORIES` を人手で判断・編集する（自動反映はしない）。
-
-回帰テスト: `tests/regression/test_reference_designator_analyzer.py` の
-`test_aggregate_decision_log_*` / `test_build_decision_log_*`。
-
----
-
+*最終更新: 2026-07-30（v2.0.0、判定条件の簡素化に伴い全面書き換え。除外/追加/確定
+パターン・「未確定ラベル」UIでのレビュー・連動採用・判断ログ・開発用ツール
+〈`tools/reference_designator_analyzer.py`〉の記述を削除し、新パイプライン（3候補
+パターン一致で全件出力）と、構造的除外から置き換えた図面情報枠の幾何検出
+〈`_detect_info_frame_bbox()`〉の詳細を追加。除外/追加/確定パターンの仕様表は
+`ref_designator_patterns.py`（`region_detector.py`の領域名候補フィルタ専用として存続）
+向けの回帰テスト `tests/regression/test_ref_designator_patterns.py` へ移設）*

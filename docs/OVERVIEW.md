@@ -8,10 +8,12 @@
 ## 概要
 
 複数の DXF ファイルからテキストラベルを抽出し、Excel 形式で出力する Streamlit アプリ。
-既定モードでは、図面枠内・図面情報欄外のラベルから Reference Designator（機器符号）
-パターンに一致するものを「機器符号（候補）」として抽出し、未確定ラベルはユーザーが
-選択して採用する（v1.6.0）。図番・タイトル抽出オプションも持つ。「UNIT内結線図」
-図面から端子台の端子番号を抽出する「端子一覧を抽出」オプションも持つ（v1.8.0）。
+既定モードでは、図面枠内・図面情報枠（タイトルブロック、幾何検出）外のラベルから
+Reference Designator（機器符号）の3候補パターンに一致するものを抽出し、そのまま
+Excel に出力する（v2.0.0、2026-07-30 判定条件の簡素化。除外/確定パターン・
+「未確定ラベル」UIでの人手レビュー・判断ログは廃止）。図番・タイトル抽出オプション
+も持つ。「UNIT内結線図」図面から端子台の端子番号を抽出する「端子一覧を抽出」
+オプションも持つ（v1.8.0）。
 
 ---
 
@@ -23,15 +25,12 @@ DXF-extract-labels/
 ├── requirements.txt
 ├── model/                      # Model層: streamlit非依存のドメインロジック（v1.9.5でutils/から改名）
 │   ├── extract_labels.py       # DXF ラベル抽出コア（共有モジュール）
-│   ├── ref_designator.py       # 機器符号（候補）抽出パイプライン（DXF-extract-labels 専用、v1.6.0）
-│   ├── ref_designator_patterns.py  # 機器符号パターン判定ロジックのみ（v1.9.18で ref_designator.py から分離）
+│   ├── ref_designator.py       # 機器符号抽出パイプライン（DXF-extract-labels 専用、v2.0.0で判定条件を簡素化）
+│   ├── ref_designator_patterns.py  # 機器符号パターン判定ロジックのみ（v1.9.18で ref_designator.py から分離。region_detector.py の領域名候補フィルタ専用、v2.0.0）
 │   ├── region_detector.py      # 矩形領域検出アルゴリズム（DXF-extract-labels 専用）
 │   ├── terminal_detector.py    # 端子台(TB)矩形検出・端子番号抽出（DXF-extract-labels 専用、v1.8.0）
 │   ├── excel_output.py         # Excel 出力生成（通常モード・領域モード両対応）
-│   ├── decision_log.py         # 未確定ラベルの採用/非採用の判断ログ記録（DXF-extract-labels 専用、v1.7.0）
 │   └── common_utils.py         # 共通ユーティリティ（共有モジュール）
-└── tools/
-    └── reference_designator_analyzer.py  # Reference Designator 抽出検討ツール（v1.6.0、判断ログ分析はv1.7.0、後述）
 ```
 
 > `model/` 配下は streamlit に依存しない（`app.py` からのみ import される）。
@@ -44,12 +43,14 @@ DXF-extract-labels/
 > `extract_labels.py` / `common_utils.py` は DXF-label-diff / DXF-diff-processor / DXF-tools 等と
 > 同一ロジックを持つ共有モジュール。修正時は関連プロジェクトへの伝播が必要。
 > `ref_designator.py` / `ref_designator_patterns.py` / `region_detector.py` /
-> `terminal_detector.py` / `excel_output.py` は DXF-extract-labels 専用で共有対象外。
+> `terminal_detector.py` / `excel_output.py` は DXF-extract-labels 専用だが、
+> `ref_designator_patterns.py` のみ DXF-viewer（`core/ref_designator.py`）と
+> バイト一致コピーとして共有している（v2.0.0、後述）。
 > `ref_designator.py` は `extract_labels.py` の `extract_text_from_entity()` /
-> `_block_has_text_content()` のみ再利用し、図面枠・フォーマットブロック検出・
+> `_block_has_text_content()` のみ再利用し、図面枠・図面情報枠検出・
 > ラベル収集の**アルゴリズム本体**は完全に自前実装する
 > （`extract_labels.py`／`region_detector.py` の図面枠検出ロジックそのものを変更しない
-> ため。詳細は「機器符号（候補）抽出パイプライン」節）。ただし `common_utils.py` が
+> ため。詳細は「機器符号抽出パイプライン」節）。ただし `common_utils.py` が
 > 提供する小さな汎用ヘルパー（`select_layout_result()`＝Model/Paper Space の
 > 選択方針）は `region_detector.py`・`ref_designator.py`・`terminal_detector.py` の
 > 3モジュールから再利用する（v1.8.4でレイアウト選択ロジックの重複を解消する形で
@@ -57,33 +58,37 @@ DXF-extract-labels/
 > 共通の依存先としてドメイン特化モジュールより適切なため。`_label_rotation_angle()`
 > ＝90°回転判定は引き続き `region_detector.py` にあり `terminal_detector.py` が再利用）。
 >
-> **`ref_designator.py` と `ref_designator_patterns.py` の分割（v1.9.18）**:
-> 純粋な文字列パターン判定（`PATTERN_CATEGORIES`・`EXCLUSION_*_CATEGORIES`・
-> `CONFIRMED_PATTERN_CATEGORIES`・`classify_judgment_detailed()` 等、ezdxf/
-> `region_detector.py` に一切依存しない部分）を `ref_designator_patterns.py` へ
-> 分離した。`region_detector.py` の `_is_valid_name_candidate()`（領域名候補の
-> 機器符号除外判定）がこの分類ロジックを必要とする一方、旧 `ref_designator.py`
-> （DXF抽出パイプライン）は `region_detector.py` に依存しており、両者は循環依存の
-> 関係にあった（旧実装は関数内 `from . import ref_designator` の遅延importで
-> 回避していたが、循環依存そのものは解消していなかった）。分離後は
-> `region_detector.py` が `ref_designator_patterns.py` をモジュールレベルで
-> import でき、遅延import・循環依存いずれも解消した。`ref_designator.py` は
-> 後方互換のため `ref_designator_patterns.py` の全シンボルを再エクスポートして
-> おり、既存の `ref_designator.classify_judgment_detailed` 等の呼び出し方は
-> 変更不要。
+> **`ref_designator.py` と `ref_designator_patterns.py` の分割（v1.9.18）と
+> 用途の変更（v2.0.0）**: 純粋な文字列パターン判定（`PATTERN_CATEGORIES`・
+> `EXCLUSION_*_CATEGORIES`・`CONFIRMED_PATTERN_CATEGORIES`・
+> `classify_judgment_detailed()` 等、ezdxf/`region_detector.py` に一切依存しない
+> 部分）は `ref_designator_patterns.py` に分離済み（v1.9.18、循環依存解消が動機）。
+> v2.0.0 で `ref_designator.py`（DXF抽出パイプライン）自体の判定条件を簡素化し
+> （除外・追加・確定パターン、「未確定ラベル」UIでのレビュー・連動採用・判断ログを
+> すべて廃止、3候補パターン一致で全件出力する方式に変更）、`ref_designator.py` は
+> `ref_designator_patterns.py` から `CANDIDATE_PATTERN`/`normalize_label`/
+> `_judgment_text` の3つのみを使うようになった。除外・追加・確定パターン一式は
+> `ref_designator.py` からは使われなくなったが、`region_detector.py` の領域名候補
+> フィルタ（`_is_valid_name_candidate()`）が引き続き必要とするため
+> `ref_designator_patterns.py` からは削除していない（`sibling_key()`/
+> `propagate_selection_all_files()`/`PATTERNS_VERSION` 等、UI連動・判断ログ専用
+> だった関数のみ削除）。この結果 `ref_designator_patterns.py` は完全に
+> region_detector.py 非依存・自己完結のモジュールとなり、DXF-viewer の
+> `core/ref_designator.py`（従来は分類ロジックのみを抜粋した独立コピー）とも
+> バイト一致コピーとして共有できるようになった（`extract_labels.py` と同じ
+> 管理方式、伝播ルールは `Tools/CLAUDE.md` 参照）。
 
 ### モジュール責務
 
 | ファイル | 責務 |
 |---------|------|
-| `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示。v1.9.18で単一の809行 `app()` 関数を `_render_*`/`_handle_*` の10関数へ分割）|
+| `app.py` | Streamlit UI のみ（ファイルアップロード・オプション選択・結果表示。v1.9.18で単一の809行 `app()` 関数を `_render_*`/`_handle_*` の関数へ分割、v2.0.0で「未確定ラベル」UI・「選択完了」ハンドラを削除）|
 | `extract_labels.py` | DXF エンティティからのテキスト抽出・図番判別・タイトル抽出 |
-| `ref_designator.py` | 機器符号（候補）DXF抽出パイプライン（図面枠/フォーマットブロック検出・候補/確定/未確定ラベルの分類と集計。v1.6.0、確定リストは v1.6.3、連動採用は v1.7.1、パターン判定ロジックは v1.9.18で `ref_designator_patterns.py` へ分離）|
-| `ref_designator_patterns.py` | 機器符号（候補）パターン・除外リスト・確定リストの判定ロジックのみ（ezdxf/region_detector.py に非依存。v1.9.18新設）|
+| `ref_designator.py` | 機器符号 DXF抽出パイプライン（図面枠検出・図面情報枠の幾何検出・3候補パターン一致ラベルの抽出と集計。v1.6.0、v2.0.0で除外/確定パターン・レビューUIを廃止し判定条件を簡素化）|
+| `ref_designator_patterns.py` | 機器符号パターン・除外リスト・確定リストの判定ロジックのみ（ezdxf/region_detector.py に非依存。v1.9.18新設。v2.0.0で `region_detector.py` の領域名候補フィルタ専用となり、DXF-viewer `core/ref_designator.py` とバイト一致で共有）|
 | `region_detector.py` | 図面枠検出・線分結合・閉領域（直交ポリゴン）探索・名称候補抽出・集計（`build_region_results` / `build_region_label_summary`。「以外も抽出」ON 時のみ使用）|
 | `terminal_detector.py` | 端子台(TB)矩形検出（LINE+CIRCLE橋渡し）・ラベル-矩形対応判定・端子番号抽出・集計（`analyze_dxf_terminals` / `build_terminal_rows`。「端子一覧を抽出」オプション時のみ使用、v1.8.0）|
 | `excel_output.py` | Excel ファイル生成（`create_excel_output` / `create_ref_designator_excel_output` / `create_region_excel_output`）|
-| `decision_log.py` | 未確定ラベルの採用/非採用の記録（`build_entries` / `record` / `GitHubBackend` / `FileBackend`。v1.7.0）|
 | `common_utils.py` | 機器符号フィルタリング（`filter_non_circuit_symbols`。出力ラベルの機器符号判定に使用。v1.9.17〜、領域名候補の除外判定には使わず `ref_designator_patterns.py` ベースの判定に置き換え済み）・レイアウト選択（`select_layout_result`、v1.9.18〜）・ファイル保存・エラー処理 |
 
 ---
@@ -92,14 +97,14 @@ DXF-extract-labels/
 
 ### データフロー
 
-既定モード（「機器符号（候補）以外も抽出」OFF、v1.6.0）:
+既定モード（「機器符号（候補）以外も抽出」OFF、v1.6.0。v2.0.0で判定条件を簡素化し
+一段フロー化——「未確定ラベル」でのレビュー・「選択完了」ボタンは廃止）:
 
 ```
 DXF ファイル複数アップロード
   → save_uploadedfile()                       # 一時ファイル保存
   → [ユーザーがオプション選択]
-  → ref_designator.extract_ref_designator_data()  # ファイルごとに機器符号（候補）/未確定に分類
-  → 「未確定ラベル」UI（st.data_editor、初期全OFF）→ 「選択完了」
+  → ref_designator.extract_ref_designator_data()  # ファイルごとに機器符号を抽出（3候補パターン一致で全件）
   → create_ref_designator_excel_output() / create_region_excel_output()
   → st.download_button()
 ```
@@ -264,29 +269,20 @@ INSERT の handle）を付与し、図番がファイル名一致等で確定し
 
 ## Excel 出力仕様
 
-既定モード（機器符号（候補）パイプライン。`create_ref_designator_excel_output`）:
+既定モード（機器符号パイプライン。`create_ref_designator_excel_output`。v2.0.0で
+判定条件を簡素化——3候補パターンに一致したラベルは除外・確認なしに全件出力）:
 シート順 `Summary` → `Total` → `<ファイル名>...`
 
 | シート | 内容 |
 |--------|------|
-| `Summary` | 全ファイルの集計（図面枠内ラベル数・機器符号数〔未確定ラベルUIで採用した件数〕・未採用件数・図番等）。ファイル名セルは各ファイルシートへの内部ハイパーリンク |
-| `Total` | 全ファイルの機器符号（確定パターン一致の自動採用分＋未確定ラベルUIで採用したもの）をユニーク集計した合計一覧（ラベル・個数・図番）|
-| `<ファイル名>` | ファイルごとの機器符号一覧（確定パターン一致の自動採用分＋未確定ラベルUIで採用したもの。ラベル・個数）|
+| `Summary` | 全ファイルの集計（図面枠内ラベル数・機器符号数・図番等）。ファイル名セルは各ファイルシートへの内部ハイパーリンク |
+| `Total` | 全ファイルの機器符号（3候補パターン一致で抽出した全件）をユニーク集計した合計一覧（ラベル・個数・図番）|
+| `<ファイル名>` | ファイルごとの機器符号一覧（ラベル・個数）|
 
 「機器符号（候補）以外も抽出」ON（`create_excel_output`）:
 シート順 `Summary` → `Total` → `<ファイル名>...`（フィルタなし・図面枠制限なしの全ラベル）
 
 シート名: 元ファイル名の拡張子除去、31 文字以内に切り詰め。
-
-**除外符号シート（「機器符号（候補）以外も抽出」OFF時、v1.9.16）**: `Total`
-シート直後（領域モードでは `領域別ラベル一覧` 直後、`TB List` シートより前）に
-`除外符号` シート（`ラベル` / `個数` / `ファイル名`）を追加。機器符号（候補）の
-3パターン（`PATTERN_CATEGORIES`）には一致したが、除外パターン
-（`EXCLUSION_*_CATEGORIES`/`ADDED_EXCLUSION_PATTERNS`）に該当し Reference
-Designator ではないと判断されたラベル（`ref_designator.classify_excluded_labels()`）
-の一覧。ラベル昇順、ファイル名は複数ある場合カンマ区切り（ABC順）で結合する。
-「機器符号（候補）以外も抽出」ON時は `excluded_rows` を持たないため（ref_designator
-の分類パイプラインを通らない）、該当データが無ければシート自体を作らない。
 
 **TB List シート（「端子一覧を抽出」ON、v1.8.0）**: `Total` シート直後
 （領域モードでは `領域別ラベル一覧` 直後）に `TB List` シート（`端子台` /
@@ -301,7 +297,7 @@ Designator ではないと判断されたラベル（`ref_designator.classify_ex
 
 **ファイル順序**: Summary シートの行順・各ファイルシートの並びとも、アップロード順
 （dict挿入順）ではなくファイル名昇順（`sorted()`）（v1.7.9）。UI側の表示順
-（「領域の確認」「未確定ラベル」セクション）は v1.7.6/v1.7.7 で先に対応済みで、
+（「領域の確認」セクション）は v1.7.6/v1.7.7 で先に対応済みで、
 これは Excel 出力側の対応。
 
 **Total シートの図番列（v1.7.10）**: `Total` シート（`create_excel_output` /
@@ -338,7 +334,7 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 
 | オプション | 説明 |
 |-----------|------|
-| 機器符号（候補）以外も抽出 | OFF（既定）: 図面枠内・図面情報欄外のラベルのうち機器符号パターンに一致し除外パターンに非該当のものを「未確定ラベル」として全件レビューUIに表示し、チェックして採用したものだけを出力する（自動確定はしない）。ON: 図面枠制限・フィルタなしで全ラベルを抽出（従来動作） |
+| 機器符号（候補）以外も抽出 | OFF（既定）: 図面枠内・図面情報枠（タイトルブロック、幾何検出）外のラベルのうち機器符号パターン（3候補パターン）に一致するものをそのまま全件出力する（v2.0.0、除外・レビュー・確認なし）。ON: 図面枠制限・フィルタなしで全ラベルを抽出（従来動作） |
 | 図面番号抽出 | `XX0000-000-00X` パターンの図番を Summary に記録 |
 | タイトル・サブタイトル抽出 | `TITLE` 近傍テキストを解析して Summary に記録 |
 | ソート順 | 昇順 / 降順 / なし |
@@ -346,7 +342,9 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 | 端子一覧を抽出 | タイトルが「UNIT内結線図」の図面（サブタイトルが「TB COMPONENT」の図面を除く）を対象に、`TB`で始まりその直後に英大文字・数字が続く端子台ラベルに対応する矩形（LINE+CIRCLE橋渡し）を検出し、矩形内の端子番号を「端子台」ユニークで `TB List` シートに出力（v1.8.0、詳細は [TERMINAL_DETECTION.md](TERMINAL_DETECTION.md)）|
 
 > v1.6.0 で「特定のレイヤーのみを処理する」（未使用のため）・「機器符号妥当性チェック」
-> （未確定ラベルUIでの人手選択に置き換え）の UI・機能を削除した。
+> の UI・機能を削除した。v2.0.0 で機器符号抽出の判定条件を簡素化し、「未確定ラベル」
+> UIでの人手レビュー・連動採用・判断ログ（採用/非採用の記録）も削除した
+> （詳細は [REF_DESIGNATOR.md](REF_DESIGNATOR.md) を参照）。
 
 ---
 
@@ -367,14 +365,8 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 | `region_results_summary` | dict | 領域抽出のサマリー表示用（rows/named キーは除いた軽量版）|
 | `download_done` | bool | 「Excelをダウンロード」クリック後 True。ボタン配色の切り替えに使用（v1.5.29）|
 | `uploader_version` | int | `file_uploader` の `key` に使うカウンタ。「新しい抽出を開始」でインクリメントしウィジェットを再生成することでアップロード済みファイルをクリアする（v1.5.29）|
-| `ref_pending` | dict | 機器符号（候補）パイプラインの「未確定ラベル」選択待ちデータ（ファイル名 → `extract_ref_designator_data()` 結果 + 図番等）。「選択完了」まで保持し、確定後に削除（v1.6.0）|
-| `ref_pending_mode` | str | `ref_pending` が通常モードか領域モードかの区別（`'normal'`/`'region'`、v1.6.0）|
-| `ref_results_summary` | dict | 機器符号（候補）パイプライン（通常モード）のサマリー表示用（v1.6.0）|
-| `unclassified_editor_<ver>_<fname>_<0..N>` | DataFrame | 「未確定ラベル」`st.data_editor` の描画結果（v1.6.0。ファイルごとに `UNCLASSIFIED_ROWS_PER_TABLE`（既定10行）ごとに分割、テーブル数はラベル数に応じて可変。キーに `unclassified_ver` を含むためチェック変更のたびに別ウィジェットとして再生成される、v1.7.1）|
-| `unclassified_checked` | dict | 「未確定ラベル」の採用チェック状態の正本（ファイル名 → {ラベル: bool}）。data_editor はここから初期値を作るだけで、ウィジェット自身の state は直接書き換えない（v1.7.1）|
-| `unclassified_ver` | int | `unclassified_checked` を書き換えるたびにインクリメントし、`unclassified_editor_*` の `key` に使うことで data_editor を別ウィジェットとして再生成する（v1.7.1、詳細は「連動採用（兄弟ラベル）」節）|
-| `decision_log_result` | dict | 判断ログの記録結果（`ok`/`message`/`fallback_csv`）。抽出結果セクションで表示し、「新しい抽出を開始」または再度「ラベルを抽出」時にクリアする（v1.7.0）|
-| `terminal_results` | dict | 「端子一覧を抽出」ON時の `analyze_dxf_terminals()` 結果（ファイル名 → 結果dict）。「ラベルを抽出」時に一度だけ計算し、既定モード（Excel生成が「選択完了」まで遅延する）でも使えるよう保持する。「新しい抽出を開始」または再度「ラベルを抽出」時にクリアする（v1.8.0）|
+| `ref_results_summary` | dict | 機器符号パイプライン（通常モード）のサマリー表示用（v1.6.0。v2.0.0で「ラベルを抽出」クリック時に直接生成するよう変更——旧来の「未確定ラベル選択待ち」中間状態は廃止）|
+| `terminal_results` | dict | 「端子一覧を抽出」ON時の `analyze_dxf_terminals()` 結果（ファイル名 → 結果dict）。「ラベルを抽出」時に一度だけ計算し保持する。「新しい抽出を開始」または再度「ラベルを抽出」時にクリアする（v1.8.0）|
 
 ---
 
@@ -382,11 +374,11 @@ label_data = [{'ラベル': lbl, '個数': counter[lbl]} for lbl in sorted(count
 
 ```
 streamlit>=1.40.0, ezdxf>=1.4.2, pandas>=2.0.0
-xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
+xlsxwriter>=3.0.0, openpyxl>=3.0.0
 ```
 
-`requests` は判断ログの GitHub Contents API 呼び出し（`model/decision_log.py`）に
-使用する（v1.7.0 で追加）。
+> `requests`（v1.7.0で判断ログのGitHub Contents API呼び出し用に追加）は、
+> 判断ログ機能自体の廃止（v2.0.0）に伴い requirements.txt から削除した。
 
 ---
 
@@ -397,7 +389,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 | MTEXT 複雑書式 | v1.5.1 で ezdxf `plain_mtext()` ベースへ移行し、`\S` 分数・`%%c`/`%%d`/`%%p`・キャレットシーケンス等も処理可能になった。ごく稀な独自書式は残る可能性がある |
 | タイトル抽出精度 | `TITLE` ラベルの配置パターンに依存するため、図面レイアウトが異なると誤抽出する場合がある |
 | 大量ファイル | 10 ファイル超でメモリ消費が大きくなる可能性がある |
-| フォーマットブロック非依存の図面情報欄（v1.6.0） | 図面情報欄がフォーマットブロック（INSERT）経由でなく modelspace に直置きされている DXF では、構造的除外が働かず図面情報欄のラベルが未確定ラベルに残る可能性がある（実データ18サンプルでは全て INSERT 経由だったため未検証） |
+| 図面情報枠（タイトルブロック）の幾何検出はタイトル項目名3件以上一致が前提（v2.0.0） | `_detect_info_frame_bbox()` は図面枠内にタイトル項目名（`TITLE`/`DATE`/`NAME`等）が3件以上完全一致することを条件に情報枠を検出する。テンプレートを外れた図面（項目名が独自の表記・大幅な省略等）では情報枠が検出できず、警告付きで除外なしにフォールバックする（実データ156件では全件検出成功を確認済み） |
 | **LINE 矩形の部品輪郭（未対応課題）** | `DE5434-563-03A.dxf` のように、lw=25/color=2 の LINE エンティティ 4 本で形成された「細い閉じた矩形（部品輪郭）」（実例: x=81~90, y=98~394.5、幅9単位）が領域境界線と同じ属性を持つ場合、アルゴリズムが部品輪郭と領域境界線を区別できない。部品輪郭の両端が領域中央の縦仕切りを形成するケースでは、子領域の境界が「正確な直線」にならず、左右の子領域を閉領域として独立して検出できない（結果として合体した親領域のみが検出される）。**将来対応案**: lw=25/color=2 が形成する「縦横比が高い閉矩形」を部品輪郭として自動判定し検出対象から除外する。あわせて、合体親領域に付与する名称を「子領域の名称候補を除外した上で、底辺中央により近いラベルを優先して探索する」ロジックを追加することで、合体親に本来の領域名（例: `FX CHAMBER`）を正しく割り当てられるようになる。|
 
 ---
@@ -430,7 +422,7 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 | 処理タイムアウト | ファイル数を減らして再試行 |
 | 「図面枠内の制約なしに全ラベルを抽出しました」と表示される（機器符号（候補）パイプライン） | 「領域検出の詳細設定」の「図面枠の太さ」が実際の図面枠の lineweight と一致しているか確認（color=7 も必須条件）。Model Space に実際のラベル・図形がある図面では、図面枠が Paper Space レイアウトにしか無い場合、意図的にこのメッセージを出し図面枠フィルタなしでの抽出にフォールバックする（Model Space と Paper Space は独立した座標系のため、Paper Space の図面枠を Model Space のラベルに適用すると正しいラベルまで誤って除外されるため。v1.8.2で確定した仕様）。抽出自体は正常に行われるため、失敗ではない（v1.8.3で「見つかりませんでした」という失敗を思わせる文言から変更） |
 | 「領域探索を実施することができませんでした」と表示される（矩形領域抽出） | 領域検出には図面枠が必須（面積比の基準となるため）で、機器符号（候補）パイプラインのような制約なしへのフォールバックが無い。「図面枠の太さ」の設定を確認するか、対象ファイルの図面枠が Paper Space レイアウトにしか無い場合は領域検出の対象外となる（v1.8.3で文言変更） |
-| 期待した機器符号が候補に出ない | 「未確定ラベル」一覧に出ていれば手動で採用できる。除外パターン（`ExclusionPatterns` シート）に該当していないか確認 |
+| 期待した機器符号が出力に出ない | 3候補パターン（英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ）に一致しているか確認。図面情報枠（タイトルブロック）内にあると幾何検出により除外される（v2.0.0で除外パターンは廃止したため、パターン形状の不一致か情報枠内配置のいずれかが原因） |
 
 ---
 
@@ -458,4 +450,4 @@ xlsxwriter>=3.0.0, openpyxl>=3.0.0, requests>=2.31.0
 
 ---
 
-最終更新: 2026-07-26 (v1.9.18) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。
+最終更新: 2026-07-30 (v2.0.0) — 詳細な変更履歴は [VERSION_HISTORY.md](VERSION_HISTORY.md) 参照。

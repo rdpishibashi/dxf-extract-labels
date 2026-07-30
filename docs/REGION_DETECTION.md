@@ -60,17 +60,12 @@
                            無名領域数を数えてから命名する）。
 「ラベルを抽出」ボタン（既定モード） → ref_designator.extract_ref_designator_data() を
                         各ファイルに実行（frame_lineweight は「図面枠の太さ」設定を使用）。
-                        「領域の確認」で確定した名称選択から ref_designator.build_named_regions()
-                        で named リストを構築し、「未確定ラベル」UIを表示（選択完了待ち）。
-「選択完了」ボタン → ref_designator.build_region_results_from_pending()（領域付きモード）/
-                     ref_designator.build_ref_final_from_pending()（通常モード）で
-                     `ref_pending`（未確定ラベルUIのデータ）とユーザーの採用/非採用選択から
-                     Excel出力用の集計結果を構築（v1.7.8、旧実装はこの2関数の中身が
-                     app.py側にインライン展開されていたものを分離。「選択完了」ハンドラは
-                     チェックボックス状態〈`_gather_name_selections`〉と採用集合の収集のみ
-                     行い、UI非依存の集計ロジックは全てref_designator.py側に持たせる）
-                     → create_region_excel_output()（region_results の形は
-                     build_region_results() の出力と互換）
+                        「領域の確認」で確定した名称選択（`_gather_name_selections`）から
+                        ref_designator.build_named_regions() で named リストを構築し、
+                        ref_designator.build_ref_designator_region_results() で
+                        Excel出力用の集計結果を直ちに構築 → create_region_excel_output()
+                        （v2.0.0、判定条件の簡素化に伴い一段フロー化。旧来の「未確定ラベル」
+                        UIでのレビュー・「選択完了」ボタンは廃止）。
 「ラベルを抽出」ボタン（「以外も抽出」ON） → build_region_results() → create_region_excel_output()
                         （領域検出なし時は process_multiple_dxf_files() + create_excel_output()）
 ```
@@ -78,7 +73,8 @@
 > 「ラベルを抽出」ボタンは領域モード・通常モード共用。領域検出済み（`region_analyses` あり）
 > かどうかで内部処理を切り替える。既定モードでは `region_detector.build_region_results()` を
 > 使わず、`ref_designator.py` 側に複製した集計ロジック（`build_named_regions()` /
-> `build_region_output()`）を使う（`region_detector.py` を変更しないため）。
+> `build_region_output()` / `build_ref_designator_region_results()`）を使う
+> （`region_detector.py` を変更しないため）。
 > `create_region_excel_output()` はどちらのモードでも共通の「Excelをダウンロード」ボタンで出力する。
 
 ### ボタンの色分け（v1.5.26）
@@ -89,9 +85,7 @@
 
 ```python
 detect_done = 'region_analyses' in st.session_state
-# 「ラベルを抽出」開始（未確定ラベルの選択待ち含む）も extract_done に含める
-# （v1.6.0。ref_pending が立った時点で領域検出はもうこの回の抽出に反映されない）
-extract_done = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
+extract_done = bool(st.session_state.get('excel_result'))
 detect_btn_type  = "secondary" if (detect_done or extract_done) else "primary"
 extract_btn_type = "secondary" if extract_done else "primary"
 ```
@@ -100,11 +94,11 @@ extract_btn_type = "secondary" if extract_done else "primary"
   （領域検出は任意手順のため、どちらから始めてもよい）。
 - 「領域を検出」実行後: 「領域を検出」は白、「ラベルを抽出」は引き続き青
   （まだ必須の次操作が残っているため）。
-- 「ラベルを抽出」実行後（領域検出の有無を問わず。既定モードでは「未確定ラベル」の
-  選択待ち段階を含む）: 両方白になり、「Excelをダウンロード」（常に `type="primary"`）
-  が青になる（v1.6.0 で修正: 従来は `excel_result` の有無のみを見ていたため、
-  領域検出なしで「ラベルを抽出」しても未確定ラベル選択が完了する＝`excel_result`が
-  セットされるまで「領域を検出」が青のままだった。ユーザー報告により修正）。
+- 「ラベルを抽出」実行後（領域検出の有無を問わず）: 両方白になり、
+  「Excelをダウンロード」（常に `type="primary"`）が青になる（v2.0.0、
+  判定条件の簡素化に伴い「ラベルを抽出」実行と同時にExcelが生成されるため
+  `excel_result` が確実にセットされる。旧仕様〈v1.6.0で修正〉の「未確定ラベル」
+  選択待ち段階の考慮は不要になった）。
 
 各ボタンの `if st.button(...):` 処理ブロックの末尾で `st.rerun()` を呼んでいる。
 ウィジェットは処理ブロックより前に描画されるため、`st.rerun()` を呼ばないと
@@ -619,7 +613,8 @@ return）レンダーツリーから一時的に外れるが、`key` を固定�
 各ファイルの `rows`（`<ファイル名>` シートと同じ、最終集計済みラベル）を
 `drawing_number`（未抽出時はファイル名）で紐付けて集計する。シート位置は
 `Summary` 直後（他2モードと同じ並び）。`領域一覧`・`領域別ラベル一覧`・
-`除外符号`・`TB List` の位置は変更していない。
+`TB List` の位置は変更していない（`除外符号` シートは v2.0.0 で判定条件の
+簡素化に伴い廃止した。[REF_DESIGNATOR.md](REF_DESIGNATOR.md) 参照）。
 
 **`Summary` シートの `図番`・`タイトル` 列（v1.9.9）**: 「図面番号・タイトル・
 サブタイトルを抽出」オプション有効時（`region_results[fname]['title']` が
@@ -629,7 +624,7 @@ return）レンダーツリーから一時的に外れるが、`key` を固定�
 `DXF-label-compare` の B側図番フィルタ（`Summary` の `図番`/`タイトル` 列を
 使って「UNIT内結線図」判定する）が region モード出力に対して機能できない
 欠落だった（2026-07-23、`DXF-label-compare`「指定領域での比較」機能の実装中に
-発覚）。`build_region_results()`/`ref_designator.build_region_results_from_pending()`
+発覚）。`build_region_results()`/`ref_designator.build_ref_designator_region_results()`
 の両方が `region_results[fname]['title']` を保持するよう修正。流用元図番・
 サブタイトルは対象外（region モードの解析結果は元々流用元図番を持たないため）。
 
@@ -732,17 +727,20 @@ DXF図番ではない。当初「図面番号」への改称が検討された�
 | `name_min_letters` | 3 | 名称候補に必要な英字数 |
 | `name_exclude_terms` | (NOTE, ☆) | これらの語を含むラベルを候補から除外 |
 | `name_exclude_lowercase` | True | 英小文字を含むラベルを候補から除外（領域名は大文字想定）|
-| `exclude_circuit_symbols` | True | CONFIRMED reference designator（`ref_designator.py`）に該当するラベルを候補から除外（v1.9.17〜。判定方式は下記参照）|
+| `exclude_circuit_symbols` | True | CONFIRMED reference designator（`ref_designator_patterns.py`）に該当するラベルを候補から除外（v1.9.17〜。判定方式は下記参照）|
 | `circuit_symbol_keep_terms` | (RACK,) | 上記除外の例外。この語を含むラベルは機器符号扱いしない（例 RACK1）|
 
 > (H) ラベル所属（`assign_region_labels`）は閾値を持たず、点-多角形内包判定のみ。
 
-### 名称候補の機器符号除外判定（`_is_valid_name_candidate`。v1.9.17〜 `ref_designator.py` ベース）
+### 名称候補の機器符号除外判定（`_is_valid_name_candidate`。v1.9.17〜 `ref_designator_patterns.py` ベース）
 
 領域名候補（本節の名称候補抽出）から機器符号らしいラベルを除外する判定は、
 v1.9.17 で `common_utils.py` の `filter_non_circuit_symbols()`（"英字2文字以上"
-等の粗い正規表現）から `ref_designator.classify_judgment_detailed()` /
-`matched_confirmed_category()` ベースへ変更した。
+等の粗い正規表現）から `classify_judgment_detailed()` /
+`matched_confirmed_category()` ベースへ変更した（`model/ref_designator_patterns.py`
+所属。v2.0.0で `ref_designator.py`〈DXF抽出パイプライン〉自体はこれらのパターンを
+使わなくなったが、`ref_designator_patterns.py` は本節の領域名候補フィルタ専用として
+存続している。[REF_DESIGNATOR.md](REF_DESIGNATOR.md) 参照）。
 
 **変更理由（ユーザー報告、2026-07-26）**: `DE5027-563-03A.dxf` 図面1/領域3で、
 LINE #1518 上部の実在ラベル `MFFX` が「（名称候補なし）」になっていた。原因は
@@ -775,7 +773,7 @@ v1.9.18の分離でこの遅延import自体が不要になった（詳細は
 
 **`unit_names` カテゴリの例外扱い（2026-07-26 追加確認）**: `DE5327-405-26A.dxf`
 図面1/領域2で `CTC`（LINE #24A 直上）が領域名候補にならない不具合が発覚。`CTC`
-は `ref_designator.py` の `unit_names` 除外カテゴリ（`_UNIT_NAMES` =
+は `ref_designator_patterns.py` の `unit_names` 除外カテゴリ（`_UNIT_NAMES` =
 CASE/CTC/EFEM/FOUP/LA/LB/LINEA/LINEB/LL/SH/SHIELD/TM）に属し 'excluded' と
 判定される。このカテゴリは「機器符号（候補）ではない」という機器符号抽出
 パイプライン向けの判定であり、領域名としてはむしろ正当な候補（ユニット/
@@ -783,14 +781,20 @@ CASE/CTC/EFEM/FOUP/LA/LB/LINEA/LINEB/LL/SH/SHIELD/TM）に属し 'excluded' と
 例外として除外しない。`common_nouns`/`cable_colors`/`titleblock_terms` 等
 他の除外カテゴリ（`GND`・`MOTOR`等）は引き続き除外する。
 
-DXF-viewer（`core/region_detector.py`）には `ref_designator.py` 自体が無い
-（DXF抽出パイプライン全体に依存し丸ごと移植できない）ため、分類ロジックのみを
-抜粋した `core/ref_designator.py`（新設）を移植先に置き、同じ判定を行う
-（移植方針は同ファイルのモジュール docstring 参照。パターン変更時はここへの
-手動反映が必要）。
+DXF-viewer（`core/region_detector.py`）は `core/ref_designator.py` から同じ
+判定を利用する。`core/ref_designator.py` は primary の
+`model/ref_designator_patterns.py` と**バイト一致コピー**（v2.0.0、DXF-viewer側の
+「region_detector.py非依存の自己完結モジュール」という制約に primary 側が
+合致するようになったため。従来は分類ロジックのみを抜粋した独立コピーだった）。
+primary側でパターンを変更した場合は `diff -q`/`md5` で一致確認の上コピーする
+だけでよい（伝播ルールは `Tools/CLAUDE.md` 参照）。
 
 > 機器符号妥当性チェック（旧 `validate_circuit_symbols`）は v1.6.0 で削除した
-> （「未確定ラベル」UI での人手選択に置き換え）。
+> （「未確定ラベル」UI での人手選択に置き換え）。「未確定ラベル」UI自体も
+> v2.0.0 で判定条件の簡素化に伴い廃止された（[REF_DESIGNATOR.md](REF_DESIGNATOR.md)
+> 参照）。この段落が指すのは本節の領域名候補フィルタとは別の、旧・機器符号抽出
+> パイプライン側の機能であり、本節の判定（`_is_valid_name_candidate`）自体は
+> 引き続き有効。
 
 ### DXF-viewer とのクロスプロジェクト一貫性テスト（`tests/regression/test_region_naming_cross_project.py`、2026-07-16 新設）
 

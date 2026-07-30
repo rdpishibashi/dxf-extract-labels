@@ -12,6 +12,8 @@ sys.path.insert(0, model_path)
 from model.extract_labels import extract_labels, process_multiple_dxf_files
 from model.region_detector import (
     analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
+    collect_unique_region_candidate_names, resolve_globally_decided_name,
+    is_region_pending_selection,
 )
 from model.excel_output import (
     create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
@@ -59,7 +61,10 @@ st.set_page_config(
 #   - RESTART: 「新しい抽出を開始」時。入力状態を含む全リセット
 #     （オプション設定ウィジェットの値は対象外＝保持される、ユーザー指定）。
 # ============================================================
-_REGION_DETECT_CLEAR_KEYS = ['excel_result', 'is_region_mode', 'region_results_summary']
+_REGION_DETECT_CLEAR_KEYS = [
+    'excel_result', 'is_region_mode', 'region_results_summary',
+    'global_region_checked_names',
+]
 _REGION_DETECT_CLEAR_PREFIXES = ('rc_',)
 
 _EXTRACT_CLEAR_KEYS = [
@@ -72,7 +77,7 @@ _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'processing_settings',
     'results', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
-    'terminal_results',
+    'terminal_results', 'global_region_checked_names',
 ]
 _RESTART_CLEAR_PREFIXES = ('rc_',)
 
@@ -128,9 +133,22 @@ def _compute_terminal_results(uploaded_files):
 
 
 def _gather_name_selections(fname, analysis):
-    """領域確認UIのチェックボックス状態から、この図面の名称選択を集める。"""
+    """この図面の領域名選択を集める。「領域一覧」でのグローバル決定（優先）と、
+    「領域の確認」での個別選択（グローバルで未決定の領域のみ）を統合する。
+
+    候補1件の領域は「領域一覧」チェックが唯一のゲート（未チェックなら抽出
+    しない）。候補0件の領域はここでは何も返さない（呼び出し先の
+    build_region_results 等が自動 "no name" 命名を行う）。
+    """
+    checked_names = set(st.session_state.get('global_region_checked_names', []))
     name_selections = {}
     for reg in analysis.get('regions', []):
+        decided = resolve_globally_decided_name(reg, checked_names)
+        if decided is not None:
+            name_selections[(fname, reg['id'])] = [decided]
+            continue
+        if not is_region_pending_selection(reg, checked_names):
+            continue
         chosen = []
         for i, (_d, t) in enumerate(reg['name_candidates']):
             if st.session_state.get(f"rc_{fname}_{reg['id']}_{i}"):
@@ -400,9 +418,11 @@ def _render_intro():
             "1. DXFファイルをアップロードしてください（複数可）",
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」をONにした場合は、「領域を検出」ボタンで矩形領域を検出し、"
-            "各領域の名称を確認・選択します",
+            "「領域一覧」で抽出したい領域名にチェックを入れます（複数選択可）。"
+            "チェックで決定できなかった領域は「領域の確認」で個別に選択します",
             "4. 「ラベルを抽出」ボタンで処理を実行します（結果はそのままExcelとして"
-            "ダウンロードできます）",
+            "ダウンロードできます）。抽出後はオプション等を振り返れますが変更は"
+            "できません（変更するには「新しい抽出を開始」を押してください）",
             "",
             "**Excelファイルの内容：**",
             "- Summaryシート：全ファイルの抽出結果概要",
@@ -431,9 +451,12 @@ def _render_upload_section():
     return uploaded_files
 
 
-def _render_options_section():
+def _render_options_section(locked):
     """オプション欄（機器符号以外も抽出・図番等抽出・領域検出・端子一覧抽出・
-    並び替え・出力ファイル名）を表示し、選択値を dict で返す。"""
+    並び替え・出力ファイル名）を表示し、選択値を dict で返す。
+
+    `locked` が True（抽出結果表示中）の間は全ウィジェットを disabled にし、
+    選択内容を振り返れるが変更できない状態にする。"""
     # ============================================================
     # オプション
     # ============================================================
@@ -445,6 +468,7 @@ def _render_options_section():
         also_extract_non_circuit = st.checkbox(
             "機器符号（候補）以外も抽出",
             value=False,
+            disabled=locked,
             help="チェックなし（既定）：図面枠内・図面情報枠（タイトルブロック）外の"
                  "ラベルのうち、機器符号（Reference Designator）パターンに一致する"
                  "ものだけを抽出します。\n\n"
@@ -461,6 +485,7 @@ def _render_options_section():
         extract_all_option = st.checkbox(
             "図面番号・タイトル・サブタイトルを抽出",
             value=False,
+            disabled=locked,
             help="図面番号（例：EE6868-500-01C）、タイトル、サブタイトルをサマリーシートに抽出します。"
         )
         extract_drawing_numbers_option = extract_all_option
@@ -471,8 +496,9 @@ def _render_options_section():
             "領域を検出",
             value=False,
             key='enable_region_detection',
-            help="ONにすると「領域検出の詳細設定」「領域を検出」ボタン「領域の確認」"
-                 "セクションが表示され、矩形領域付きでラベルを抽出できます。"
+            disabled=locked,
+            help="ONにすると「領域検出の詳細設定」「領域を検出」ボタン「領域一覧」"
+                 "「領域の確認」セクションが表示され、矩形領域付きでラベルを抽出できます。"
                  "OFFにすると通常モード（機器符号のみ抽出等）になります。"
         )
         if not enable_region_detection:
@@ -485,13 +511,14 @@ def _render_options_section():
             # 消えてしまう。2026-07-15ユーザー報告で発覚、v1.9.4で領域検出を
             # オプション化した際に混入した回帰）。
             _clear_session_keys(
-                keys=['region_analyses'],
+                keys=['region_analyses', 'global_region_checked_names'],
                 prefixes=_REGION_DETECT_CLEAR_PREFIXES)
 
         # d) 端子一覧を抽出
         extract_terminal_option = st.checkbox(
             "端子一覧を抽出",
             value=False,
+            disabled=locked,
             help="タイトルが「UNIT内結線図」の図面を対象に、TBで始まり英大文字・数字が"
                  "続く端子台ラベルに対応する矩形（LINE+CIRCLEで構成）を検出し、矩形内の"
                  "端子番号を「TB List」シート（Totalシート直後）に出力します。"
@@ -511,14 +538,16 @@ def _render_options_section():
             ],
             format_func=lambda x: x[0],
             help="ラベルの並び替え順を指定します",
-            index=0
+            index=0,
+            disabled=locked,
         )
         sort_value = sort_option[1]
 
         output_filename = st.text_input(
             "出力Excelファイル名",
             value="extracted_labels.xlsx",
-            help="出力するExcelファイルの名前を指定します"
+            help="出力するExcelファイルの名前を指定します",
+            disabled=locked,
         )
         if not output_filename.endswith('.xlsx'):
             output_filename += '.xlsx'
@@ -534,9 +563,11 @@ def _render_options_section():
     }
 
 
-def _render_region_config_form(enable_region_detection):
+def _render_region_config_form(enable_region_detection, locked):
     """「領域検出の詳細設定」フォームを表示し、確定済みの region_cfg を返す
-    （「設定完了」が押されるまでは保存済み設定 or 既定値を返す）。"""
+    （「設定完了」が押されるまでは保存済み設定 or 既定値を返す）。
+
+    `locked` が True の間は全フィールド・「設定完了」ボタンを disabled にする。"""
     # ============================================================
     # 領域検出の詳細設定（フォーム形式 — 「設定完了」で確定）
     # ============================================================
@@ -557,20 +588,20 @@ def _render_region_config_form(enable_region_detection):
                         value=int(saved_cfg['frame_lineweight']),
                         step=5,
                         help="図面全体を囲む枠の線の太さ（lineweight）",
-                        key='frm_frame_lineweight')
+                        key='frm_frame_lineweight', disabled=locked)
                     frm_region_lw = st.number_input(
                         "領域境界線の太さ",
                         value=int(saved_cfg['region_lineweight']),
                         step=5,
                         help="矩形領域の境界線の太さ（lineweight）",
-                        key='frm_region_lineweight')
+                        key='frm_region_lineweight', disabled=locked)
                     frm_cp_margin = st.number_input(
                         "接続点判定マージン（座標）",
                         value=float(saved_cfg['connection_point_margin']),
                         min_value=0.0, step=0.01, format="%.2f",
                         help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
                              "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
-                        key='frm_connection_point_margin')
+                        key='frm_connection_point_margin', disabled=locked)
                     _current_region_color = int(saved_cfg['region_color'])
                     _region_color_choices = list(_ACI_COLOR_CHOICES)
                     if _current_region_color not in dict(_region_color_choices):
@@ -582,7 +613,7 @@ def _render_region_config_form(enable_region_detection):
                         index=[v for v, _ in _region_color_choices].index(_current_region_color),
                         format_func=lambda v: dict(_region_color_choices)[v],
                         help="矩形領域の境界線の色（既定: 2 = 黄）",
-                        key='frm_region_color')
+                        key='frm_region_color', disabled=locked)
                     frm_filter_prefixes = st.text_input(
                         "抽出したい領域名の先頭文字列（カンマ区切り・複数可）",
                         value=','.join(saved_cfg.get('name_filter_prefixes', ())),
@@ -590,46 +621,46 @@ def _render_region_config_form(enable_region_detection):
                              "面積比の閾値を満たさなくても抽出対象になります"
                              "（前方一致。全角/半角は区別しません）。空欄なら従来通り"
                              "面積比のみで判定します。",
-                        key='frm_name_filter_prefixes')
+                        key='frm_name_filter_prefixes', disabled=locked)
                     frm_terms = st.text_input(
                         "領域名称候補から除外する単語（カンマ区切り）",
                         value=','.join(saved_cfg['name_exclude_terms']),
                         help="これらの語を含むラベルを名称候補から除外します",
-                        key='frm_name_exclude_terms')
+                        key='frm_name_exclude_terms', disabled=locked)
                 with rc2:
                     frm_area_pct = st.number_input(
                         "最小面積（単独領域・図面枠面積比 %）",
                         value=min(99, max(1, round(saved_cfg['area_ratio'] * 100))),
                         min_value=1, max_value=99, step=1,
                         help="1つの閉領域が単独でこの面積比（四捨五入した整数%）以上のとき抽出対象とします",
-                        key='frm_area_ratio_pct')
+                        key='frm_area_ratio_pct', disabled=locked)
                     frm_group_pct = st.number_input(
                         "最小面積（同名複数領域・図面枠面積比 %）",
                         value=min(50, max(1, round(saved_cfg['group_area_ratio'] * 100))),
                         min_value=1, max_value=50, step=1,
                         help="同じ名称の複数ピースを合算したとき、この面積比（四捨五入した整数%）以上なら抽出対象とします。"
                              "第1図面で成立した名称は他図面でも面積不問で抽出します。",
-                        key='frm_group_area_ratio_pct')
+                        key='frm_group_area_ratio_pct', disabled=locked)
                     frm_name_max = st.number_input(
                         "領域名称ラベルの境界線からの最大距離（座標）",
                         value=min(20, max(1, int(saved_cfg.get('name_max_dist', 10.0)))),
                         min_value=1, max_value=20, step=1,
                         help="下端境界線からこの座標距離以内のラベルを名称候補とします",
-                        key='frm_name_max_dist')
+                        key='frm_name_max_dist', disabled=locked)
                     frm_name_min = st.number_input(
                         "領域名称ラベルの境界線からの最小距離（座標）",
                         value=min(10, max(1, int(saved_cfg['name_min_dist']))),
                         min_value=1, max_value=10, step=1,
                         help="この距離未満（境界線分上）のラベルは名称候補から除外します",
-                        key='frm_name_min_dist')
+                        key='frm_name_min_dist', disabled=locked)
                     frm_min_letters = st.number_input(
                         "領域名称候補に必要な文字数",
                         value=int(saved_cfg['name_min_letters']),
                         min_value=1, step=1,
                         help="英字がこの文字数以上のラベルのみ名称候補とします",
-                        key='frm_name_min_letters')
+                        key='frm_name_min_letters', disabled=locked)
 
-                submitted = st.form_submit_button("設定完了", type="primary")
+                submitted = st.form_submit_button("設定完了", type="primary", disabled=locked)
 
         # フォーム送信時に設定を確定・保存
         if submitted:
@@ -657,53 +688,95 @@ def _render_region_config_form(enable_region_detection):
     return region_cfg
 
 
-def _render_region_detection_trigger(uploaded_files, enable_region_detection, region_cfg, extract_all_option):
+def _render_region_detection_trigger(uploaded_files, region_cfg, extract_all_option):
     """「領域を検出」ボタンを表示し、押されたら各ファイルを解析して
-    `st.session_state['region_analyses']` に格納する。"""
+    `st.session_state['region_analyses']` に格納する。
+
+    表示するかどうか（領域検出ON かつ未検出時のみ）は呼び出し元の `app()` が
+    判定する。表示される場面は常に「これが次に行うべき唯一の操作」であるため、
+    常に primary（青）で表示する。"""
     # ============================================================
     # 領域を検出
     # ============================================================
-    if enable_region_detection:
-        detect_done = 'region_analyses' in st.session_state
-        # 「ラベルを抽出」が完了済みなら、領域検出はもはやこの回の抽出には
-        # 反映されないため「領域を検出」を白にする。
-        extract_done = bool(st.session_state.get('excel_result'))
-        detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
-        if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
-            try:
-                with st.spinner('図面枠と矩形領域を検出中...'):
-                    analyses = {}
-                    for uf in uploaded_files:
-                        with _temp_dxf_file(uf) as tmp:
-                            analysis = analyze_dxf_regions(tmp, region_cfg)
-                            if extract_all_option:
-                                _, dn_info = extract_labels(
-                                    tmp,
-                                    extract_drawing_numbers_option=True,
-                                    extract_title_option=True,
-                                    original_filename=uf.name,
-                                )
-                                analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
-                                analysis['title'] = dn_info.get('title')
-                                analysis['subtitle'] = dn_info.get('subtitle')
-                            analyses[uf.name] = analysis
-                    st.session_state['region_analyses'] = analyses
-                    _clear_session_keys(
-                        keys=_REGION_DETECT_CLEAR_KEYS,
-                        prefixes=_REGION_DETECT_CLEAR_PREFIXES)
-                st.rerun()
-            except Exception as e:
-                handle_error(e)
+    if st.button("領域を検出", key="detect_regions_btn", type="primary"):
+        try:
+            with st.spinner('図面枠と矩形領域を検出中...'):
+                analyses = {}
+                for uf in uploaded_files:
+                    with _temp_dxf_file(uf) as tmp:
+                        analysis = analyze_dxf_regions(tmp, region_cfg)
+                        if extract_all_option:
+                            _, dn_info = extract_labels(
+                                tmp,
+                                extract_drawing_numbers_option=True,
+                                extract_title_option=True,
+                                original_filename=uf.name,
+                            )
+                            analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
+                            analysis['title'] = dn_info.get('title')
+                            analysis['subtitle'] = dn_info.get('subtitle')
+                        analyses[uf.name] = analysis
+                st.session_state['region_analyses'] = analyses
+                _clear_session_keys(
+                    keys=_REGION_DETECT_CLEAR_KEYS,
+                    prefixes=_REGION_DETECT_CLEAR_PREFIXES)
+            st.rerun()
+        except Exception as e:
+            handle_error(e)
 
 
-def _render_region_confirmation_section(enable_region_detection):
-    """「領域の確認」セクション（検出済み領域ごとの名称候補チェックボックス群）を表示する。"""
+def _render_global_region_names_section(locked):
+    """「領域一覧」セクション: 検出済みの全ファイル・全領域の名称候補
+    （単一候補・複数候補を問わず）を重複なくABC順で一覧表示し、抽出したい
+    領域名にチェックを入れさせる（複数選択可）。
+
+    チェックした名称に一致する候補を持つ領域は、その名称で自動的に決定される
+    （1領域が複数のチェック済み候補を持つ場合は最も優先度の高い候補を採用）。
+    候補が2件以上あり、いずれもチェックされていない領域だけが
+    「領域の確認」での個別選択の対象になる。候補1件の領域は、この一覧での
+    チェックが抽出するかどうかの唯一のゲートになる（未チェックなら抽出しない）。
+    """
+    if 'region_analyses' not in st.session_state:
+        return
+    analyses = st.session_state['region_analyses']
+    all_names = collect_unique_region_candidate_names(analyses)
+    if not all_names:
+        return
+
+    st.subheader("領域一覧")
+    st.caption(
+        "検出された全ファイル・全領域の名称候補（複数候補を持つ領域も含む）を"
+        "重複なく一覧表示しています。抽出したい領域名にチェックを入れてください"
+        "（複数選択可）。チェックした名称に一致する候補を持つ領域は、その名称で"
+        "自動的に抽出されます。候補が2件以上あり、いずれもチェックされていない"
+        "領域のみ、下の「領域の確認」で個別に選択してください。"
+        "候補が1件だけの領域は、ここでチェックしない限り抽出されません。"
+    )
+    if 'global_region_checked_names' not in st.session_state:
+        st.session_state['global_region_checked_names'] = []
+    st.multiselect(
+        "抽出する領域名",
+        options=all_names,
+        key='global_region_checked_names',
+        disabled=locked,
+    )
+
+
+def _render_region_confirmation_section(enable_region_detection, locked):
+    """「領域の確認」セクション: 「領域一覧」で決定できなかった領域
+    （候補が2件以上あり、いずれもチェックされていないもの）だけを対象に、
+    名称候補チェックボックス群を表示する。"""
     # ============================================================
     # 領域の確認
     # ============================================================
     if enable_region_detection and 'region_analyses' in st.session_state:
         analyses = st.session_state['region_analyses']
+        checked_names = set(st.session_state.get('global_region_checked_names', []))
         st.subheader("領域の確認")
+        st.caption(
+            "「領域一覧」のチェックで決定できなかった領域（候補が2件以上あり、"
+            "いずれもチェックされていないもの）のみを表示しています。"
+        )
 
         for file_idx, (fname, analysis) in enumerate(sorted(analyses.items())):
             if file_idx > 0:
@@ -721,7 +794,13 @@ def _render_region_confirmation_section(enable_region_detection):
             err = analysis.get('error')
             n_frames = len(analysis.get('frames', []))
             regions = analysis.get('regions', [])
-            st.caption(f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個")
+            pending_regions = [
+                r for r in regions if is_region_pending_selection(r, checked_names)
+            ]
+            st.caption(
+                f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個"
+                f"（うち要選択 {len(pending_regions)} 個）"
+            )
             if err:
                 st.warning(err)
                 continue
@@ -730,7 +809,11 @@ def _render_region_confirmation_section(enable_region_detection):
                 st.info("面積条件を満たす領域が検出されませんでした。詳細設定の調整をお試しください。")
                 continue
 
-            for reg_idx, reg in enumerate(regions):
+            if not pending_regions:
+                st.caption("　　（「領域一覧」で決定済み、または候補なしのため個別選択は不要です）")
+                continue
+
+            for reg_idx, reg in enumerate(pending_regions):
                 if reg_idx > 0:
                     st.divider()
 
@@ -748,10 +831,6 @@ def _render_region_confirmation_section(enable_region_detection):
                 _render_dangling_edges_section(reg.get('dangling_edges', []))
 
                 cands = reg['name_candidates']
-                if not cands:
-                    st.caption("　　（名称候補なし）")
-                    continue
-
                 default_idx = _compute_default_candidate_index(fname, reg, cands, analyses)
 
                 for i, (d, t) in enumerate(cands):
@@ -762,7 +841,8 @@ def _render_region_confirmation_section(enable_region_detection):
                         f"　{t}　（境界線からの距離 {d:.0f}）",
                         key=ck,
                         on_change=_on_change_radio,
-                        args=(fname, reg['id'], i, len(cands), t)
+                        args=(fname, reg['id'], i, len(cands), t),
+                        disabled=locked,
                     )
 
                 # 領域選択しない（この領域にはどの名称候補も割り当てない）。
@@ -775,13 +855,18 @@ def _render_region_confirmation_section(enable_region_detection):
                     "　（領域選択しない）",
                     key=ck_none,
                     on_change=_on_change_none,
-                    args=(fname, reg['id'], len(cands))
+                    args=(fname, reg['id'], len(cands)),
+                    disabled=locked,
                 )
 
 
 def _handle_extract_button(uploaded_files, region_cfg, opts):
     """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常 ×
     機器符号候補のみ/機器符号以外も抽出）に応じた抽出処理を実行する。
+
+    表示するかどうか（結果表示中でない、かつ領域検出OFFまたは検出済み）は
+    呼び出し元の `app()` が判定する。表示される場面は常に「これが次に
+    行うべき唯一の操作」であるため、常に primary（青）で表示する。
 
     `opts` の中身をローカル変数へ展開してから本体（元の app() 内コードと
     完全に同一）を実行する——本体側は変更せず、置換によるキーワード引数名
@@ -798,9 +883,7 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
     # ============================================================
     # ラベルを抽出
     # ============================================================
-    has_results = bool(st.session_state.get('excel_result'))
-    extract_btn_type = "secondary" if has_results else "primary"
-    if st.button("ラベルを抽出", type=extract_btn_type):
+    if st.button("ラベルを抽出", type="primary"):
         try:
             frame_lineweight = int(region_cfg['frame_lineweight'])
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
@@ -1024,6 +1107,18 @@ def _render_results_section():
 
 
 def app():
+    """全体の表示制御（4状態）:
+
+    A) 結果表示中（`excel_result`あり）: オプション・詳細設定・領域一覧・
+       領域の確認は表示するが操作不可（disabled、振り返り専用）。
+       「領域を検出」「ラベルを抽出」ボタンはいずれも非表示
+       （「新しい抽出を開始」でのみ次のサイクルへ進める）。
+    B) 領域検出ON・未検出: 「領域を検出」ボタンのみ表示（常に青）。
+       「ラベルを抽出」・領域一覧・領域の確認は非表示（region_analysesが無いため）。
+    C) 領域検出ON・検出済み: 「領域を検出」は非表示（役目を終えたため）、
+       「ラベルを抽出」のみ表示（常に青）。領域一覧・領域の確認を表示。
+    D) 領域検出OFF: 「ラベルを抽出」のみ表示（常に青、既存通り）。
+    """
     _render_intro()
 
     uploaded_files = _render_upload_section()
@@ -1032,16 +1127,24 @@ def app():
         return
     st.success(f"{len(uploaded_files)}個のファイルが選択されました")
 
-    opts = _render_options_section()
+    locked = bool(st.session_state.get('excel_result'))
 
-    region_cfg = _render_region_config_form(opts['enable_region_detection'])
+    opts = _render_options_section(locked)
 
-    _render_region_detection_trigger(
-        uploaded_files, opts['enable_region_detection'], region_cfg, opts['extract_all_option'])
+    region_cfg = _render_region_config_form(opts['enable_region_detection'], locked)
 
-    _render_region_confirmation_section(opts['enable_region_detection'])
+    detected = 'region_analyses' in st.session_state
 
-    _handle_extract_button(uploaded_files, region_cfg, opts)
+    if not locked and opts['enable_region_detection'] and not detected:
+        _render_region_detection_trigger(
+            uploaded_files, region_cfg, opts['extract_all_option'])
+
+    _render_global_region_names_section(locked)
+
+    _render_region_confirmation_section(opts['enable_region_detection'], locked)
+
+    if not locked and (not opts['enable_region_detection'] or detected):
+        _handle_extract_button(uploaded_files, region_cfg, opts)
 
     _render_results_section()
 

@@ -2308,6 +2308,50 @@ def assign_region_labels(
     return out
 
 
+def collect_unique_region_candidate_names(analyses: dict) -> list[str]:
+    """全ファイル・全領域の名称候補（単一候補領域・複数候補領域を問わず）から、
+    NFKC正規化（半角統一）した上でユニークな名称一覧をABC順で返す。
+
+    「領域一覧」チェックリスト（app.py）の選択肢構築に使う。1つの領域が
+    複数の候補を持つ場合、その全候補（先頭の最有力候補だけでなく）を対象に
+    含める——ユーザーがどの候補を採用するかをこの一覧から選べるようにするため。
+    """
+    names = set()
+    for analysis in analyses.values():
+        for reg in analysis.get('regions', []):
+            for (_dist, text) in reg.get('name_candidates', []):
+                names.add(normalize_width(text))
+    return sorted(names)
+
+
+def resolve_globally_decided_name(reg: dict, checked_names: set) -> str | None:
+    """領域の候補のうち、「領域一覧」でチェック済みの名称と一致する最優先の
+    候補（候補リストの並び順＝Tier→距離順で最初に一致したもの）を返す。
+    一致する候補が無ければ None。
+
+    1領域の複数の候補がいずれもチェックされていた場合、優先度の最も高い
+    候補のみを採用する（ユーザー確定）。
+    """
+    for _dist, text in reg.get('name_candidates', []):
+        if normalize_width(text) in checked_names:
+            return text
+    return None
+
+
+def is_region_pending_selection(reg: dict, checked_names: set) -> bool:
+    """「領域の確認」でファイルごとの個別選択が必要な領域かどうかを返す。
+
+    候補が2件以上あり、かつ「領域一覧」のグローバル選択でいずれの候補も
+    決定されていない場合のみ True。候補0件（無名領域、従来通り自動命名）・
+    候補1件（「領域一覧」チェックが唯一のゲート——チェックされなければ
+    抽出されない）は対象外。
+    """
+    cands = reg.get('name_candidates', [])
+    if len(cands) < 2:
+        return False
+    return resolve_globally_decided_name(reg, checked_names) is None
+
+
 def build_region_results(
     analyses: dict,
     name_selections: dict,

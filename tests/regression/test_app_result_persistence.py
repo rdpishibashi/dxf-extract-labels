@@ -132,16 +132,26 @@ def test_excel_result_persists_after_extract(streamlit_server, browser):
 
 def test_region_mode_excel_result_produced(streamlit_server, browser):
     """領域検出モード（「領域を検出」ON）+「機器符号（候補）以外も抽出」ONで、
-    領域検出→ラベル抽出までエラーなくExcel出力されることを確認する。
+    領域検出→領域選択を完了→ラベル抽出までエラーなくExcel出力されることを
+    確認する。
 
     `app.py` の 809行の単一 `app()` 関数を `_render_intro`/`_render_upload_section`/
     `_render_options_section`/`_render_region_config_form`/
-    `_render_region_detection_trigger`/`_render_region_confirmation_section`/
-    `_handle_extract_button`/`_render_results_section` へ分割した際
-    （2026-07-26、モジュラリティ改善）の回帰確認。`test_excel_result_persists_after_extract`
-    は「領域を検出」OFFの既定パスのみを通るため、本テストは領域検出モード側の
-    関数群（`_render_region_config_form`・`_render_region_detection_trigger`・
-    `_render_region_confirmation_section`）を実際に経由する。
+    `_render_region_detection_trigger`/`_render_global_region_names_section`/
+    `_render_region_confirmation_section`/`_handle_extract_button`/
+    `_render_results_section` へ分割した際（2026-07-26、モジュラリティ改善）の
+    回帰確認。`test_excel_result_persists_after_extract` は「領域を検出」OFFの
+    既定パスのみを通るため、本テストは領域検出モード側の関数群
+    （`_render_region_config_form`・`_render_region_detection_trigger`・
+    `_render_global_region_names_section`・`_render_region_confirmation_section`）
+    を実際に経由する。
+
+    2026-07-30 の「領域一覧」チェックボックスグリッド＋「領域選択を完了」
+    ボタン導入に伴い更新: 検出後は「領域一覧」で何もチェックせず（＝全領域を
+    抽出対象から除外する最小ケース）「領域選択を完了」を押すだけで
+    「ラベルを抽出」まで進めることを確認する（個別選択が必要な「領域の確認」
+    セクションは、チェック済み候補が2件以上残る領域がある場合のみ表示される
+    ため、本テストの前提では表示されないのが正しい）。
     """
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     try:
@@ -161,8 +171,11 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
         page.get_by_role('button', name='領域を検出', exact=True).click()
         page.wait_for_timeout(4000)
 
-        assert page.get_by_text('領域の確認', exact=False).count() > 0, (
-            '領域の確認セクションが表示されていない（テストの前提が崩れている）')
+        assert page.get_by_text('領域一覧', exact=False).count() > 0, (
+            '領域一覧セクションが表示されていない（テストの前提が崩れている）')
+
+        page.get_by_role('button', name='領域選択を完了', exact=True).click()
+        page.wait_for_timeout(1000)
 
         page.get_by_role('button', name='ラベルを抽出').click()
         page.wait_for_timeout(6000)

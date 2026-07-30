@@ -13,7 +13,7 @@ from model.extract_labels import extract_labels, process_multiple_dxf_files
 from model.region_detector import (
     analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
     collect_unique_region_candidate_names, resolve_globally_decided_name,
-    is_region_pending_selection,
+    is_region_pending_selection, pending_candidates_for_region,
 )
 from model.excel_output import (
     create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
@@ -63,9 +63,9 @@ st.set_page_config(
 # ============================================================
 _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
-    'global_region_checked_names',
+    'region_selection_confirmed',
 ]
-_REGION_DETECT_CLEAR_PREFIXES = ('rc_',)
+_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
@@ -77,9 +77,9 @@ _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'processing_settings',
     'results', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
-    'terminal_results', 'global_region_checked_names',
+    'terminal_results', 'region_selection_confirmed',
 ]
-_RESTART_CLEAR_PREFIXES = ('rc_',)
+_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_')
 
 
 @contextlib.contextmanager
@@ -132,15 +132,28 @@ def _compute_terminal_results(uploaded_files):
     return results
 
 
+def _global_checked_region_names():
+    """「領域一覧」のチェックボックス（`grc_<name>`）からチェック済みの
+    領域名の集合を返す。個々のチェックボックスは `_render_global_region_names_section()`
+    が描画する（`st.multiselect` ではなく個別チェックボックスにしたのは、
+    ポップアップに隠れず全候補を一覧できるようにするため、2026-07-30）。"""
+    prefix = 'grc_'
+    return {
+        k[len(prefix):] for k, v in st.session_state.items()
+        if isinstance(k, str) and k.startswith(prefix) and v
+    }
+
+
 def _gather_name_selections(fname, analysis):
     """この図面の領域名選択を集める。「領域一覧」でのグローバル決定（優先）と、
-    「領域の確認」での個別選択（グローバルで未決定の領域のみ）を統合する。
+    「領域の確認」での個別選択（チェック済み候補が2件以上ある領域のみ）を統合する。
 
-    候補1件の領域は「領域一覧」チェックが唯一のゲート（未チェックなら抽出
-    しない）。候補0件の領域はここでは何も返さない（呼び出し先の
-    build_region_results 等が自動 "no name" 命名を行う）。
+    「領域一覧」でチェックされなかった候補は「採用しない」という意思表示と
+    みなす（2026-07-30 ユーザー指定）。そのため、候補が0件チェック済みの
+    領域はここでは何も返さない（無所属のまま。候補が元々0件の無名領域は
+    呼び出し先の build_region_results 等が自動 "no name" 命名を行う）。
     """
-    checked_names = set(st.session_state.get('global_region_checked_names', []))
+    checked_names = _global_checked_region_names()
     name_selections = {}
     for reg in analysis.get('regions', []):
         decided = resolve_globally_decided_name(reg, checked_names)
@@ -149,8 +162,9 @@ def _gather_name_selections(fname, analysis):
             continue
         if not is_region_pending_selection(reg, checked_names):
             continue
+        pending_cands = pending_candidates_for_region(reg, checked_names)
         chosen = []
-        for i, (_d, t) in enumerate(reg['name_candidates']):
+        for i, (_d, t) in enumerate(pending_cands):
             if st.session_state.get(f"rc_{fname}_{reg['id']}_{i}"):
                 chosen.append(t)
         if chosen:
@@ -158,8 +172,13 @@ def _gather_name_selections(fname, analysis):
     return name_selections
 
 
-def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
+def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names):
     """領域名チェックボックスをラジオボタン的に動作させるコールバック。
+
+    `checked_names` は「領域一覧」でのチェック済み名称集合。他領域の候補は
+    `pending_candidates_for_region()` で同じ集合に絞り込んでから走査する
+    （`rc_<fname>_<reg_id>_<i>` のインデックスが実際の描画と対応するように
+    するため、2026-07-30）。
 
     チェックが ON になったとき、(1) 同一領域の他チェックボックスを OFF にし、
     (2) 同じ名称候補を持つ他領域（候補が2件以上＝選択肢ありの領域のみ）にも
@@ -193,7 +212,7 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
         for r2 in an2.get('regions', []):
             if fn2 == fname and r2['id'] == reg_id:
                 continue
-            cands2 = r2.get('name_candidates', [])
+            cands2 = pending_candidates_for_region(r2, checked_names)
             if len(cands2) <= 1:
                 continue  # 選択肢なし（自動確定）の領域は対象外
             if not any(t2 == clicked_text for _d2, t2 in cands2):
@@ -205,8 +224,11 @@ def _on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text):
                 st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
 
 
-def _on_change_none(fname, reg_id, n_cands):
+def _on_change_none(fname, reg_id, n_cands, checked_names):
     """「領域選択しない」チェックボックスをラジオボタン的に動作させるコールバック。
+
+    `checked_names` は「領域一覧」でのチェック済み名称集合（他領域の候補の
+    絞り込みに使う。理由は `_on_change_radio()` の docstring 参照）。
 
     ON になったとき、(1) 同一領域の名称候補チェックボックスを全て OFF にする、
     (2) この領域自身の候補テキストと一致するチェックボックスを、他領域
@@ -257,14 +279,14 @@ def _on_change_none(fname, reg_id, n_cands):
         (r for r in analyses.get(fname, {}).get('regions', []) if r['id'] == reg_id), None)
     if not clicked_region:
         return
-    clicked_texts = {t for _d, t in clicked_region.get('name_candidates', [])}
+    clicked_texts = {t for _d, t in pending_candidates_for_region(clicked_region, checked_names)}
     clicked_polygon = clicked_region['polygon']
 
     for fn2, an2 in analyses.items():
         for r2 in an2.get('regions', []):
             if fn2 == fname and r2['id'] == reg_id:
                 continue
-            cands2 = r2.get('name_candidates', [])
+            cands2 = pending_candidates_for_region(r2, checked_names)
             if not any(t2 in clicked_texts for _d2, t2 in cands2):
                 continue  # この領域の候補を1つも持たない他領域には影響しない
                           # （候補0件・候補1件のみ＝自動確定の領域も対象に含める。
@@ -279,9 +301,14 @@ def _on_change_none(fname, reg_id, n_cands):
                 st.session_state[f"rc_{fn2}_{r2['id']}_none"] = True
 
 
-def _compute_default_candidate_index(fname, reg, cands, analyses):
+def _compute_default_candidate_index(fname, reg, cands, analyses, checked_names):
     """他の図面/領域で選択済みの名称があれば、それに一致する候補のインデックスを
     デフォルトとして返す（無ければ0）。
+
+    `cands` は呼び出し元がこの領域用に描画する候補リスト（`pending_candidates_for_region()`
+    で「領域一覧」チェック済みのものに絞り込み済み）。他領域を走査する際も
+    同じ絞り込みを適用しないと、`rc_<fname>_<reg_id>_<i>` のインデックス `i` が
+    実際に描画されたチェックボックスと対応しなくなる（2026-07-30）。
 
     候補が1件のみ（選択肢なし・自動確定）の領域は同期対象から除外する
     （ユーザーが能動的に選んだわけではない確定のため、隣接領域の候補にも同じ
@@ -309,7 +336,7 @@ def _compute_default_candidate_index(fname, reg, cands, analyses):
         for r2 in an2.get('regions', []):
             if fn2 == fname and r2['id'] == reg['id']:
                 continue
-            cands2 = r2.get('name_candidates', [])
+            cands2 = pending_candidates_for_region(r2, checked_names)
             if len(cands2) <= 1:
                 continue  # 選択肢なし（自動確定）の領域はスキップ
             if fn2 == fname and regions_overlap(reg['polygon'], r2['polygon']):
@@ -511,7 +538,7 @@ def _render_options_section(locked):
             # 消えてしまう。2026-07-15ユーザー報告で発覚、v1.9.4で領域検出を
             # オプション化した際に混入した回帰）。
             _clear_session_keys(
-                keys=['region_analyses', 'global_region_checked_names'],
+                keys=['region_analyses', 'region_selection_confirmed'],
                 prefixes=_REGION_DETECT_CLEAR_PREFIXES)
 
         # d) 端子一覧を抽出
@@ -725,16 +752,27 @@ def _render_region_detection_trigger(uploaded_files, region_cfg, extract_all_opt
             handle_error(e)
 
 
+def _invalidate_region_selection_confirmation():
+    """「領域一覧」のチェック状態が変更されたら「領域選択を完了」を取り消す
+    コールバック。再度「領域選択を完了」を押すまで「領域の確認」「ラベルを
+    抽出」を隠す（決定内容が変わった以上、再確認が必要なため）。"""
+    st.session_state['region_selection_confirmed'] = False
+
+
 def _render_global_region_names_section(locked):
     """「領域一覧」セクション: 検出済みの全ファイル・全領域の名称候補
     （単一候補・複数候補を問わず）を重複なくABC順で一覧表示し、抽出したい
-    領域名にチェックを入れさせる（複数選択可）。
+    領域名にチェックを入れさせる（複数選択可）。「領域選択を完了」ボタンを
+    押すまでは「領域の確認」「ラベルを抽出」は表示されない（`app()` 側が
+    `region_selection_confirmed` を見て判定する）。
 
-    チェックした名称に一致する候補を持つ領域は、その名称で自動的に決定される
-    （1領域が複数のチェック済み候補を持つ場合は最も優先度の高い候補を採用）。
-    候補が2件以上あり、いずれもチェックされていない領域だけが
-    「領域の確認」での個別選択の対象になる。候補1件の領域は、この一覧での
-    チェックが抽出するかどうかの唯一のゲートになる（未チェックなら抽出しない）。
+    チェック済み候補が「ちょうど1件」の領域は、その名称で自動的に決定される。
+    チェック済み候補が「2件以上」残る領域だけが「領域の確認」での個別選択の
+    対象になる（どれを採用するかは候補どうしが競合しているため個別に選ばせる）。
+    チェック済み候補が「0件」の領域は、自動的に除外され「領域の確認」にも
+    表示されない（未チェック＝抽出しないという意思表示のため）。候補1件の
+    領域も同様に、この一覧でのチェックが抽出するかどうかの唯一のゲートになる
+    （2026-07-30 ユーザー指定で確定した仕様）。
     """
     if 'region_analyses' not in st.session_state:
         return
@@ -747,73 +785,101 @@ def _render_global_region_names_section(locked):
     st.caption(
         "検出された全ファイル・全領域の名称候補（複数候補を持つ領域も含む）を"
         "重複なく一覧表示しています。抽出したい領域名にチェックを入れてください"
-        "（複数選択可）。チェックした名称に一致する候補を持つ領域は、その名称で"
-        "自動的に抽出されます。候補が2件以上あり、いずれもチェックされていない"
-        "領域のみ、下の「領域の確認」で個別に選択してください。"
-        "候補が1件だけの領域は、ここでチェックしない限り抽出されません。"
+        "（複数選択可）。ある領域のチェック済み候補がちょうど1件なら、その名称で"
+        "自動的に抽出されます。チェック済み候補が2件以上残る領域のみ、"
+        "「領域選択を完了」を押した後に表示される「領域の確認」でどれを採用するか"
+        "個別に選択してください。候補を1つもチェックしなかった領域は抽出されません"
+        "（「領域の確認」にも表示されません）。"
     )
-    if 'global_region_checked_names' not in st.session_state:
-        st.session_state['global_region_checked_names'] = []
-    st.multiselect(
-        "抽出する領域名",
-        options=all_names,
-        key='global_region_checked_names',
-        disabled=locked,
-    )
+    # ポップアップに隠さず全候補を一覧できるよう、st.multiselect ではなく
+    # チェックボックスを使う。st.container(horizontal=True) はflexboxで
+    # 子要素（チェックボックスは既定 width='content' で自身のラベル幅にしか
+    # 広がらない）を横に並べ、ブラウザー幅に収まらない分は自動的に折り返す
+    # ため、指定した列数無しでもブラウザー幅に応じた2〜4段組相当のレスポンシブ
+    # 表示になる（`tests/unit/test_terminal_detector.py` 等で使う固定列
+    # `st.columns()` と異なり、幅に応じた折り返し数の変化に追従する）。
+    with st.container(horizontal=True):
+        for name in all_names:
+            ck = f"grc_{name}"
+            if ck not in st.session_state:
+                st.session_state[ck] = False
+            st.checkbox(
+                name, key=ck, disabled=locked,
+                on_change=_invalidate_region_selection_confirmation,
+            )
+
+    # 「領域選択を完了」: 確定済みなら非表示にする（「領域を検出」ボタンと同じ
+    # パターン——役目を終えたら消え、チェックを変更すると
+    # `_invalidate_region_selection_confirmation` により再度必要になる）。
+    if not st.session_state.get('region_selection_confirmed'):
+        if st.button("領域選択を完了", type="primary"):
+            st.session_state['region_selection_confirmed'] = True
+            st.rerun()
 
 
 def _render_region_confirmation_section(enable_region_detection, locked):
-    """「領域の確認」セクション: 「領域一覧」で決定できなかった領域
-    （候補が2件以上あり、いずれもチェックされていないもの）だけを対象に、
-    名称候補チェックボックス群を表示する。"""
+    """「領域の確認」セクション: 「領域一覧」でチェック済みの候補が2件以上
+    残っている領域（＝どれを採用するか競合している領域）だけを対象に、
+    チェック済み候補のみの名称候補チェックボックス群を表示する。チェック済み
+    候補が0件の領域は自動的に除外され、ここには一切表示されない
+    （2026-07-30 ユーザー指定で確定した仕様）。個別選択が不要なファイル
+    （エラーが無く、かつ要選択の領域が1つも無いファイル）はセクション自体に
+    表示しない（2026-07-30 ユーザー指定）。
+
+    「領域選択を完了」が押される（`region_selection_confirmed` が True になる）
+    までは表示しない（2026-07-30 ユーザー指定。「領域一覧」でのチェック中に
+    表示内容が頻繁に変化するのを避け、ユーザーが一括選択を終えたタイミングで
+    まとめて残りの個別選択を提示する）。"""
     # ============================================================
     # 領域の確認
     # ============================================================
-    if enable_region_detection and 'region_analyses' in st.session_state:
-        analyses = st.session_state['region_analyses']
-        checked_names = set(st.session_state.get('global_region_checked_names', []))
-        st.subheader("領域の確認")
+    if not (enable_region_detection and 'region_analyses' in st.session_state
+            and st.session_state.get('region_selection_confirmed')):
+        return
+
+    analyses = st.session_state['region_analyses']
+    checked_names = _global_checked_region_names()
+    st.subheader("領域の確認")
+    st.caption(
+        "「領域一覧」でチェックした候補が2件以上残っている領域（どれを採用する"
+        "か決まっていないもの）があるファイルのみを表示しています。候補を1つも"
+        "チェックしなかった領域は抽出対象から除外され、ここには表示されません。"
+    )
+
+    rendered_any = False
+    for fname, analysis in sorted(analyses.items()):
+        err = analysis.get('error')
+        regions = analysis.get('regions', [])
+        pending_regions = [
+            r for r in regions if is_region_pending_selection(r, checked_names)
+        ]
+        if not err and not pending_regions:
+            continue  # 個別選択が不要なファイルは表示しない
+
+        if rendered_any:
+            st.divider()
+        rendered_any = True
+
+        st.markdown(f"### {fname}")
+        dn_parts = []
+        if analysis.get('main_drawing_number'):
+            dn_parts.append(f"図番：{analysis['main_drawing_number']}")
+        if analysis.get('title'):
+            dn_parts.append(f"タイトル：{analysis['title']}")
+        if analysis.get('subtitle'):
+            dn_parts.append(f"サブタイトル：{analysis['subtitle']}")
+        if dn_parts:
+            st.caption("　/　".join(dn_parts))
+        n_frames = len(analysis.get('frames', []))
         st.caption(
-            "「領域一覧」のチェックで決定できなかった領域（候補が2件以上あり、"
-            "いずれもチェックされていないもの）のみを表示しています。"
+            f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個"
+            f"（うち要選択 {len(pending_regions)} 個）"
         )
+        if err:
+            st.warning(err)
+            continue
 
-        for file_idx, (fname, analysis) in enumerate(sorted(analyses.items())):
-            if file_idx > 0:
-                st.divider()
-            st.markdown(f"### {fname}")
-            dn_parts = []
-            if analysis.get('main_drawing_number'):
-                dn_parts.append(f"図番：{analysis['main_drawing_number']}")
-            if analysis.get('title'):
-                dn_parts.append(f"タイトル：{analysis['title']}")
-            if analysis.get('subtitle'):
-                dn_parts.append(f"サブタイトル：{analysis['subtitle']}")
-            if dn_parts:
-                st.caption("　/　".join(dn_parts))
-            err = analysis.get('error')
-            n_frames = len(analysis.get('frames', []))
-            regions = analysis.get('regions', [])
-            pending_regions = [
-                r for r in regions if is_region_pending_selection(r, checked_names)
-            ]
-            st.caption(
-                f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個"
-                f"（うち要選択 {len(pending_regions)} 個）"
-            )
-            if err:
-                st.warning(err)
-                continue
-
-            if not regions:
-                st.info("面積条件を満たす領域が検出されませんでした。詳細設定の調整をお試しください。")
-                continue
-
-            if not pending_regions:
-                st.caption("　　（「領域一覧」で決定済み、または候補なしのため個別選択は不要です）")
-                continue
-
-            for reg_idx, reg in enumerate(pending_regions):
+        for reg_idx, reg in enumerate(pending_regions):
                 if reg_idx > 0:
                     st.divider()
 
@@ -830,8 +896,12 @@ def _render_region_confirmation_section(enable_region_detection, locked):
 
                 _render_dangling_edges_section(reg.get('dangling_edges', []))
 
-                cands = reg['name_candidates']
-                default_idx = _compute_default_candidate_index(fname, reg, cands, analyses)
+                # 「領域一覧」でチェック済みの候補のみを選択肢にする
+                # （未チェックの候補は「採用しない」という意思表示とみなし、
+                # 選択肢自体に出さない。2026-07-30 ユーザー指定）。
+                cands = pending_candidates_for_region(reg, checked_names)
+                default_idx = _compute_default_candidate_index(
+                    fname, reg, cands, analyses, checked_names)
 
                 for i, (d, t) in enumerate(cands):
                     ck = f"rc_{fname}_{reg['id']}_{i}"
@@ -841,7 +911,7 @@ def _render_region_confirmation_section(enable_region_detection, locked):
                         f"　{t}　（境界線からの距離 {d:.0f}）",
                         key=ck,
                         on_change=_on_change_radio,
-                        args=(fname, reg['id'], i, len(cands), t),
+                        args=(fname, reg['id'], i, len(cands), t, checked_names),
                         disabled=locked,
                     )
 
@@ -855,9 +925,12 @@ def _render_region_confirmation_section(enable_region_detection, locked):
                     "　（領域選択しない）",
                     key=ck_none,
                     on_change=_on_change_none,
-                    args=(fname, reg['id'], len(cands)),
+                    args=(fname, reg['id'], len(cands), checked_names),
                     disabled=locked,
                 )
+
+    if not rendered_any:
+        st.info("すべての領域が「領域一覧」で決定済みです。")
 
 
 def _handle_extract_button(uploaded_files, region_cfg, opts):
@@ -1107,16 +1180,24 @@ def _render_results_section():
 
 
 def app():
-    """全体の表示制御（4状態）:
+    """全体の表示制御（5状態）:
 
     A) 結果表示中（`excel_result`あり）: オプション・詳細設定・領域一覧・
        領域の確認は表示するが操作不可（disabled、振り返り専用）。
-       「領域を検出」「ラベルを抽出」ボタンはいずれも非表示
+       「領域を検出」「領域選択を完了」「ラベルを抽出」ボタンはいずれも非表示
        （「新しい抽出を開始」でのみ次のサイクルへ進める）。
     B) 領域検出ON・未検出: 「領域を検出」ボタンのみ表示（常に青）。
        「ラベルを抽出」・領域一覧・領域の確認は非表示（region_analysesが無いため）。
-    C) 領域検出ON・検出済み: 「領域を検出」は非表示（役目を終えたため）、
-       「ラベルを抽出」のみ表示（常に青）。領域一覧・領域の確認を表示。
+    C1) 領域検出ON・検出済み・未確定（「領域選択を完了」未クリック）:
+       「領域を検出」は非表示（役目を終えたため）。「領域一覧」（チェックボックス
+       群＋「領域選択を完了」ボタン）のみ表示。「領域の確認」「ラベルを抽出」は
+       非表示（一括選択が終わるまで、決定できなかった領域が頻繁に増減して
+       表示されるのを避けるため）。
+    C2) 領域検出ON・検出済み・確定済み（「領域選択を完了」クリック後）:
+       「領域選択を完了」ボタンは非表示（役目を終えたため。「領域一覧」の
+       チェックを変更すると `_invalidate_region_selection_confirmation` に
+       より確定が取り消され C1 に戻る）。「領域の確認」（チェック済み候補が2件以上残る領域のみ）・
+       「ラベルを抽出」（常に青）を表示。
     D) 領域検出OFF: 「ラベルを抽出」のみ表示（常に青、既存通り）。
     """
     _render_intro()
@@ -1134,6 +1215,7 @@ def app():
     region_cfg = _render_region_config_form(opts['enable_region_detection'], locked)
 
     detected = 'region_analyses' in st.session_state
+    region_selection_confirmed = bool(st.session_state.get('region_selection_confirmed'))
 
     if not locked and opts['enable_region_detection'] and not detected:
         _render_region_detection_trigger(
@@ -1143,7 +1225,10 @@ def app():
 
     _render_region_confirmation_section(opts['enable_region_detection'], locked)
 
-    if not locked and (not opts['enable_region_detection'] or detected):
+    if not locked and (
+        not opts['enable_region_detection']
+        or (detected and region_selection_confirmed)
+    ):
         _handle_extract_button(uploaded_files, region_cfg, opts)
 
     _render_results_section()

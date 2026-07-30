@@ -61,7 +61,7 @@ def test_on_change_none_turns_off_matching_candidate_in_other_region():
     _set_checkbox('f.dxf', 1, 1, False)  # B: Z = OFF
 
     _set_checkbox('f.dxf', 0, 'none', True)
-    app._on_change_none('f.dxf', 0, 2)
+    app._on_change_none('f.dxf', 0, 2, {'X', 'Y', 'Z'})
 
     assert _get_checkbox('f.dxf', 1, 0) is False  # B の X が OFF になる
     assert _get_checkbox('f.dxf', 1, 1) is False  # 元々 OFF の Z は変化なし
@@ -79,7 +79,7 @@ def test_on_change_none_does_not_propagate_to_overlapping_region_same_file():
     _set_checkbox('f.dxf', 1, 0, True)  # inner: X = ON
 
     _set_checkbox('f.dxf', 0, 'none', True)
-    app._on_change_none('f.dxf', 0, 2)
+    app._on_change_none('f.dxf', 0, 2, {'X', 'Y', 'Z'})
 
     assert _get_checkbox('f.dxf', 1, 0) is True  # 重なり領域なので変化しない
 
@@ -98,7 +98,7 @@ def test_on_change_none_turns_on_none_when_other_region_left_with_nothing_select
     _set_checkbox('f.dxf', 1, 1, False)  # B: W = OFF
 
     _set_checkbox('f.dxf', 0, 'none', True)
-    app._on_change_none('f.dxf', 0, 2)
+    app._on_change_none('f.dxf', 0, 2, {'X', 'Y', 'W'})
 
     assert _get_checkbox('f.dxf', 1, 0) is False
     assert _get_checkbox('f.dxf', 1, 1) is False
@@ -118,7 +118,7 @@ def test_on_change_none_does_not_turn_on_none_when_other_candidate_remains_selec
     _set_checkbox('f.dxf', 1, 1, True)   # B: W = ON（Aとは無関係な独自選択）
 
     _set_checkbox('f.dxf', 0, 'none', True)
-    app._on_change_none('f.dxf', 0, 2)
+    app._on_change_none('f.dxf', 0, 2, {'X', 'Y', 'W'})
 
     assert _get_checkbox('f.dxf', 1, 0) is False
     assert _get_checkbox('f.dxf', 1, 1) is True  # 無関係な選択は維持
@@ -136,7 +136,7 @@ def test_on_change_none_propagates_across_files():
     _set_checkbox('f2.dxf', 5, 0, True)  # f2側: X = ON
 
     _set_checkbox('f1.dxf', 0, 'none', True)
-    app._on_change_none('f1.dxf', 0, 1)
+    app._on_change_none('f1.dxf', 0, 1, {'X', 'W'})
 
     assert _get_checkbox('f2.dxf', 5, 0) is False  # 別ファイルでも X は OFF になる
 
@@ -161,7 +161,7 @@ def test_on_change_none_includes_single_candidate_regions():
     _set_checkbox('f.dxf', 2, 0, True)  # C: X = ON（自動確定）
 
     _set_checkbox('f.dxf', 0, 'none', True)
-    app._on_change_none('f.dxf', 0, 1)
+    app._on_change_none('f.dxf', 0, 1, {'X'})
 
     assert _get_checkbox('f.dxf', 0, 0) is False
     assert _get_checkbox('f.dxf', 1, 0) is False  # 候補1件のみでも OFF になる
@@ -177,7 +177,7 @@ def test_on_change_none_noop_when_not_checked():
     region_a = _region('f.dxf', 0, poly_a, [(1.0, 'X')])
     _set_analyses({'f.dxf': [region_a]})
     _set_checkbox('f.dxf', 0, 'none', False)
-    app._on_change_none('f.dxf', 0, 1)
+    app._on_change_none('f.dxf', 0, 1, {'X'})
     # 例外なく完走すればOK（副作用が起きていないことは他のテストで別途確認済み）
 
 
@@ -194,7 +194,7 @@ def test_on_change_radio_still_propagates_on_and_clears_none():
 
     _set_checkbox('f.dxf', 0, 'none', True)  # 事前に「選択しない」がONだったとする
     _set_checkbox('f.dxf', 0, 0, True)  # X をクリック
-    app._on_change_radio('f.dxf', 0, 0, 2, 'X')
+    app._on_change_radio('f.dxf', 0, 0, 2, 'X', {'X', 'Y', 'Z'})
 
     assert _get_checkbox('f.dxf', 0, 1) is False       # 同一領域の他候補はOFF
     assert st.session_state.get('rc_f.dxf_0_none') is False  # 選択しないが解除される

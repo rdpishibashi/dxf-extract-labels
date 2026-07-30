@@ -2324,32 +2324,57 @@ def collect_unique_region_candidate_names(analyses: dict) -> list[str]:
     return sorted(names)
 
 
-def resolve_globally_decided_name(reg: dict, checked_names: set) -> str | None:
-    """領域の候補のうち、「領域一覧」でチェック済みの名称と一致する最優先の
-    候補（候補リストの並び順＝Tier→距離順で最初に一致したもの）を返す。
-    一致する候補が無ければ None。
+def _matched_checked_candidates(reg: dict, checked_names: set) -> list:
+    """領域の候補（`name_candidates`）のうち、「領域一覧」でチェック済みの
+    名称と一致するものだけを、元の並び順（Tier→距離順）を保ったまま返す。
 
-    1領域の複数の候補がいずれもチェックされていた場合、優先度の最も高い
-    候補のみを採用する（ユーザー確定）。
+    「領域一覧」でチェックされなかった候補は「採用しない」という明示的な
+    意思表示とみなすため（2026-07-30 ユーザー指定）、この関数は常に
+    チェック済みの候補のみを対象にする——未チェックの候補を「まだ判断
+    していないので個別確認に回す」形で残すことはしない。
     """
-    for _dist, text in reg.get('name_candidates', []):
-        if normalize_width(text) in checked_names:
-            return text
+    return [
+        (d, t) for (d, t) in reg.get('name_candidates', [])
+        if normalize_width(t) in checked_names
+    ]
+
+
+def resolve_globally_decided_name(reg: dict, checked_names: set) -> str | None:
+    """領域の候補のうち、「領域一覧」でチェック済みの名称がちょうど1件だけ
+    一致する場合、その候補名を返す（自動決定）。
+
+    一致が0件（どの候補も「領域一覧」でチェックされていない＝ユーザーは
+    この領域にはどの名称も採用しないことを選んでいる）、または2件以上
+    （どちらを採用するかまだ決められない）の場合は None を返す
+    （2026-07-30、ユーザー指定により変更。旧仕様では2件以上一致時に
+    最優先の候補を自動採用していたが、複数のチェック済み候補が同一領域に
+    競合する場合は「領域の確認」での個別選択に委ねる方針に統一した）。
+    """
+    matched = _matched_checked_candidates(reg, checked_names)
+    if len(matched) == 1:
+        return matched[0][1]
     return None
+
+
+def pending_candidates_for_region(reg: dict, checked_names: set) -> list:
+    """「領域の確認」でこの領域に提示すべき候補（＝「領域一覧」でチェック済み
+    のものだけ）を、元の並び順を保ったまま返す。`is_region_pending_selection()`
+    が True を返す領域（チェック済み候補が2件以上）に対して使う。未チェックの
+    候補は選択肢自体に含めない（2026-07-30 ユーザー指定）。
+    """
+    return _matched_checked_candidates(reg, checked_names)
 
 
 def is_region_pending_selection(reg: dict, checked_names: set) -> bool:
     """「領域の確認」でファイルごとの個別選択が必要な領域かどうかを返す。
 
-    候補が2件以上あり、かつ「領域一覧」のグローバル選択でいずれの候補も
-    決定されていない場合のみ True。候補0件（無名領域、従来通り自動命名）・
-    候補1件（「領域一覧」チェックが唯一のゲート——チェックされなければ
-    抽出されない）は対象外。
+    領域の候補のうち「領域一覧」でチェック済みのものがちょうど2件以上ある
+    場合のみ True（＝チェック済み候補同士でどちらを採用するか、まだ決め
+    られないケース）。チェック済みが1件なら `resolve_globally_decided_name()`
+    により自動決定され、0件なら「どの候補も採用しない」とみなしてここでも
+    対象にしない（2026-07-30、ユーザー指定）。
     """
-    cands = reg.get('name_candidates', [])
-    if len(cands) < 2:
-        return False
-    return resolve_globally_decided_name(reg, checked_names) is None
+    return len(_matched_checked_candidates(reg, checked_names)) >= 2
 
 
 def build_region_results(

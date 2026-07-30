@@ -7,7 +7,7 @@
 |---------|------|----------------|
 | [OVERVIEW.md](OVERVIEW.md) | 概要・ディレクトリ構成・アーキテクチャ（データフロー・MTEXT整形・図番/流用元判別・タイトル/サブタイトル抽出）・Excel出力仕様・オプション仕様・セッション状態・依存パッケージ・既知の制限・機能拡張ポイント・システム要件・トラブルシューティング・DXF-label-diffとの違い・ライセンス | 全体像を把握したい／`extract_labels.py`本体の抽出ロジックを触る |
 | [REGION_DETECTION.md](REGION_DETECTION.md) | 矩形領域抽出（領域選択オプション）の処理フロー・検出アルゴリズム・Excel出力・設定パラメータ一覧 | `region_detector.py`・「領域選択オプション」まわりを触る |
-| [REF_DESIGNATOR.md](REF_DESIGNATOR.md) | 機器符号（候補）抽出パイプライン・候補/除外/確定パターン・判断ログ（`decision_log.py`）・開発用ツール（`reference_designator_analyzer.py`） | `ref_designator.py`・「未確定ラベル」まわりを触る |
+| [REF_DESIGNATOR.md](REF_DESIGNATOR.md) | 機器符号抽出パイプライン（3候補パターン一致で全件出力）・図面情報枠（タイトルブロック）の幾何検出 | `ref_designator.py`まわりを触る |
 | [TERMINAL_DETECTION.md](TERMINAL_DETECTION.md) | 端子一覧抽出（「端子一覧を抽出」オプション）の対象ファイル判定・端子台矩形検出アルゴリズム・ラベル-矩形対応判定（隣接矩形衝突解消・90°回転対応）・Excel出力 | `terminal_detector.py`・「端子一覧を抽出」まわりを触る |
 | [VERSION_HISTORY.md](VERSION_HISTORY.md) | v1.0.0〜現行までの変更履歴（1エントリ=1バージョン） | 過去の経緯・特定バージョンでの変更内容を調べたい |
 
@@ -15,6 +15,15 @@
 （他プロジェクトの `CLAUDE.md` 等からの既存参照を壊さないため）。
 
 ---
+
+最終更新: 2026-07-30（v2.0.0、機器符号抽出の判定条件を簡素化。除外/追加/確定
+パターン・「未確定ラベル」UIでのレビュー・連動採用・判断ログ（`decision_log.py`）・
+開発用ツール（`reference_designator_analyzer.py`）を廃止し、3候補パターン一致で
+全件出力する方式に変更。図面情報枠（タイトルブロック）の除外も構造的除外から
+幾何検出に置き換えた。REF_DESIGNATOR.md を全面書き換え、除外/追加/確定パターンの
+回帰テストは新設の `tests/regression/test_ref_designator_patterns.py`
+（`ref_designator_patterns.py` は `region_detector.py` の領域名候補フィルタ専用として
+存続）へ移設。OVERVIEW.md・VERSION_HISTORY.md にも反映）
 
 最終更新: 2026-07-27（REGION_DETECTION.md に、複数VIEWPORTを持つ組立図
 〈`EE6892-455B.dxf`・`EE6892-916-01A.dxf`・`EE6888-339-03A.dxf`〉で

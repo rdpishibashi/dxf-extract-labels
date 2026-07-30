@@ -90,41 +90,6 @@ def _write_terminal_sheet(writer, terminal_results, header_format):
         columns=('端子台', '端子No.', '図番'), col_widths=(25, 40, 20))
 
 
-def _build_excluded_designator_rows(results):
-    """`results`（`create_ref_designator_excel_output`）/ `region_results`
-    （`create_region_excel_output`）の各ファイルの `excluded_rows`（機器符号
-    の3パターンには一致したが除外パターンに該当し Reference Designator では
-    ないと判断されたラベル）を全ファイル横断で集計し、「除外符号」シート用の
-    行データを返す（ラベル昇順、ファイル名はABC順でカンマ結合）。
-
-    「機器符号（候補）以外も抽出」ON時の結果には `excluded_rows` キーが無い
-    （ref_designator の分類パイプラインを通らないため）ため、その場合は
-    空リストを返し、呼び出し側でシート自体が作られないようにする
-    （2026-07-26 追加）。
-    """
-    counter = Counter()
-    files_by_label = {}
-    for fname, data in results.items():
-        for r in data.get('excluded_rows', ()) or ():
-            counter[r['ラベル']] += r['個数']
-            files_by_label.setdefault(r['ラベル'], set()).add(fname)
-    return [
-        {'ラベル': lbl, '個数': counter[lbl],
-         'ファイル名': ', '.join(sorted(files_by_label[lbl]))}
-        for lbl in sorted(counter.keys())
-    ]
-
-
-def _write_excluded_designator_sheet(writer, results, header_format):
-    """「除外符号」シートを書き込む（`_build_excluded_designator_rows` 参照）。
-    集計結果が空（`excluded_rows` を持つファイルが無い、または該当ラベルが
-    0件）の場合は何もしない（シートを作らない）。"""
-    rows = _build_excluded_designator_rows(results)
-    return _write_label_count_sheet(
-        writer, '除外符号', rows, header_format,
-        columns=('ラベル', '個数', 'ファイル名'), col_widths=(25, 10, 50))
-
-
 def create_excel_output(results, sort_option, terminal_results=None):
     """通常モード（「機器符号（候補）以外も抽出」ON）の Excel を生成する。
 
@@ -200,9 +165,8 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
     """通常モード（既定＝「機器符号（候補）以外も抽出」OFF）の Excel を生成する。
 
     `results`: {fname: {...}}（キーは各値の意味）
-      'rows': [{'ラベル':str,'個数':int}]  ユーザーが確定した機器符号（候補）
+      'rows': [{'ラベル':str,'個数':int}]  抽出された機器符号
       'total_in_frame': int  図面枠内の総ラベル数
-      'unclassified_count': int  未採用のまま残った未確定ラベルの種類数
       'warning': str | None
       'main_drawing_number' / 'source_drawing_number' / 'title' / 'subtitle':
           図番・タイトル抽出オプション有効時のみ値が入る
@@ -227,8 +191,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
             row = {
                 'ファイル名': fname,
                 '図面枠内ラベル数': data.get('total_in_frame', 0),
-                '機器符号（候補）数': sum(r['個数'] for r in data.get('rows', [])),
-                '未確定ラベル数（未採用）': data.get('unclassified_count', 0),
+                '機器符号数': sum(r['個数'] for r in data.get('rows', [])),
             }
             if data.get('main_drawing_number') is not None or data.get('title') is not None:
                 row['図番'] = data.get('main_drawing_number', '') or ''
@@ -252,8 +215,6 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
         total_data = _build_total_rows(total_counter, label_drawing_numbers)
         _write_label_count_sheet(writer, 'Total', total_data, header_format,
                                  columns=('ラベル', '個数', '図番'), col_widths=(25, 10, 30))
-
-        _write_excluded_designator_sheet(writer, results, header_format)
 
         _write_terminal_sheet(writer, terminal_results, header_format)
 
@@ -380,8 +341,6 @@ def create_region_excel_output(region_results, terminal_results=None):
             lbl_ws.set_column(2, 2, 10)
             lbl_ws.set_column(3, col - 1, 16)
             lbl_ws.freeze_panes(1, 0)
-
-        _write_excluded_designator_sheet(writer, region_results, header_format)
 
         _write_terminal_sheet(writer, terminal_results, header_format)
 

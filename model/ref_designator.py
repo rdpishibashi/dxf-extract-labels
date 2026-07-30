@@ -1,37 +1,29 @@
-"""機器符号（候補）抽出モジュール（v1.6.0）— DXF抽出パイプライン
+"""機器符号抽出モジュール（v2.0.0）— DXF抽出パイプライン
 
-reference_designator_candidates.xlsx（`Patterns` / `ExclusionPatterns` /
-`ConfirmedPatterns` シート）を正としてパターン・除外・確定リストを実装する。
 DXF-extract-labels 固有の新機能であり、他プロジェクトとの共有コピーは無い
 （`model/extract_labels.py` とは独立に保つ）。
 
-**2026-07-26 モジュール分割**: 純粋なパターン判定ロジック（PATTERN_CATEGORIES・
-EXCLUSION_*・CONFIRMED_PATTERN_CATEGORIES・classify_judgment_detailed 等、
-ezdxf/region_detector.py への依存を持たない部分）は `ref_designator_patterns.py`
-へ分離した。本ファイルは DXF ファイルの読み込み・図面枠検出・ラベル収集・
-Excel出力用の行データ構築という「パイプライン」部分のみを担当する
-（`region_detector.py` の `detect_drawing_frames`/`assign_region_labels` に
-依存する）。分類ロジックの利用者（`app.py`・`tools/reference_designator_analyzer.py`
-・テスト）は引き続き `ref_designator.classify_judgment_detailed` 等の形で
-アクセスできるよう、本ファイルが `ref_designator_patterns.py` から再エクスポート
-している（分割前との後方互換のため）。
+**2026-07-30 判定条件の簡素化**: 除外パターン・追加パターン・確定パターン・
+「未確定ラベル」UIでのレビュー・連動採用・判断ログ（採用/非採用の記録）を
+すべて廃止し、以下の単純なパイプラインに一本化した（ユーザー指定）:
 
-処理の流れ:
-  1. 図面枠（lineweight=frame_lineweight かつ color=7 の LINE 4本で構成）を検出
-  2. 図面枠を構成するブロック（フォーマットブロック。図面情報欄・枠外位置記号
-     A-F/1-8 を含む）由来の TEXT/MTEXT を丸ごと除外
-  3. 図面枠内に残ったラベルを NFKC 正規化し、括弧より前の部分でパターン判定
-  4. 3パターンのいずれかに一致し、かつ除外パターンに該当しないものを
-     「機器符号（候補）」とする（reference_designator_candidates.xlsx の
-     RemainingUnclassified シートと同じ母集団）。除外パターンに該当したもの
-     （GND・TITLE・N24 等）・3パターンいずれにも一致しない文字列（`(2/5)` 等の
-     記号・注記）はどちらも候補に含めない。
-  5. 機器符号（候補）のうち確定パターン（`CONFIRMED_PATTERN_CATEGORIES`、
-     2026-07-10）に一致するものは「確定」として自動採用される
-     （「未確定ラベル」UI には表示されない）。
-  6. 確定パターンに一致しなかった残りが「未確定ラベル」UI で全件レビュー対象と
-     なり、ユーザーがチェックしたものだけが最終的な機器符号として出力される
-     （初期状態は全て未選択）。
+  1. 図面枠内、かつ図面情報枠（タイトルブロック）外のラベルをスコープとする
+  2. ラベル末尾に括弧で閉じた文字列がある場合は、その括弧より前の部分で
+     判定する（ただし出力は原文のまま）
+  3. 3つの候補パターン（`ref_designator_patterns.PATTERN_CATEGORIES`）の
+     いずれかに一致するラベルを、除外や確認なしにそのまま全件出力する
+
+図面情報欄の除外は、従来の構造的除外（図面枠線を直接の子に持つ
+「フォーマットブロック」由来のテキストを丸ごと除外）から、幾何検出
+（図面枠の右下、右辺・底辺が図面枠に接する矩形をタイトル項目名の並びから
+特定する）に置き換えた。詳細は `_detect_info_frame_bbox()` を参照。
+
+除外・追加・確定パターン（`ref_designator_patterns.py` の
+`EXCLUSION_*`/`ADDED_*`/`CONFIRMED_PATTERN_CATEGORIES`/
+`classify_judgment_detailed()`/`matched_confirmed_category()` 等）は、
+本パイプラインでは使わないが、`region_detector.py` の領域名候補フィルタ
+（機器符号らしいラベルを領域名候補から除外する判定）が引き続き利用するため
+`ref_designator_patterns.py` 側には残している。
 """
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -41,55 +33,31 @@ import ezdxf
 from .common_utils import normalize_width, select_layout_result
 from .extract_labels import extract_text_from_entity, _block_has_text_content
 from .region_detector import detect_drawing_frames, assign_region_labels
-from .ref_designator_patterns import (  # noqa: F401 (再エクスポート、後方互換用)
-    PATTERNS_VERSION,
-    PATTERN_CATEGORIES,
-    CANDIDATE_PATTERN,
-    matched_pattern_name,
-    EXCLUSION_EXACT_CATEGORIES,
-    EXCLUSION_REGEX_CATEGORIES,
-    _compile_shorthand_pattern,
-    ADDED_EXCLUSION_PATTERNS,
-    ADDED_DESIGNATOR_PATTERNS,
-    matched_added_designator_category,
-    matched_added_exclusion_category,
-    normalize_label,
-    _judgment_text,
-    classify_judgment_detailed,
-    _classify_judgment,
-    is_ref_designator_candidate,
-    split_candidates,
-    summarize_labels,
-    sibling_key,
-    propagate_selection_all_files,
-    CONFIRMED_PATTERN_CATEGORIES,
-    matched_confirmed_category,
-    is_confirmed_designator,
-)
+from .ref_designator_patterns import CANDIDATE_PATTERN, normalize_label, _judgment_text
 
 
 # ============================================================
-# 4. 図面枠検出・フォーマットブロック（図面情報欄）の構造的除外
+# 1. 図面枠検出（従来通り）
 # ============================================================
 #
 # 図面枠線は lineweight=frame_lineweight かつ color=7 の LINE 4本で構成される
 # （region_detector.py の DEFAULT_REGION_CONFIG と同じ判定。lineweight 単独では
 # 無関係な線分を誤って拾い図面枠検出が壊れることを実データで確認済みのため、
 # color=7 の併用を維持する。2026-07-10 ユーザー確認）。
-#
-# 図面情報欄（右下のタイトルブロック）・図面枠外の位置記号（A-F, 1-8 等）は、
-# 図面枠線を直接の子として持つ「フォーマットブロック」（実データでは JZB_*）の
-# INSERT 由来であることを確認済み（サンプル18件で検証）。人名は増減するため、
-# 個別の人名リストではなくこの構造的除外で対応する。
 
 _FRAME_COLOR = 7
 
 
 def _format_block_names(doc, frame_lineweight: int, frame_color: int = _FRAME_COLOR) -> set:
-    """図面枠線を直接の子として持つブロック名の集合を返す（フォーマットブロック）。
+    """図面枠線を直接の子として持つブロック名の集合を返す（テンプレートブロック）。
 
     ネストされた INSERT の中までは辿らない（frame線はブロック定義の直接の子に
-    置かれる想定。実データで確認済み）。
+    置かれる想定。実データで確認済み）。図面枠の検出、および図面情報枠の幾何
+    検出に使う全線分の収集範囲を、この種のブロックに限定するために使う
+    （2026-07-30、テキストの構造的除外自体は廃止したが、線分収集範囲を
+    テンプレートブロックに限定する目的では引き続き使う。実データでは
+    図面情報枠を構成する内部の格子線もこのブロックの直接の子として
+    存在することを確認済み）。
     """
     names = set()
     for blk in doc.blocks:
@@ -103,15 +71,21 @@ def _format_block_names(doc, frame_lineweight: int, frame_color: int = _FRAME_CO
 
 
 def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FRAME_COLOR):
-    """図面枠線と、フォーマットブロック由来を除いたラベルエンティティを収集する。
+    """図面枠線・テンプレートブロック内の全線分・全ラベルエンティティを収集する。
 
     レイアウトの選び方は `common_utils.select_layout_result()` を参照
     （Model Space に何かあれば常にそちらを使い、完全に空の場合のみ他
     レイアウトを順に試す。レイアウトをまたいで混在させない）。
 
-    戻り値: (frame_lines, label_entities)
-      frame_lines: [(start, end), ...]（Vec3のまま。detect_drawing_frames に渡す）
-      label_entities: TEXT/MTEXT エンティティのリスト（フォーマットブロック由来を除く）
+    戻り値: (frame_lines, block_lines, label_entities)
+      frame_lines: [(start, end), ...]（図面枠検出用。lineweight=frame_lineweight
+        かつ color=frame_color の線分のみ。Vec3のまま）
+      block_lines: [(start, end), ...]（図面情報枠の幾何検出用。図面枠線を
+        直接の子として持つテンプレートブロック由来の全線分。lineweight/color
+        を問わない）
+      label_entities: TEXT/MTEXTエンティティのリスト（テンプレートブロック内も
+        含め、図面枠内の全ラベルを対象とする。構造的除外はしない——図面情報欄
+        の除外は `_detect_info_frame_bbox()` による幾何検出で行う）
     """
     fmt_blocks = _format_block_names(doc, frame_lineweight, frame_color)
     text_block_cache = {}
@@ -122,6 +96,7 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
 
     def collect_from_layout(layout):
         frame_lines = []
+        block_lines = []
         label_entities = []
         for e in layout:
             t = e.dxftype()
@@ -133,12 +108,15 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
             elif t == 'INSERT':
                 name = e.dxf.name
                 if name in fmt_blocks:
-                    # フォーマットブロック: 図面枠線のみ収集し、テキスト（図面情報欄・
-                    # 枠外位置記号）は丸ごと除外する
                     try:
                         for v in e.virtual_entities():
-                            if v.dxftype() == 'LINE' and is_frame_line(v):
-                                frame_lines.append((v.dxf.start, v.dxf.end))
+                            vt = v.dxftype()
+                            if vt == 'LINE':
+                                if is_frame_line(v):
+                                    frame_lines.append((v.dxf.start, v.dxf.end))
+                                block_lines.append((v.dxf.start, v.dxf.end))
+                            elif vt in ('TEXT', 'MTEXT'):
+                                label_entities.append(v)
                     except Exception:
                         pass
                 else:
@@ -150,9 +128,121 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
                                 label_entities.append(v)
                     except Exception:
                         pass
-        return frame_lines, label_entities
+        return frame_lines, block_lines, label_entities
 
     return select_layout_result(doc, collect_from_layout, is_empty=lambda r: not any(r))
+
+
+# ============================================================
+# 2. 図面情報枠（タイトルブロック）の幾何検出
+# ============================================================
+#
+# 各図面枠の右下、右辺・底辺が図面枠に接する矩形をタイトルブロックとみなす。
+# 矩形内にタイトル項目名（下記 _TITLE_BLOCK_TERMS、全角/半角の両方の可能性が
+# あるため NFKC 正規化して照合）が一定数以上含まれることを確認して確定する。
+# 実データ156件で検証したところ、ULVACの標準テンプレートでは常に幅175×高さ64
+# の矩形になった（2026-07-30）。
+
+_TITLE_BLOCK_TERMS = [
+    '貼', 'DWG.No', 'DATE', 'NAME', '流用元図番', '計算計量', 'TOLERANCES',
+    'UNLESS NOTED', 'MARK', 'REMARKS', 'REVISION', 'APPRV', 'CHECK', 'DESIG',
+    'DRAW', 'TITLE', '承認', '検図', '設計', '製図', 'SCALE', 'MFG No.', 'DWG No.',
+]
+_TITLE_BLOCK_TERMS_NORM = {normalize_width(t).upper() for t in _TITLE_BLOCK_TERMS}
+
+_INFO_FRAME_MIN_MATCH = 3    # タイトル項目名の最小一致数（未満は情報枠なしとみなす）
+_INFO_FRAME_Y_GAP = 20.0     # ラベルのyクラスタリング許容ギャップ
+_INFO_FRAME_X_GAP = 30.0     # ラベルのxクラスタリング許容ギャップ（横並び複数枠対策）
+_INFO_FRAME_SNAP = 2.0       # 境界線の座標マージン
+
+
+def _detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1):
+    """1つの図面枠内にある図面情報枠（タイトルブロック）のbboxを幾何検出する。
+
+    手順:
+      1. 枠内ラベルのうち、タイトル項目名（`_TITLE_BLOCK_TERMS`）に完全一致
+         するものを集める（部分一致ではなく完全一致。回路内容の説明文に
+         たまたま "CHECK" 等の語が部分文字列として含まれるケースの誤検出を
+         避けるため。例: `SNM-5 DI2 SET POINT (OUT CHECK)` を "CHECK" と
+         誤マッチしない）。
+      2. y昇順でクラスタリングし、底辺(y0)に接する最初の連続クラスタのみを
+         採用する（「流用元図番」の履歴テーブル等、タイトルブロックとは別の
+         位置にある同名ラベル群を除外するため）。
+      3. さらにx降順（右辺xrに近い方から）でもクラスタリングし、右辺に接する
+         連続クラスタのみを採用する（タイトルブロックが横並びに複数存在する
+         図面〈旧版タイトルブロックとの比較表示等〉で、右側の枠だけを
+         採用するため）。
+      4. 一致数が `_INFO_FRAME_MIN_MATCH` 未満ならNone（情報枠なしとみなす）。
+      5. クラスタのbboxを囲む実際の境界線（右辺xrに接する水平線・底辺y0に
+         接する垂直線）を `block_lines` から探し、それを情報枠の境界とする。
+         境界線が見つからない場合はラベルbbox+マージンでフォールバックする。
+
+    戻り値: (left, xr, y0, top) または None（情報枠が検出できない場合）
+    """
+    matched = []
+    for (text, x, y) in label_points:
+        if not (xl - 1 <= x <= xr + 1 and y0 - 1 <= y <= y1 + 1):
+            continue
+        norm = normalize_width(text).upper().strip()
+        if norm in _TITLE_BLOCK_TERMS_NORM:
+            matched.append((text, x, y))
+    if len(matched) < _INFO_FRAME_MIN_MATCH:
+        return None
+
+    matched.sort(key=lambda m: m[2])
+    cluster = [matched[0]]
+    for m in matched[1:]:
+        if m[2] - cluster[-1][2] <= _INFO_FRAME_Y_GAP:
+            cluster.append(m)
+        else:
+            break
+    if len(cluster) < _INFO_FRAME_MIN_MATCH:
+        return None
+
+    cluster.sort(key=lambda m: -m[1])
+    xcluster = [cluster[0]]
+    for m in cluster[1:]:
+        if xcluster[-1][1] - m[1] <= _INFO_FRAME_X_GAP:
+            xcluster.append(m)
+        else:
+            break
+    if len(xcluster) < _INFO_FRAME_MIN_MATCH:
+        return None
+
+    xs = [x for (_t, x, _y) in xcluster]
+    ys = [y for (_t, _x, y) in xcluster]
+    bbox_left, bbox_top = min(xs), max(ys)
+
+    h_candidates = []  # (y, left_x)
+    v_candidates = []  # (x, top_y)
+    for (s, e) in block_lines:
+        sx, sy = s[0], s[1]
+        ex, ey = e[0], e[1]
+        if abs(sy - ey) < 0.01:
+            y = (sy + ey) / 2
+            if y0 - 1 <= y <= y1 + 1:
+                x_min, x_max = min(sx, ex), max(sx, ex)
+                if abs(x_max - xr) <= _INFO_FRAME_SNAP:
+                    h_candidates.append((y, x_min))
+        elif abs(sx - ex) < 0.01:
+            x = (sx + ex) / 2
+            if xl - 1 <= x <= xr + 1:
+                y_min, y_max = min(sy, ey), max(sy, ey)
+                if abs(y_min - y0) <= _INFO_FRAME_SNAP:
+                    v_candidates.append((x, y_max))
+
+    h_above = [h for h in h_candidates if h[0] >= bbox_top - _INFO_FRAME_SNAP]
+    v_left = [v for v in v_candidates if v[0] <= bbox_left + _INFO_FRAME_SNAP]
+
+    if h_above and v_left:
+        top_y = min(h_above, key=lambda h: h[0])[0]
+        left_x = max(v_left, key=lambda v: v[0])[0]
+    else:
+        margin = _INFO_FRAME_SNAP
+        top_y = bbox_top + margin
+        left_x = bbox_left - margin
+
+    return (left_x, xr, y0, top_y)
 
 
 def collect_in_frame_labels(
@@ -161,21 +251,25 @@ def collect_in_frame_labels(
     frame_color: int = _FRAME_COLOR,
     snap: float = 2.0,
 ) -> Dict:
-    """図面枠内・フォーマットブロック外のラベルを収集する。
+    """図面枠内・図面情報枠（タイトルブロック）外のラベルを収集する。
 
     戻り値 dict:
       frames: [(xl,xr,y0,y1), ...]
       labels: [(text, x, y), ...]（重複除去済み、正規化前の原文）
+      frames_without_info_frame: int（図面情報枠を検出できなかった図面枠の数）
       error: str | None
     """
-    result = {'frames': [], 'labels': [], 'error': None}
+    result = {
+        'frames': [], 'labels': [], 'frames_without_info_frame': 0, 'error': None,
+    }
     try:
         doc = ezdxf.readfile(dxf_file)
     except Exception as e:
         result['error'] = f'DXFファイルの読み込みに失敗しました: {e}'
         return result
 
-    frame_lines, label_entities = _collect_frame_and_labels(doc, frame_lineweight, frame_color)
+    frame_lines, block_lines, label_entities = _collect_frame_and_labels(
+        doc, frame_lineweight, frame_color)
     frames = detect_drawing_frames(frame_lines, snap)
     result['frames'] = frames
 
@@ -185,23 +279,42 @@ def collect_in_frame_labels(
         )
         return result
 
-    seen = set()
-    labels = []
+    label_points = []
     for it in label_entities:
         _, clean_text, (x, y) = extract_text_from_entity(it)
-        if not clean_text:
-            continue
+        if clean_text:
+            label_points.append((clean_text, x, y))
+
+    info_frame_bboxes = []
+    frames_without_info = 0
+    for (xl, xr, y0, y1) in frames:
+        bbox = _detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1)
+        if bbox is not None:
+            info_frame_bboxes.append(bbox)
+        else:
+            frames_without_info += 1
+    result['frames_without_info_frame'] = frames_without_info
+
+    seen = set()
+    labels = []
+    for (text, x, y) in label_points:
         in_frame = any(
             xl - 1 <= x <= xr + 1 and y0 - 1 <= y <= y1 + 1
             for (xl, xr, y0, y1) in frames
         )
         if not in_frame:
             continue
-        key = (clean_text, round(x, 1), round(y, 1))
+        in_info_frame = any(
+            lx - 1 <= x <= rx + 1 and by - 1 <= y <= ty + 1
+            for (lx, rx, by, ty) in info_frame_bboxes
+        )
+        if in_info_frame:
+            continue
+        key = (text, round(x, 1), round(y, 1))
         if key in seen:
             continue
         seen.add(key)
-        labels.append((clean_text, x, y))
+        labels.append((text, x, y))
 
     result['labels'] = labels
     return result
@@ -245,7 +358,7 @@ def _collect_all_labels_fallback(dxf_file: str) -> List[Tuple[str, float, float]
 
 
 # ============================================================
-# 5. ラベル正規化・機器符号候補/確定/未確定ラベルへの分類（座標付き）
+# 3. ラベル正規化・候補パターン判定（座標付き）
 # ============================================================
 
 def normalize_labels(
@@ -264,53 +377,18 @@ def normalize_labels(
 def classify_labels(
     labels: List[Tuple[str, float, float]],
 ) -> List[Tuple[str, float, float]]:
-    """正規化済み (text,x,y) リストから機器符号（候補）だけを抽出して返す。
-
-    候補は Patterns（3パターン）に一致し、かつ除外パターンに該当しないもの
-    （reference_designator_candidates.xlsx の RemainingUnclassified シートと
-    同じ母集団）。除外パターン該当（GND・TITLE・N24 等）・3パターン非一致
-    （`(2/5)` 等の記号・注記）はいずれも結果に含めない（2026-07-10、実データで
-    RemainingUnclassified の中身を再確認して確定）。この候補集合はさらに
-    `split_confirmed()` で「確定（自動採用）」/「未確定（要レビュー）」に分かれる。
+    """正規化済み (text,x,y) リストから、3つの候補パターン
+    （`ref_designator_patterns.PATTERN_CATEGORIES`）のいずれかに一致する
+    ものだけを抽出して返す。判定はラベル末尾の括弧より前の部分
+    （`_judgment_text()`）に対して行う（`R10(2.2K)` → `R10` で判定、
+    出力は `R10(2.2K)` のまま）。一致すれば除外・確認なしにそのまま
+    全件を候補として採用する（2026-07-30、判定条件の簡素化）。
     """
-    return [item for item in labels
-            if _classify_judgment(_judgment_text(item[0]), item[0]) == 'candidate']
-
-
-def classify_excluded_labels(
-    labels: List[Tuple[str, float, float]],
-) -> List[Tuple[str, float, float]]:
-    """正規化済み (text,x,y) リストから、3パターンには一致したが除外パターンに
-    該当し Reference Designator ではないと判断されたラベルだけを抽出する
-    （`classify_labels()` の 'candidate' 判定の対となる 'excluded' 判定。
-    「除外符号」シート用、2026-07-26 追加）。3パターンいずれにも一致しない
-    文字列（`(2/5)` 等の記号・注記、'no_match'）は対象外。
-    """
-    return [item for item in labels
-            if _classify_judgment(_judgment_text(item[0]), item[0]) == 'excluded']
-
-
-def split_confirmed(
-    labels: List[Tuple[str, float, float]],
-) -> Tuple[List[Tuple[str, float, float]], List[Tuple[str, float, float]]]:
-    """機器符号（候補）の (text,x,y) リストを (確定, 未確定) に分ける。
-
-    確定は確定パターン（`CONFIRMED_PATTERN_CATEGORIES`）に一致するもの。
-    「未確定ラベル」UI でのレビューを経ずに最終出力へ自動採用してよい
-    （2026-07-10 ユーザー指定）。それ以外が「未確定ラベル」UI でのレビュー対象。
-    """
-    confirmed = []
-    review = []
-    for item in labels:
-        if matched_confirmed_category(item[0]):
-            confirmed.append(item)
-        else:
-            review.append(item)
-    return confirmed, review
+    return [item for item in labels if CANDIDATE_PATTERN.match(_judgment_text(item[0]))]
 
 
 # ============================================================
-# 6. 通常モード（領域なし）用トップレベル関数
+# 4. 通常モード（領域なし）用トップレベル関数
 # ============================================================
 
 def extract_ref_designator_data(
@@ -319,28 +397,17 @@ def extract_ref_designator_data(
     frame_color: int = _FRAME_COLOR,
     original_filename: Optional[str] = None,
 ) -> Dict:
-    """通常モード（領域なし）用: 図面枠内ラベルから機器符号（候補）を抽出する。
-
-    機器符号（候補）のうち確定パターンに一致するもの（`confirmed_labels`）は
-    「未確定ラベル」UI でのレビューを経ずに自動採用される。それ以外
-    （`review_labels`）はユーザーがチェックしたものだけが最終的な出力になる
-    （既定モードでは初期状態は全て未選択）。
+    """通常モード（領域なし）用: 図面枠内・図面情報枠外のラベルから機器符号を抽出する。
 
     戻り値 dict:
       filename: str
-      confirmed_labels: [(ラベル, x, y), ...]（正規化済み、確定パターン一致＝自動採用）
-      review_labels: [(ラベル, x, y), ...]（正規化済み、未確定ラベルUIでのレビュー対象）
-      excluded_labels: [(ラベル, x, y), ...]（正規化済み、3パターンには一致したが
-        除外パターンに該当し Reference Designator ではないと判断されたもの。
-        「除外符号」シート用、2026-07-26 追加）
+      labels: [(ラベル, x, y), ...]（正規化済み、3候補パターンいずれかに一致）
       total_in_frame: int
-      warning: str | None （図面枠が見つからずフォールバックした場合等）
+      warning: str | None （図面枠・図面情報枠が見つからずフォールバックした場合等）
     """
     info = {
         'filename': original_filename or dxf_file,
-        'confirmed_labels': [],
-        'review_labels': [],
-        'excluded_labels': [],
+        'labels': [],
         'total_in_frame': 0,
         'warning': None,
     }
@@ -358,17 +425,21 @@ def extract_ref_designator_data(
         raw_labels = _collect_all_labels_fallback(dxf_file)
     else:
         raw_labels = collected['labels']
+        if collected.get('frames_without_info_frame'):
+            info['warning'] = (
+                f"{collected['frames_without_info_frame']}個の図面枠で図面情報枠"
+                "（タイトルブロック）を検出できなかったため、該当する図面枠については"
+                "情報枠内ラベルを除外せずに抽出しました。"
+            )
 
     normalized = normalize_labels(raw_labels)
     info['total_in_frame'] = len(normalized)
-    candidates = classify_labels(normalized)
-    info['confirmed_labels'], info['review_labels'] = split_confirmed(candidates)
-    info['excluded_labels'] = classify_excluded_labels(normalized)
+    info['labels'] = classify_labels(normalized)
     return info
 
 
 # ============================================================
-# 7. 領域付きモード用: 領域名を付与した行データの構築
+# 5. 領域付きモード用: 領域名を付与した行データの構築
 # ============================================================
 
 def _aggregate_assigned_labels(assigned):
@@ -430,21 +501,19 @@ def extract_ref_designator_rows(
 ) -> Dict:
     """通常/領域付き両モード共用のトップレベル関数。
 
-    図面枠内ラベルから機器符号（候補）の行データ（ラベル・個数[・領域]）を返す。
+    図面枠内・図面情報枠外のラベルから機器符号の行データ（ラベル・個数[・領域]）を返す。
     named_regions を渡すと各行に '領域' キーが付与される（領域付きモード用）。
 
     戻り値 dict:
       filename, warning, total_in_frame: extract_ref_designator_data と同じ
-      confirmed_rows: [{'ラベル':str,'個数':int[,'領域':str]}]（確定パターン一致＝自動採用）
-      review_rows: [{'ラベル':str,'個数':int[,'領域':str]}]（未確定ラベルUIでのレビュー対象）
+      rows: [{'ラベル':str,'個数':int[,'領域':str]}]
     """
     info = extract_ref_designator_data(dxf_file, frame_lineweight, frame_color, original_filename)
     return {
         'filename': info['filename'],
         'warning': info['warning'],
         'total_in_frame': info['total_in_frame'],
-        'confirmed_rows': build_labeled_rows(info['confirmed_labels'], named_regions),
-        'review_rows': build_labeled_rows(info['review_labels'], named_regions),
+        'rows': build_labeled_rows(info['labels'], named_regions),
     }
 
 
@@ -456,7 +525,7 @@ def build_named_regions(
 ) -> Tuple[List[dict], int]:
     """領域付きモード用: 解析結果とユーザーが確定した名称選択から `assign_region_labels()`
     に渡す named リストを構築する（`region_detector.build_region_results()` の
-    named 構築部分を機器符号（候補）パイプライン向けに複製したもの。
+    named 構築部分を機器符号抽出パイプライン向けに複製したもの。
     region_detector.py は変更しないため、ここに独立して実装する）。
 
     戻り値: (named, next_no_name_idx)
@@ -496,7 +565,7 @@ def build_region_output(
     `create_region_excel_output()` に渡せる1ファイル分の集計結果を作る。
 
     `region_detector.build_region_results()` の集計部分（1ファイル分）を
-    機器符号（候補）パイプライン向けに複製したもの（region_detector.py は
+    機器符号抽出パイプライン向けに複製したもの（region_detector.py は
     変更しないため、ここに独立して実装する）。
 
     戻り値 dict: rows, named（label_count 付与済み）, in_region_count,
@@ -526,40 +595,51 @@ def build_region_output(
     }
 
 
-def _approved_final_labels(data: dict, approved: set) -> list:
-    """`ref_pending[fname]`（確定分＋未確定ラベルUIレビュー対象）と、ユーザーが
-    採用したラベル文字列の集合から、最終的に出力する (text,x,y) リストを返す
-    （`build_region_results_from_pending`/`build_ref_final_from_pending` 共用）。"""
-    return list(data['confirmed_labels']) + [
-        item for item in data['review_labels'] if item[0] in approved
-    ]
-
-
-def build_region_results_from_pending(
-    ref_pending: dict,
-    region_analyses: dict,
-    name_selections_by_file: dict,
-    approved_by_file: dict,
+def build_ref_designator_final(
+    ref_data_by_file: Dict[str, Dict],
     sort_value: str = 'asc',
-) -> dict:
-    """「選択完了」時（領域付きモード）の集計。`ref_pending`（未確定ラベルUI
-    表示用データ）と `region_analyses`（領域検出結果）から、
+) -> Dict:
+    """通常モード用。`extract_ref_designator_data()` の結果（ファイル名→dict）から
+    `create_ref_designator_excel_output()` に渡せる ref_final を構築する。"""
+    ref_final = {}
+    for fname, data in ref_data_by_file.items():
+        rows = build_labeled_rows(data['labels'])
+        if sort_value == 'desc':
+            rows.sort(key=lambda r: r['ラベル'], reverse=True)
+        ref_final[fname] = {
+            'rows': rows,
+            'total_in_frame': data['total_in_frame'],
+            'warning': data.get('warning'),
+            'main_drawing_number': data.get('main_drawing_number'),
+            'source_drawing_number': data.get('source_drawing_number'),
+            'title': data.get('title'),
+            'subtitle': data.get('subtitle'),
+        }
+    return ref_final
+
+
+def build_ref_designator_region_results(
+    ref_data_by_file: Dict[str, Dict],
+    region_analyses: Dict[str, dict],
+    name_selections_by_file: Dict[str, dict],
+    sort_value: str = 'asc',
+) -> Dict:
+    """領域付きモード用。`extract_ref_designator_data()` の結果と領域検出結果から
     `create_region_excel_output()` に渡せる region_results を構築する。
 
-    `name_selections_by_file`: `{fname: {(fname, reg_id): [name, ...]}}`
-      （`app.py` の `_gather_name_selections(fname, analysis)` の結果を
-      ファイルごとに集めたもの。チェックボックスの選択状態＝UI依存のため、
-      この関数自身は計算せず呼び出し側から受け取るだけ）。
-    `approved_by_file`: `{fname: {採用されたラベル文字列, ...}}`
+    `filtered_count`/`final_count` は「機器符号（候補）以外も抽出」ON時の
+    `region_detector.build_region_results()` と同じキー名で提供する
+    （app.py の抽出結果統計テーブルが両方の結果を同じ列名で表示するため）。
+    本パイプラインには除外・確認の概念が無いため、`filtered_count` は
+    「図面枠内・図面情報枠外のラベルのうち、3候補パターンに一致しなかった数」
+    （`total_in_frame - final_count`）を意味する。
     """
     region_results = {}
-    for fname, data in ref_pending.items():
-        approved = approved_by_file[fname]
-        final_labels = _approved_final_labels(data, approved)
+    for fname, data in ref_data_by_file.items():
         analysis = region_analyses[fname]
         named, _ = build_named_regions(analysis, name_selections_by_file[fname], fname)
-        out = build_region_output(final_labels, named, sort_value)
-        review_texts = {t for t, _x, _y in data['review_labels']}
+        out = build_region_output(data['labels'], named, sort_value)
+        final_count = sum(r['個数'] for r in out['rows'])
         region_results[fname] = {
             'rows': out['rows'],
             'named': out['named'],
@@ -567,41 +647,11 @@ def build_region_results_from_pending(
             'regions_detected': len(analysis.get('regions', [])),
             'regions_named': len({r['id'] for r in named}),
             'total_in_frame': data['total_in_frame'],
-            'filtered_count': len(review_texts - approved),
-            'final_count': len(final_labels),
+            'filtered_count': data['total_in_frame'] - final_count,
+            'final_count': final_count,
             'in_region_count': out['in_region_count'],
             'drawing_number': analysis.get('main_drawing_number') or '',
             'title': analysis.get('title'),
             'region_label_counts': out['region_label_counts'],
-            'excluded_rows': build_labeled_rows(data.get('excluded_labels', [])),
         }
     return region_results
-
-
-def build_ref_final_from_pending(
-    ref_pending: dict,
-    approved_by_file: dict,
-    sort_value: str = 'asc',
-) -> dict:
-    """「選択完了」時（通常モード）の集計。`ref_pending` から
-    `create_ref_designator_excel_output()` に渡せる ref_final を構築する。"""
-    ref_final = {}
-    for fname, data in ref_pending.items():
-        approved = approved_by_file[fname]
-        final_labels = _approved_final_labels(data, approved)
-        rows = build_labeled_rows(final_labels)
-        if sort_value == 'desc':
-            rows.sort(key=lambda r: r['ラベル'], reverse=True)
-        review_texts = {t for t, _x, _y in data['review_labels']}
-        ref_final[fname] = {
-            'rows': rows,
-            'total_in_frame': data['total_in_frame'],
-            'unclassified_count': len(review_texts - approved),
-            'warning': data.get('warning'),
-            'main_drawing_number': data.get('main_drawing_number'),
-            'source_drawing_number': data.get('source_drawing_number'),
-            'title': data.get('title'),
-            'subtitle': data.get('subtitle'),
-            'excluded_rows': build_labeled_rows(data.get('excluded_labels', [])),
-        }
-    return ref_final

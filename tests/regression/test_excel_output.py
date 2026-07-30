@@ -150,7 +150,6 @@ def _make_ref_designator_results():
         'fileA.dxf': {
             'rows': [{'ラベル': 'CN1', '個数': 2}, {'ラベル': 'R10', '個数': 1}],
             'total_in_frame': 10,
-            'unclassified_count': 3,
             'main_drawing_number': 'EE1234-500-01A',
             'source_drawing_number': 'EE0001-500-01A',
             'title': 'TITLE A',
@@ -159,7 +158,6 @@ def _make_ref_designator_results():
         'fileB.dxf': {
             'rows': [],
             'total_in_frame': 5,
-            'unclassified_count': 0,
             'main_drawing_number': None,
             'source_drawing_number': None,
             'title': None,
@@ -182,10 +180,10 @@ def test_create_ref_designator_excel_output_sheet_and_values():
 
     summary = wb['Summary']
     header = [c.value for c in summary[1]]
-    assert header == ['ファイル名', '図面枠内ラベル数', '機器符号（候補）数',
-                      '未確定ラベル数（未採用）', '図番', '流用元図番', 'タイトル', 'サブタイトル']
+    assert header == ['ファイル名', '図面枠内ラベル数', '機器符号数',
+                      '図番', '流用元図番', 'タイトル', 'サブタイトル']
     row_a = [c.value for c in summary[2]]
-    assert row_a == ['fileA.dxf', 10, 3, 3, 'EE1234-500-01A', 'EE0001-500-01A', 'TITLE A', 'SUB A']
+    assert row_a == ['fileA.dxf', 10, 3, 'EE1234-500-01A', 'EE0001-500-01A', 'TITLE A', 'SUB A']
 
     total_rows = [(c[0].value, c[1].value) for c in wb['Total'].iter_rows(min_row=2)]
     assert total_rows == [('CN1', 2), ('R10', 1)]
@@ -202,17 +200,17 @@ def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_
     results = {
         'a.dxf': {
             'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
-            'unclassified_count': 0, 'main_drawing_number': 'EE5678-600-02B',
+            'main_drawing_number': 'EE5678-600-02B',
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
         'b.dxf': {
             'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
-            'unclassified_count': 0, 'main_drawing_number': 'EE1234-500-01A',
+            'main_drawing_number': 'EE1234-500-01A',
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
         'c.dxf': {
             'rows': [{'ラベル': 'R10', '個数': 1}], 'total_in_frame': 1,
-            'unclassified_count': 0, 'main_drawing_number': None,
+            'main_drawing_number': None,
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
     }
@@ -232,10 +230,10 @@ def test_create_ref_designator_excel_output_sorted_by_filename():
     """Summary の行順がファイル名昇順になる（投入順が逆でも並び替わる）。"""
     results = {
         'zzz.dxf': {'rows': [{'ラベル': 'R1', '個数': 1}], 'total_in_frame': 1,
-                    'unclassified_count': 0, 'main_drawing_number': None,
+                    'main_drawing_number': None,
                     'source_drawing_number': None, 'title': None, 'subtitle': None},
         'aaa.dxf': {'rows': [{'ラベル': 'R2', '個数': 1}], 'total_in_frame': 1,
-                    'unclassified_count': 0, 'main_drawing_number': None,
+                    'main_drawing_number': None,
                     'source_drawing_number': None, 'title': None, 'subtitle': None},
     }
     wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
@@ -614,96 +612,3 @@ def test_create_region_excel_output_label_summary_sheet():
     assert gnd[5] == 'b' and gnd[6] == 0   # file2 に無いラベルは 0
 
 
-# ---------------------------------------------------------------------------
-# 除外符号シート（`excluded_rows`、2026-07-26 追加）
-# ---------------------------------------------------------------------------
-
-def test_ref_designator_excel_output_excluded_sheet_position_and_content():
-    """`除外符号` シートは `Total` の直後に配置され、ラベル昇順・
-    ファイル名はABC順でカンマ結合される。`excluded_rows` を持たない
-    ファイル（fileC）が混在していても正しく無視される。"""
-    results = {
-        'fileA.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 5,
-            'unclassified_count': 0, 'main_drawing_number': None,
-            'source_drawing_number': None, 'title': None, 'subtitle': None,
-            'excluded_rows': [{'ラベル': 'GND', '個数': 3}, {'ラベル': 'MOTOR', '個数': 1}],
-        },
-        'fileB.dxf': {
-            'rows': [{'ラベル': 'R10', '個数': 1}], 'total_in_frame': 5,
-            'unclassified_count': 0, 'main_drawing_number': None,
-            'source_drawing_number': None, 'title': None, 'subtitle': None,
-            'excluded_rows': [{'ラベル': 'GND', '個数': 2}],
-        },
-        'fileC.dxf': {
-            'rows': [], 'total_in_frame': 1,
-            'unclassified_count': 0, 'main_drawing_number': None,
-            'source_drawing_number': None, 'title': None, 'subtitle': None,
-            # excluded_rows キー自体が無い（旧データ・ON時のフォールバック相当）
-        },
-    }
-    wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
-    sheet_names = [n for n in wb.sheetnames if n != 'fileA']
-    assert wb.sheetnames.index('除外符号') == wb.sheetnames.index('Total') + 1
-
-    ws = wb['除外符号']
-    header = [c.value for c in ws[1]]
-    assert header == ['ラベル', '個数', 'ファイル名']
-    rows = [(r[0].value, r[1].value, r[2].value) for r in ws.iter_rows(min_row=2)]
-    assert rows == [
-        ('GND', 5, 'fileA.dxf, fileB.dxf'),
-        ('MOTOR', 1, 'fileA.dxf'),
-    ]
-
-
-def test_ref_designator_excel_output_no_excluded_sheet_when_all_empty():
-    """`excluded_rows` を誰も持たない（または全員空リスト）場合、
-    `除外符号` シート自体が作られない。"""
-    results = {
-        'fileA.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 5,
-            'unclassified_count': 0, 'main_drawing_number': None,
-            'source_drawing_number': None, 'title': None, 'subtitle': None,
-            'excluded_rows': [],
-        },
-    }
-    wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
-    assert '除外符号' not in wb.sheetnames
-
-
-def test_region_excel_output_excluded_sheet_position():
-    """領域モードでは `除外符号` シートは `領域別ラベル一覧` の直後に配置される。"""
-    results = {
-        'fileA.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1, '領域': 'BOX A'}],
-            'named': [{'name': 'BOX A', 'frame': 0, 'area_pct': 50.0, 'label_count': 1}],
-            'frames': 1, 'regions_detected': 1, 'regions_named': 1,
-            'total_in_frame': 5, 'filtered_count': 0, 'final_count': 1,
-            'in_region_count': 1, 'drawing_number': '', 'title': None,
-            'region_label_counts': {'BOX A': {'CN1': 1}},
-            'excluded_rows': [{'ラベル': 'GND', '個数': 2}],
-        },
-    }
-    wb = _load_wb(create_region_excel_output(results))
-    assert '領域別ラベル一覧' in wb.sheetnames
-    assert wb.sheetnames.index('除外符号') == wb.sheetnames.index('領域別ラベル一覧') + 1
-    ws = wb['除外符号']
-    rows = [(r[0].value, r[1].value, r[2].value) for r in ws.iter_rows(min_row=2)]
-    assert rows == [('GND', 2, 'fileA.dxf')]
-
-
-def test_region_excel_output_no_excluded_sheet_when_key_absent():
-    """「機器符号（候補）以外も抽出」ON時の region_results には `excluded_rows`
-    キーが無いため、`除外符号` シートは作られない。"""
-    results = {
-        'fileA.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1, '領域': ''}],
-            'named': [], 'frames': 1, 'regions_detected': 0, 'regions_named': 0,
-            'total_in_frame': 5, 'filtered_count': 0, 'final_count': 1,
-            'in_region_count': 0, 'drawing_number': '', 'title': None,
-            'region_label_counts': {},
-            # excluded_rows キー無し
-        },
-    }
-    wb = _load_wb(create_region_excel_output(results))
-    assert '除外符号' not in wb.sheetnames

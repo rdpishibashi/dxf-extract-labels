@@ -2,23 +2,28 @@
 
 検証済み不具合（2026-07-15ユーザー報告）:
   「図面番号・タイトル・サブタイトルを抽出」+「端子一覧を抽出」をONにし、
-  「領域を検出」はOFF（既定）のまま「ラベルを抽出」→「未確定ラベル」で
-  「選択完了」を押すと、Excelファイルが出力されず「ラベルを抽出」ボタンの
-  初期表示に戻ってしまう。
+  「領域を検出」はOFF（既定）のまま「ラベルを抽出」を押すと、Excelファイルが
+  出力されず「ラベルを抽出」ボタンの初期表示に戻ってしまう。
 
 根本原因: 「領域を検出」チェックボックスOFF時、前回検出済みの
 `region_analyses`（stale data）を消すガード処理（`app.py` の
 `if not enable_region_detection:` ブロック）が、OFF中の**毎回の再描画**で
 実行される。v1.9.4でこのブロックに `_REGION_DETECT_CLEAR_KEYS`
 （`excel_result`/`is_region_mode`/`region_results_summary`）を誤って
-含めてしまったため、「選択完了」や「ラベルを抽出」で `excel_result` を
-セットした直後の再描画（`st.rerun()`後）で即座に消えていた
-（`region_analyses` 以外は消してはならない）。
+含めてしまったため、「ラベルを抽出」で `excel_result` をセットした直後の
+再描画（`st.rerun()`後）で即座に消えていた（`region_analyses` 以外は
+消してはならない）。
+
+**2026-07-30 判定条件の簡素化**: 「未確定ラベル」UIでのレビュー・
+「選択完了」ボタンは廃止され、「ラベルを抽出」を押した時点で直ちに
+Excelが生成されるようになった（`model/ref_designator.py` 参照）。本テストも
+これに合わせ、「ラベルを抽出」直後にExcelダウンロードボタンが表示され
+続けることを確認する形に更新した。
 
 実際のブラウザ（Playwright）で app.py を起動し、DXFアップロード→
-「ラベルを抽出」→「選択完了」の一連の操作の後もExcelダウンロードボタンが
-表示され続けることを確認するブラックボックステスト。playwright未インストール
-/ ブラウザ未ダウンロードの環境ではスキップする。
+「ラベルを抽出」の操作後もExcelダウンロードボタンが表示され続けることを
+確認するブラックボックステスト。playwright未インストール/ブラウザ未
+ダウンロードの環境ではスキップする。
 """
 import os
 import socket
@@ -47,13 +52,10 @@ def _free_port():
 
 
 @pytest.fixture(scope='module')
-def streamlit_server(tmp_path_factory):
-    """app.py を別プロセスで起動する。判断ログは一時ディレクトリへリダイレクトし、
-    ユーザーの実 `~/Documents/DXF-extract-labels/decision_log.csv` を汚さない。"""
+def streamlit_server():
+    """app.py を別プロセスで起動する。"""
     port = _free_port()
-    log_path = tmp_path_factory.mktemp('decision_log') / 'decision_log.csv'
     env = dict(os.environ)
-    env['DXF_DECISION_LOG_PATH'] = str(log_path)
 
     proc = subprocess.Popen(
         [sys.executable, '-m', 'streamlit', 'run', 'app.py',
@@ -94,10 +96,11 @@ def browser():
         b.close()
 
 
-def test_excel_result_persists_after_select_complete(streamlit_server, browser):
+def test_excel_result_persists_after_extract(streamlit_server, browser):
     """候補モード（既定）+「図面番号・タイトル・サブタイトルを抽出」+
-    「端子一覧を抽出」ON、「領域を検出」OFF（既定）で抽出→選択完了しても、
-    Excelダウンロードボタンが表示され続けること（消えずに残ること）を確認する。"""
+    「端子一覧を抽出」ON、「領域を検出」OFF（既定）で「ラベルを抽出」を
+    押した直後もExcelダウンロードボタンが表示され続けること
+    （消えずに残ること）を確認する。"""
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     try:
         page.goto(streamlit_server, wait_until='networkidle')
@@ -118,16 +121,10 @@ def test_excel_result_persists_after_select_complete(streamlit_server, browser):
         page.get_by_role('button', name='ラベルを抽出').click()
         page.wait_for_timeout(6000)
 
-        assert page.get_by_text('未確定ラベル', exact=False).count() > 0, (
-            '未確定ラベルセクションが表示されていない（テストの前提が崩れている）')
-
-        page.get_by_role('button', name='選択完了').click()
-        page.wait_for_timeout(6000)
-
         assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
-            '選択完了後にエラーが表示された')
+            'ラベル抽出後にエラーが表示された')
         assert page.get_by_role('button', name='Excelをダウンロード').count() > 0, (
-            '選択完了後にExcelダウンロードボタンが表示されない'
+            'ラベル抽出後にExcelダウンロードボタンが表示されない'
             '（excel_resultが「領域を検出」OFFガードで誤って消されるバグの再発）')
     finally:
         page.close()
@@ -140,11 +137,10 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
     `app.py` の 809行の単一 `app()` 関数を `_render_intro`/`_render_upload_section`/
     `_render_options_section`/`_render_region_config_form`/
     `_render_region_detection_trigger`/`_render_region_confirmation_section`/
-    `_handle_extract_button`/`_render_unclassified_and_completion_section`/
-    `_render_results_section` へ分割した際（2026-07-26、モジュラリティ改善）の
-    回帰確認。`test_excel_result_persists_after_select_complete` は「領域を検出」
-    OFFの既定パスのみを通るため、本テストは領域検出モード側の関数群
-    （`_render_region_config_form`・`_render_region_detection_trigger`・
+    `_handle_extract_button`/`_render_results_section` へ分割した際
+    （2026-07-26、モジュラリティ改善）の回帰確認。`test_excel_result_persists_after_extract`
+    は「領域を検出」OFFの既定パスのみを通るため、本テストは領域検出モード側の
+    関数群（`_render_region_config_form`・`_render_region_detection_trigger`・
     `_render_region_confirmation_section`）を実際に経由する。
     """
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})

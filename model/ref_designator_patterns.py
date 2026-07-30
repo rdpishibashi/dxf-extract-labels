@@ -14,6 +14,15 @@
 `region_detector.py` に一切依存しないため、`region_detector.py` はこのファイルを
 モジュールレベルで安全にimportできる（遅延import不要）。
 
+**2026-07-30 用途の変更**: `ref_designator.py`（DXF抽出パイプライン）は判定
+条件の簡素化により、除外・追加・確定パターンを使わなくなった（3つの候補
+パターンに一致すれば全件そのまま出力する方式に変更）。本ファイルの除外・
+追加・確定パターン一式は、`region_detector.py` の領域名候補フィルタ専用として
+引き続き利用する（`classify_judgment_detailed()`/`matched_confirmed_category()`
+を経由）。「未確定ラベル」UIでの連動採用・判断ログ向けの関数（旧
+`sibling_key()`/`propagate_selection_all_files()`/`PATTERNS_VERSION`）は
+その機能自体の廃止に伴い削除した。
+
 reference_designator_candidates.xlsx（`Patterns` / `ExclusionPatterns` /
 `ConfirmedPatterns` シート）を正としてパターン・除外・確定リストを実装する。
 """
@@ -21,12 +30,6 @@ import re
 import unicodedata
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
-
-# パターン・除外・確定リストの版。リスト（PATTERN_CATEGORIES /
-# EXCLUSION_*_CATEGORIES / CONFIRMED_PATTERN_CATEGORIES）を変更したら上げる。
-# 判断ログ（model/decision_log.py）の patterns_version 列に記録され、
-# 「パターン更新後もまだ手動判断され続けているラベル」の特定に使う。
-PATTERNS_VERSION = '1.8.0'
 
 
 # ============================================================
@@ -379,40 +382,6 @@ def summarize_labels(labels: List[str]) -> List[Tuple[str, int]]:
     """ラベルリストを (ラベル, 個数) にカウントし、ラベル昇順で返す。"""
     counter = Counter(labels)
     return [(lbl, counter[lbl]) for lbl in sorted(counter.keys())]
-
-
-# 兄弟ラベル（連動採用）: 末尾が数字1〜2桁で、その前の文字列が一致するラベル同士は
-# 「未確定ラベル」UI で採用/解除を連動させる（例: CN1・CN2・CN10）。
-# 末尾3桁以上（CB001）・末尾が数字でない（X14A）・数字のみ（10）は対象外。
-_SIBLING_RE = re.compile(r'^(.*\D)(\d{1,2})$')
-
-
-def sibling_key(label: str) -> Optional[str]:
-    """連動採用のグループキー（末尾数字1〜2桁を除いた前方文字列）を返す。
-
-    判定は NFKC 正規化後の文字列で行う（全角 `ＣＮ１` と半角 `CN10` も同一
-    グループになる）。連動対象外のラベルは None を返す。
-    """
-    m = _SIBLING_RE.match(normalize_label(label))
-    return m.group(1) if m else None
-
-
-def propagate_selection_all_files(
-    checked_by_file: Dict[str, Dict[str, bool]], label: str, value: bool,
-) -> None:
-    """label の採用状態変更を全ファイルのチェック状態（正本）に伝播する。
-
-    checked_by_file はファイル名→（ラベル→採用）のチェック状態。すべての
-    ファイルにわたり、同一ラベル（NFKC正規化後に一致）と兄弟ラベル
-    （sibling_key 一致）を value に揃える。存在しないラベルは追加しない。
-    """
-    norm = normalize_label(label)
-    key = sibling_key(label)
-    for file_checked in checked_by_file.values():
-        for other in file_checked:
-            if normalize_label(other) == norm or (
-                    key is not None and sibling_key(other) == key):
-                file_checked[other] = value
 
 
 # ============================================================

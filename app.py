@@ -18,7 +18,6 @@ from model.excel_output import (
 )
 from model.common_utils import save_uploadedfile
 from model import ref_designator
-from model import decision_log
 from model import terminal_detector
 
 
@@ -27,16 +26,6 @@ def handle_error(e, show_traceback=True):
     st.error(f"エラーが発生しました: {str(e)}")
     if show_traceback:
         st.error(traceback.format_exc())
-
-
-def _read_github_secrets():
-    """st.secrets['github'] を安全に読む（secrets.toml が無い環境では例外を握りつぶす）。"""
-    try:
-        return st.secrets.get('github')
-    except Exception:
-        return None
-
-APP_VERSION = '1.9.19'
 
 # 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
 # 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
@@ -64,11 +53,9 @@ st.set_page_config(
 #
 # 3つのリストは意図的にそれぞれ異なる範囲を持つ（同一のベースから機械的に
 # 導出できるわけではない）:
-#   - REGION_DETECT: 「領域を検出」再実行時。ref_pending・未確定ラベル選択
-#     状態はこの操作では変化しないため対象外。
+#   - REGION_DETECT: 「領域を検出」再実行時。
 #   - EXTRACT: 「ラベルを抽出」実行時。入力状態（region_analyses・uploaded
-#     files 等）は保持したまま、前回の抽出結果・未確定ラベル選択状態のみ
-#     クリアする。
+#     files 等）は保持したまま、前回の抽出結果のみクリアする。
 #   - RESTART: 「新しい抽出を開始」時。入力状態を含む全リセット
 #     （オプション設定ウィジェットの値は対象外＝保持される、ユーザー指定）。
 # ============================================================
@@ -77,20 +64,17 @@ _REGION_DETECT_CLEAR_PREFIXES = ('rc_',)
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
-    'ref_pending', 'ref_pending_mode', 'ref_results_summary',
-    'decision_log_result', 'unclassified_checked', 'unclassified_ver',
-    'terminal_results',
+    'ref_results_summary', 'terminal_results',
 ]
-_EXTRACT_CLEAR_PREFIXES = ('unclassified_editor_',)
+_EXTRACT_CLEAR_PREFIXES = ()
 
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'processing_settings',
     'results', 'is_region_mode', 'region_analyses',
-    'region_results_summary', 'ref_pending', 'ref_pending_mode',
-    'ref_results_summary', 'download_done', 'decision_log_result',
+    'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results',
 ]
-_RESTART_CLEAR_PREFIXES = ('rc_', 'unclassified_editor_')
+_RESTART_CLEAR_PREFIXES = ('rc_',)
 
 
 @contextlib.contextmanager
@@ -399,14 +383,13 @@ def _render_intro():
     with st.expander("ℹ️ プログラム説明", expanded=False):
         st.info("\n".join([
             "このツールは、DXFファイルからテキスト要素（ラベル）を抽出し、Excelファイルに出力します。"
-            "既定では、図面枠内の機器符号（Reference Designator）パターンに一致するラベルのみを"
-            "候補として抽出します。",
+            "既定では、図面枠内・図面情報枠（タイトルブロック）外の機器符号"
+            "（Reference Designator）パターンに一致するラベルを抽出します。",
             "",
             "**主なオプション：**",
-            "- 機器符号（候補）以外も抽出：OFF（既定）は図面枠内・機器符号パターンに一致する"
-            "ラベルのみを候補として抽出し、未確定ラベルを人手で選択します。ONにすると"
-            "図面枠・パターンの制限なしに全ラベルを抽出します（この場合、未確定ラベルの"
-            "選択は行いません）",
+            "- 機器符号（候補）以外も抽出：OFF（既定）は図面枠内・図面情報枠外の"
+            "機器符号パターンに一致するラベルを抽出します。ONにすると"
+            "図面枠・図面情報枠・パターンの制限なしに全ラベルを抽出します",
             "- 図面番号・タイトル・サブタイトルを抽出：図番・タイトル・サブタイトルをSummary"
             "シートに記録します",
             "- 領域を検出：図面枠内の矩形領域を検出し、領域ごとにラベルを分類します",
@@ -418,9 +401,8 @@ def _render_intro():
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」をONにした場合は、「領域を検出」ボタンで矩形領域を検出し、"
             "各領域の名称を確認・選択します",
-            "4. 「ラベルを抽出」ボタンで処理を実行します",
-            "5. 「未確定ラベル」でReference Designatorとして採用するラベルにチェックを入れ、"
-            "「選択完了」を押します（「機器符号（候補）以外も抽出」ON時はこの手順は不要です）",
+            "4. 「ラベルを抽出」ボタンで処理を実行します（結果はそのままExcelとして"
+            "ダウンロードできます）",
             "",
             "**Excelファイルの内容：**",
             "- Summaryシート：全ファイルの抽出結果概要",
@@ -463,13 +445,11 @@ def _render_options_section():
         also_extract_non_circuit = st.checkbox(
             "機器符号（候補）以外も抽出",
             value=False,
-            help="チェックなし（既定）：図面枠内・図面情報欄外のラベルのうち、機器符号\n"
-                 "（Reference Designator）パターンに一致し除外パターンに該当しないものが対象。\n"
-                 "確実に機器符号と判定できる形（確定パターン）に一致したものは自動採用され、\n"
-                 "それ以外は「未確定ラベル」として一覧表示し、チェックして採用したものだけが\n"
-                 "最終的に機器符号として出力されます。\n\n"
-                 "チェックあり：図面枠外・図面情報欄内も含め、すべてのラベルを"
-                 "そのまま抽出します（機器符号（候補）の判定・未確定ラベルの選択は行いません）。\n\n"
+            help="チェックなし（既定）：図面枠内・図面情報枠（タイトルブロック）外の"
+                 "ラベルのうち、機器符号（Reference Designator）パターンに一致する"
+                 "ものだけを抽出します。\n\n"
+                 "チェックあり：図面枠外・図面情報枠内も含め、すべてのラベルを"
+                 "そのまま抽出します（機器符号パターンの判定は行いません）。\n\n"
                  "【機器符号パターン例】\n"
                  "• 英文字のみ: CNCNT, FB\n"
                  "• 英文字+数字+ハイフン任意: R10, CN3, AAC1B4-07\n"
@@ -685,9 +665,9 @@ def _render_region_detection_trigger(uploaded_files, enable_region_detection, re
     # ============================================================
     if enable_region_detection:
         detect_done = 'region_analyses' in st.session_state
-        # 「ラベルを抽出」が開始済み（未確定ラベルの選択待ち含む）なら、領域検出は
-        # もはやこの回の抽出には反映されないため「領域を検出」を白にする。
-        extract_done = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
+        # 「ラベルを抽出」が完了済みなら、領域検出はもはやこの回の抽出には
+        # 反映されないため「領域を検出」を白にする。
+        extract_done = bool(st.session_state.get('excel_result'))
         detect_btn_type = "secondary" if (detect_done or extract_done) else "primary"
         if st.button("領域を検出", key="detect_regions_btn", type=detect_btn_type):
             try:
@@ -818,19 +798,17 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
     # ============================================================
     # ラベルを抽出
     # ============================================================
-    has_results = bool(st.session_state.get('excel_result')) or bool(st.session_state.get('ref_pending'))
+    has_results = bool(st.session_state.get('excel_result'))
     extract_btn_type = "secondary" if has_results else "primary"
     if st.button("ラベルを抽出", type=extract_btn_type):
         try:
             frame_lineweight = int(region_cfg['frame_lineweight'])
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
-                # 前回の結果・未確定ラベル選択状態をクリアする
+                # 前回の結果をクリアする
                 _clear_session_keys(
                     keys=_EXTRACT_CLEAR_KEYS,
                     prefixes=_EXTRACT_CLEAR_PREFIXES)
 
-                # 「端子一覧を抽出」: 「選択完了」待ちのモードでも使えるよう、
-                # ここで一度だけ解析して session_state に保持する。
                 if extract_terminal_option:
                     st.session_state['terminal_results'] = _compute_terminal_results(uploaded_files)
                 terminal_results = st.session_state.get('terminal_results')
@@ -857,8 +835,8 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                         }
                         _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
                     else:
-                        # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
-                        ref_pending = {}
+                        # 機器符号パイプライン: 抽出して直ちにExcelを生成する
+                        ref_data_by_file = {}
                         for fname, analysis in analyses.items():
                             uf = next(f for f in uploaded_files if f.name == fname)
                             with _temp_dxf_file(uf) as tmp:
@@ -867,10 +845,22 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                             data['main_drawing_number'] = analysis.get('main_drawing_number')
                             data['title'] = analysis.get('title')
                             data['subtitle'] = analysis.get('subtitle')
-                            ref_pending[fname] = data
-                        st.session_state['ref_pending'] = ref_pending
-                        st.session_state['ref_pending_mode'] = 'region'
+                            ref_data_by_file[fname] = data
+
+                        name_selections_by_file = {
+                            fname: _gather_name_selections(fname, analyses[fname])
+                            for fname in ref_data_by_file
+                        }
+                        region_results = ref_designator.build_ref_designator_region_results(
+                            ref_data_by_file, analyses, name_selections_by_file, sort_value)
+                        st.session_state.excel_result = create_region_excel_output(
+                            region_results, terminal_results=terminal_results)
                         st.session_state.output_filename = output_filename
+                        st.session_state['is_region_mode'] = True
+                        st.session_state['region_results_summary'] = {
+                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
+                            for f, d in region_results.items()
+                        }
                         _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
 
                 else:
@@ -902,8 +892,8 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                         st.session_state.results = results
                         _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
                     else:
-                        # 機器符号（候補）パイプライン: 未確定ラベルの選択待ちにする
-                        ref_pending = {}
+                        # 機器符号パイプライン: 抽出して直ちにExcelを生成する
+                        ref_data_by_file = {}
                         for uploaded_file in uploaded_files:
                             with _temp_dxf_file(uploaded_file) as tmp:
                                 data = ref_designator.extract_ref_designator_data(
@@ -920,10 +910,14 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                                     data['source_drawing_number'] = dn_info.get('source_drawing_number')
                                     data['title'] = dn_info.get('title')
                                     data['subtitle'] = dn_info.get('subtitle')
-                            ref_pending[uploaded_file.name] = data
-                        st.session_state['ref_pending'] = ref_pending
-                        st.session_state['ref_pending_mode'] = 'normal'
+                            ref_data_by_file[uploaded_file.name] = data
+
+                        ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value)
+                        st.session_state.excel_result = create_ref_designator_excel_output(
+                            ref_final, sort_value, terminal_results=terminal_results)
                         st.session_state.output_filename = output_filename
+                        st.session_state['is_region_mode'] = False
+                        st.session_state['ref_results_summary'] = ref_final
                         _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
 
                 st.session_state['download_done'] = False
@@ -931,181 +925,6 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
             st.rerun()
         except Exception as e:
             handle_error(e)
-
-
-def _render_unclassified_and_completion_section(sort_value):
-    """「未確定ラベル」一覧（機器符号候補パイプラインのみ）と「選択完了」ボタンを表示する。"""
-    # ============================================================
-    # 未確定ラベル（機器符号（候補）パイプラインのみ、選択完了までの間表示）
-    # ============================================================
-    # 列幅（文字数の目安: 採用=4字, ラベル=8字, 個数=3字の75%幅）。テーブル全体も
-    # 固定幅にし、st.container(horizontal=True) の折り返しでブラウザー幅に応じて
-    # テーブルの横並び数（狭ければ2列、広ければ3列、さらに広ければ4列…）が
-    # 自動調整されるようにする。テーブル数は固定せず、テーブルあたりの行数を
-    # 固定してデータ量に応じた個数のテーブルを生成することで、折り返しが
-    # ブラウザー幅いっぱいまで機能する。
-    UNCLASSIFIED_COL_WIDTH_APPROVE = 68   # 元90pxの75%
-    UNCLASSIFIED_COL_WIDTH_LABEL = 120    # 元160pxの75%
-    UNCLASSIFIED_COL_WIDTH_COUNT = 53     # 元70pxの75%
-    UNCLASSIFIED_TABLE_WIDTH = (
-        UNCLASSIFIED_COL_WIDTH_APPROVE + UNCLASSIFIED_COL_WIDTH_LABEL
-        + UNCLASSIFIED_COL_WIDTH_COUNT + 20
-    )
-    UNCLASSIFIED_ROWS_PER_TABLE = 10
-
-    if st.session_state.get('ref_pending'):
-        ref_pending = st.session_state['ref_pending']
-        st.subheader("未確定ラベル")
-        st.caption(
-            "機器符号（候補）パターンに一致し、除外パターンに該当しなかったラベルのうち、"
-            "確定パターン（レビュー不要で自動採用される形）に一致しなかったものです。"
-            "Reference Designator として採用するものにチェックを入れ、"
-            "「選択完了」を押してください（チェックしたものだけが出力されます）。"
-            "末尾の数字（1〜2桁）を除いた部分が同じラベル（例: CN1・CN2・CN10）と"
-            "同一ラベルは、すべてのファイルにわたり連動して採用/解除されます。"
-        )
-
-        # チェック状態の正本。data_editor のウィジェット状態は直接書き換えず、
-        # この dict を更新して unclassified_ver（キーのバージョン）を上げることで
-        # 次の run で新しいウィジェットとして再生成する（生きているインスタンスの
-        # 状態書き換えはブラウザ/サーバー間の同期ループを起こすため行わない）。
-        checked_state = st.session_state.setdefault('unclassified_checked', {})
-        editor_ver = st.session_state.setdefault('unclassified_ver', 0)
-
-        edited_frames = {}
-        for file_idx, (fname, data) in enumerate(sorted(ref_pending.items())):
-            if file_idx > 0:
-                st.divider()
-            st.markdown(f"### {fname}")
-            if data.get('warning'):
-                st.warning(data['warning'])
-            review_rows = ref_designator.build_labeled_rows(data['review_labels'])
-            st.caption(
-                f"図面枠内ラベル数 {data['total_in_frame']}　/　"
-                f"確定（自動採用） {len(data['confirmed_labels'])}　/　"
-                f"未確定ラベル（要選択） {len(review_rows)} 種"
-            )
-            if not review_rows:
-                st.caption("　　（未確定ラベルなし）")
-                continue
-
-            file_checked = checked_state.setdefault(fname, {})
-            for row in review_rows:
-                file_checked.setdefault(row['ラベル'], False)
-
-            # 固定幅・固定行数のテーブルに分けて表示する。st.container(horizontal=True)
-            # によりブラウザー幅に収まる個数だけ横に並び、収まらない分は自動的に
-            # 次の行へ折り返す（ブラウザーが広いほど多くのテーブルが横に並ぶ）。
-            groups = [
-                review_rows[i:i + UNCLASSIFIED_ROWS_PER_TABLE]
-                for i in range(0, len(review_rows), UNCLASSIFIED_ROWS_PER_TABLE)
-            ]
-            dfs = []
-            with st.container(horizontal=True):
-                for suffix, rows in enumerate(groups):
-                    if not rows:
-                        continue
-                    d = pd.DataFrame(rows)
-                    d.insert(0, '採用', [file_checked[r['ラベル']] for r in rows])
-                    edited = st.data_editor(
-                        d,
-                        key=f"unclassified_editor_{editor_ver}_{fname}_{suffix}",
-                        column_config={
-                            '採用': st.column_config.CheckboxColumn(
-                                '採用', default=False, width=UNCLASSIFIED_COL_WIDTH_APPROVE),
-                            'ラベル': st.column_config.TextColumn(
-                                'ラベル', disabled=True, width=UNCLASSIFIED_COL_WIDTH_LABEL),
-                            '個数': st.column_config.NumberColumn(
-                                '個数', disabled=True, width=UNCLASSIFIED_COL_WIDTH_COUNT),
-                        },
-                        hide_index=True,
-                        width=UNCLASSIFIED_TABLE_WIDTH,
-                    )
-                    dfs.append(edited)
-            edited_frames[fname] = dfs
-
-        # チェック変更の検出と兄弟ラベルへの連動（正本を更新→キー更新→再描画）。
-        # 差分がない run（再描画直後・選択完了クリック時）は何もしないため、
-        # 再実行が連鎖することはない。
-        deltas = []
-        for fname, dfs in edited_frames.items():
-            file_checked = checked_state.get(fname, {})
-            for edited_df in dfs:
-                for lbl, val in zip(edited_df['ラベル'], edited_df['採用']):
-                    if bool(val) != file_checked.get(lbl, False):
-                        deltas.append((fname, lbl, bool(val)))
-        if deltas:
-            for _fname, lbl, val in deltas:
-                ref_designator.propagate_selection_all_files(checked_state, lbl, val)
-            st.session_state['unclassified_ver'] = editor_ver + 1
-            st.rerun()
-
-        if st.button("選択完了", type="primary"):
-            try:
-                with st.spinner("選択内容を反映しています..."):
-                    approved_by_file = {}
-                    for fname in ref_pending:
-                        approved_by_file[fname] = {
-                            lbl for lbl, v in checked_state.get(fname, {}).items() if v
-                        }
-
-                    # 判断ログ: 未確定ラベルの採用/非採用をエントリ化する
-                    # （記録自体は Excel 生成が成功した後に行う）
-                    log_entries = []
-                    for fname, data in ref_pending.items():
-                        log_entries += decision_log.build_entries(
-                            file_name=fname,
-                            drawing_number=data.get('main_drawing_number'),
-                            review_labels=data['review_labels'],
-                            approved=approved_by_file[fname],
-                            app_version=APP_VERSION,
-                            patterns_version=ref_designator.PATTERNS_VERSION,
-                        )
-
-                    if st.session_state.get('ref_pending_mode') == 'region':
-                        analyses = st.session_state['region_analyses']
-                        name_selections_by_file = {
-                            fname: _gather_name_selections(fname, analyses[fname])
-                            for fname in ref_pending
-                        }
-                        region_results = ref_designator.build_region_results_from_pending(
-                            ref_pending, analyses, name_selections_by_file,
-                            approved_by_file, sort_value)
-                        st.session_state.excel_result = create_region_excel_output(
-                            region_results, terminal_results=st.session_state.get('terminal_results'))
-                        st.session_state['is_region_mode'] = True
-                        st.session_state['region_results_summary'] = {
-                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
-                            for f, d in region_results.items()
-                        }
-                    else:
-                        ref_final = ref_designator.build_ref_final_from_pending(
-                            ref_pending, approved_by_file, sort_value)
-                        st.session_state.excel_result = create_ref_designator_excel_output(
-                            ref_final, sort_value,
-                            terminal_results=st.session_state.get('terminal_results'))
-                        st.session_state['is_region_mode'] = False
-                        st.session_state['ref_results_summary'] = ref_final
-
-                    # 判断ログの記録（失敗しても抽出本体は止めない。結果は
-                    # rerun 後の抽出結果セクションで表示する）
-                    log_ok, log_msg = decision_log.record(
-                        log_entries, github_conf=_read_github_secrets())
-                    st.session_state['decision_log_result'] = {
-                        'ok': log_ok,
-                        'message': log_msg,
-                        'fallback_csv': (
-                            None if log_ok
-                            else decision_log.entries_to_csv_bytes(log_entries)
-                        ),
-                    }
-
-                    del st.session_state['ref_pending']
-                    st.session_state.pop('ref_pending_mode', None)
-                    st.session_state['download_done'] = False
-                st.rerun()
-            except Exception as e:
-                handle_error(e)
 
 
 def _render_results_section():
@@ -1123,25 +942,10 @@ def _render_results_section():
             st.success(f"{len(summ)}個のDXFファイルからラベル抽出が完了しました（領域付き）")
         elif candidate_mode:
             summ = st.session_state.get('ref_results_summary', {})
-            st.success(f"{len(summ)}個のDXFファイルから機器符号（候補）の抽出が完了しました")
+            st.success(f"{len(summ)}個のDXFファイルから機器符号の抽出が完了しました")
         else:
             results = st.session_state.get('results', {})
             st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
-
-        log_result = st.session_state.get('decision_log_result')
-        if log_result:
-            if log_result['ok']:
-                st.caption(f"📝 {log_result['message']}")
-            else:
-                st.warning(f"📝 {log_result['message']}")
-                if log_result.get('fallback_csv'):
-                    st.download_button(
-                        label="判断ログをダウンロード（記録失敗分）",
-                        data=log_result['fallback_csv'],
-                        file_name="decision_log_fallback.csv",
-                        mime="text/csv",
-                        key="decision_log_fallback_download",
-                    )
 
         with st.expander("📊 抽出結果統計", expanded=False):
             if is_region_mode:
@@ -1167,8 +971,7 @@ def _render_results_section():
                     row = {
                         'ファイル名': f,
                         '図面枠内ラベル数': d.get('total_in_frame', 0),
-                        '機器符号（候補）数': sum(r['個数'] for r in d.get('rows', [])),
-                        '未確定ラベル数（未採用）': d.get('unclassified_count', 0),
+                        '機器符号数': sum(r['個数'] for r in d.get('rows', [])),
                     }
                     if settings.get('extract_drawing_numbers'):
                         row['図番'] = d.get('main_drawing_number', '') or ''
@@ -1239,8 +1042,6 @@ def app():
     _render_region_confirmation_section(opts['enable_region_detection'])
 
     _handle_extract_button(uploaded_files, region_cfg, opts)
-
-    _render_unclassified_and_completion_section(opts['sort_value'])
 
     _render_results_section()
 

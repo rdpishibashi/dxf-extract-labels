@@ -18,10 +18,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from model.region_detector import (  # noqa: E402
-    analyze_dxf_regions, assign_region_labels,
+    assign_region_labels,
     _point_in_polygon, _polygon_area, regions_overlap,
 )
 from model import ref_designator  # noqa: E402
+from tests.dxf_cache import analyze_dxf_regions  # noqa: E402
 
 # サンプル DXF はプロジェクト間で共用するため Tools/sample-dxf/ に集約されている。
 # SAMPLE_DIR はプロジェクト直下の symlink（sample-dxf -> ../sample-dxf）経由で参照する。

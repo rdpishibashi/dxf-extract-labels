@@ -24,12 +24,12 @@
 import math
 import gc
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
-from .common_utils import filter_non_circuit_symbols, normalize_width, select_layout_result
+from .common_utils import normalize_width, select_layout_result
 from .ref_designator_patterns import classify_judgment_detailed, matched_confirmed_category
 
 
@@ -2013,12 +2013,13 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
             # ただし『ラベル抽出』自体は図面枠に依存しないため、
             # `ref_designator._collect_all_labels_fallback()` と同じ「枠制約
             # なし・重複除去のみ」の方針で `result['labels']` を埋める。
-            # 従来はここで空のまま return していたため、`build_region_results()`
-            # （「機器符号（候補）以外も抽出」ON時に使用、`analysis['labels']`
-            # のみを参照）がこの図面のラベルを一切集計できず、複数図面入力時に
-            # その図面だけラベルが0件になる不具合があった（2026-07-23
-            # ユーザー報告: `EE6892-455B.dxf` 等、Model/Paper Space分離で
-            # 図面枠が見つからない図面を含む入力で「領域を検出」使用時に発生）。
+            # 従来はここで空のまま return していたため、`analysis['labels']`
+            # のみを参照する呼び出し側（当時の「機器符号（候補）以外も抽出」
+            # ON時の集計処理、v3.0.0で廃止済み）がこの図面のラベルを一切
+            # 集計できず、複数図面入力時にその図面だけラベルが0件になる
+            # 不具合があった（2026-07-23 ユーザー報告: `EE6892-455B.dxf` 等、
+            # Model/Paper Space分離で図面枠が見つからない図面を含む入力で
+            # 「領域を検出」使用時に発生）。
             seen = set()
             fallback_labels = []
             for it in label_entities:
@@ -2377,108 +2378,9 @@ def is_region_pending_selection(reg: dict, checked_names: set) -> bool:
     return len(_matched_checked_candidates(reg, checked_names)) >= 2
 
 
-def build_region_results(
-    analyses: dict,
-    name_selections: dict,
-    sort_value: str,
-    filter_circuit_only: bool = False,
-) -> dict:
-    """解析結果とユーザーがチェックした名称から、ファイルごとの領域付きラベル集計を構築する。
-
-    name_selections: {(filename, region_id): [チェックされた名称, ...]}
-    filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
-
-    出力（集計・記録）の領域名・ラベルは `normalize_width()` で半角へ統一する。
-    図面上の表記が半角/全角どちらでも同じ語は同じ行に集計され、全角の機器符号も
-    正規化後に機器符号フィルタで正しく判定される。
-    """
-    region_results = {}
-    for fname, analysis in analyses.items():
-        named = []
-        named_region_ids = set()
-        regions = analysis.get('regions', [])
-        # 番号は複数の無名領域を区別するためだけのものなので、この図面に
-        # 無名領域が1つしかない場合は付けない（ユーザー指摘: 番号があると
-        # ユーザーがその意味を理解できず不安に感じる。2026-07-23）。
-        total_no_name = sum(
-            1 for reg in regions
-            if not name_selections.get((fname, reg['id']), []) and not reg.get('name_candidates')
-        )
-        no_name_idx = 0
-        for reg in regions:
-            chosen_names = name_selections.get((fname, reg['id']), [])
-            if not chosen_names and not reg.get('name_candidates'):
-                no_name_idx += 1
-                chosen_names = ["no name" if total_no_name == 1 else f"no name {no_name_idx}"]
-            for nm in chosen_names:
-                if not nm:
-                    continue
-                named.append({
-                    'polygon': reg['polygon'], 'name': normalize_width(nm),
-                    'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
-                })
-                named_region_ids.add(reg['id'])
-
-        all_labels = [(normalize_width(t), x, y)
-                      for (t, x, y) in analysis.get('labels', [])]
-
-        if filter_circuit_only:
-            texts = [l[0] for l in all_labels]
-            matched, _ = filter_non_circuit_symbols(texts)
-            matched_set = set(matched)
-            labels = [l for l in all_labels if l[0] in matched_set]
-            filtered_count = len(all_labels) - len(labels)
-        else:
-            labels = all_labels
-            filtered_count = 0
-
-        assigned = assign_region_labels(labels, named)
-
-        cnt = Counter()
-        region_of = defaultdict(set)
-        in_region_count = 0
-        label_count_per_region = defaultdict(int)
-        region_label_counts = defaultdict(Counter)
-        for (text, x, y, names) in assigned:
-            cnt[text] += 1
-            if names:
-                in_region_count += 1
-            for n in names:
-                region_of[text].add(n)
-                label_count_per_region[n] += 1
-                region_label_counts[n][text] += 1
-
-        rows = [
-            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
-            for t in cnt
-        ]
-        if sort_value == 'asc':
-            rows.sort(key=lambda r: r['ラベル'])
-        elif sort_value == 'desc':
-            rows.sort(key=lambda r: r['ラベル'], reverse=True)
-
-        for r in named:
-            r['label_count'] = label_count_per_region.get(r['name'], 0)
-
-        region_results[fname] = {
-            'rows': rows,
-            'named': named,
-            'frames': len(analysis.get('frames', [])),
-            'regions_detected': len(analysis.get('regions', [])),
-            'regions_named': len(named_region_ids),
-            'total_in_frame': len(all_labels),
-            'filtered_count': filtered_count,
-            'final_count': len(labels),
-            'in_region_count': in_region_count,
-            'drawing_number': analysis.get('main_drawing_number') or '',
-            'title': analysis.get('title'),
-            'region_label_counts': {n: dict(c) for n, c in region_label_counts.items()},
-        }
-    return region_results
-
-
 def build_region_label_summary(region_results: dict) -> tuple[list[tuple[str, str]], list[dict]]:
-    """`build_region_results()` の結果から、領域名ごとに全ファイル横断でラベルを
+    """機器符号抽出パイプライン（`ref_designator.build_ref_designator_region_results()`）
+    が構築した region_results から、領域名ごとに全ファイル横断でラベルを
     集計した「領域別ラベル一覧」用の行データを構築する。
 
     領域名は同名であれば複数ファイルにまたがって1グループに合算される

@@ -374,17 +374,37 @@ def normalize_labels(
     return out
 
 
+def is_ref_designator_label(text: str) -> bool:
+    """textが機器符号（Reference Designator）候補パターンに一致するかを返す。
+
+    判定はラベル末尾の括弧より前の部分（`_judgment_text()`）に対して行う
+    （`R10(2.2K)` → `R10` で判定）。3つの候補パターン
+    （`ref_designator_patterns.PATTERN_CATEGORIES`）のいずれかに一致すれば
+    True（除外パターン等は使わない——v2.0.0で廃止した判定条件の簡素化方針を
+    踏襲する。`ref_designator_patterns.is_ref_designator_candidate()` とは
+    別物: あちらは除外パターンも併用する旧方式の判定で、`region_detector.py`
+    の領域名候補フィルタ専用）。
+
+    v3.0.0で「機器符号候補」列（各シートのラベルごとの判定表示）に使うため
+    独立関数化した（旧 `classify_labels()` の判定条件と同一、そちらは
+    リストへの絞り込み版としてこの関数を使う形に変更）。
+    """
+    return bool(CANDIDATE_PATTERN.match(_judgment_text(text)))
+
+
 def classify_labels(
     labels: List[Tuple[str, float, float]],
 ) -> List[Tuple[str, float, float]]:
-    """正規化済み (text,x,y) リストから、3つの候補パターン
-    （`ref_designator_patterns.PATTERN_CATEGORIES`）のいずれかに一致する
-    ものだけを抽出して返す。判定はラベル末尾の括弧より前の部分
-    （`_judgment_text()`）に対して行う（`R10(2.2K)` → `R10` で判定、
-    出力は `R10(2.2K)` のまま）。一致すれば除外・確認なしにそのまま
-    全件を候補として採用する（2026-07-30、判定条件の簡素化）。
+    """正規化済み (text,x,y) リストから、機器符号（候補）パターンに一致する
+    ものだけを抽出して返す（`is_ref_designator_label()` 参照）。一致すれば
+    除外・確認なしにそのまま全件を候補として採用する（2026-07-30、判定条件の
+    簡素化）。
+
+    v3.0.0時点では抽出パイプライン本体からは呼ばれない（`extract_ref_designator_data()`
+    が枠内の全ラベルを保持するようになったため）。機器符号判定ロジック単体の
+    テスト・外部からの利用のために残している。
     """
-    return [item for item in labels if CANDIDATE_PATTERN.match(_judgment_text(item[0]))]
+    return [item for item in labels if is_ref_designator_label(item[0])]
 
 
 # ============================================================
@@ -397,22 +417,31 @@ def extract_ref_designator_data(
     frame_color: int = _FRAME_COLOR,
     original_filename: Optional[str] = None,
 ) -> Dict:
-    """通常モード（領域なし）用: 図面枠内・図面情報枠外のラベルから機器符号を抽出する。
+    """通常モード（領域なし）用: 図面枠内・図面情報枠外の全ラベルを収集する。
+
+    v3.0.0（2026-08）で機器符号パターンによる絞り込みを廃止し、枠内・情報枠外の
+    全ラベルを保持するように変更した（旧「機器符号（候補）以外も抽出」オプション
+    削除に伴い、機器符号候補かどうかはラベルごとの属性として出力する方針に統一。
+    `is_ref_designator_label()` 参照。行データ生成時（`build_labeled_rows()` 等）に
+    ラベル単位で判定する）。
 
     戻り値 dict:
       filename: str
-      labels: [(ラベル, x, y), ...]（正規化済み、3候補パターンいずれかに一致）
-      total_in_frame: int
+      labels: [(ラベル, x, y), ...]（正規化済み、図面枠内・情報枠外の全ラベル）
+      total_in_frame: int（= len(labels)）
+      frames: int（検出した図面枠の数＝ページ数。図面枠が検出できない場合は0）
       warning: str | None （図面枠・図面情報枠が見つからずフォールバックした場合等）
     """
     info = {
         'filename': original_filename or dxf_file,
         'labels': [],
         'total_in_frame': 0,
+        'frames': 0,
         'warning': None,
     }
 
     collected = collect_in_frame_labels(dxf_file, frame_lineweight, frame_color)
+    info['frames'] = len(collected.get('frames', []))
     if collected['error']:
         # フォールバック自体は正常な抽出結果につながる（実際に正しく機器符号が
         # 抽出できるケースがほとんど）ため、「見つかりませんでした」という
@@ -434,7 +463,7 @@ def extract_ref_designator_data(
 
     normalized = normalize_labels(raw_labels)
     info['total_in_frame'] = len(normalized)
-    info['labels'] = classify_labels(normalized)
+    info['labels'] = normalized
     return info
 
 
@@ -474,7 +503,11 @@ def build_labeled_rows(
     labels: List[Tuple[str, float, float]],
     named_regions: Optional[List[dict]] = None,
 ) -> List[dict]:
-    """(text,x,y) リストから (ラベル,個数[,領域]) の行データを作る。
+    """(text,x,y) リストから (機器符号候補,ラベル,個数[,領域]) の行データを作る。
+
+    '機器符号候補' は `is_ref_designator_label()` が True なら 'Y'、False なら
+    None（v3.0.0、機器符号（候補）以外も抽出オプション廃止に伴い、機器符号候補か
+    どうかをラベルごとの属性として全行に付与する）。
 
     named_regions が指定された場合は `assign_region_labels()` で領域名を
     割り当て、'領域' キー（カンマ区切り文字列）を各行に含める。
@@ -484,12 +517,16 @@ def build_labeled_rows(
         cnt, region_of, _in_region_count, _label_count_per_region, _region_label_counts = \
             _aggregate_assigned_labels(assigned)
         return [
-            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
+            {'機器符号候補': 'Y' if is_ref_designator_label(t) else None,
+             'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
             for t in sorted(cnt.keys())
         ]
 
     cnt = Counter(t for (t, _x, _y) in labels)
-    return [{'ラベル': t, '個数': cnt[t]} for t in sorted(cnt.keys())]
+    return [
+        {'機器符号候補': 'Y' if is_ref_designator_label(t) else None, 'ラベル': t, '個数': cnt[t]}
+        for t in sorted(cnt.keys())
+    ]
 
 
 def extract_ref_designator_rows(
@@ -501,18 +538,20 @@ def extract_ref_designator_rows(
 ) -> Dict:
     """通常/領域付き両モード共用のトップレベル関数。
 
-    図面枠内・図面情報枠外のラベルから機器符号の行データ（ラベル・個数[・領域]）を返す。
-    named_regions を渡すと各行に '領域' キーが付与される（領域付きモード用）。
+    図面枠内・図面情報枠外の全ラベルの行データ（機器符号候補・ラベル・個数[・領域]）
+    を返す（v3.0.0、機器符号候補以外のラベルも含む）。named_regions を渡すと
+    各行に '領域' キーが付与される（領域付きモード用）。
 
     戻り値 dict:
-      filename, warning, total_in_frame: extract_ref_designator_data と同じ
-      rows: [{'ラベル':str,'個数':int[,'領域':str]}]
+      filename, warning, total_in_frame, frames: extract_ref_designator_data と同じ
+      rows: [{'機器符号候補':str|None,'ラベル':str,'個数':int[,'領域':str]}]
     """
     info = extract_ref_designator_data(dxf_file, frame_lineweight, frame_color, original_filename)
     return {
         'filename': info['filename'],
         'warning': info['warning'],
         'total_in_frame': info['total_in_frame'],
+        'frames': info['frames'],
         'rows': build_labeled_rows(info['labels'], named_regions),
     }
 
@@ -524,9 +563,10 @@ def build_named_regions(
     start_no_name_idx: int = 0,
 ) -> Tuple[List[dict], int]:
     """領域付きモード用: 解析結果とユーザーが確定した名称選択から `assign_region_labels()`
-    に渡す named リストを構築する（`region_detector.build_region_results()` の
-    named 構築部分を機器符号抽出パイプライン向けに複製したもの。
-    region_detector.py は変更しないため、ここに独立して実装する）。
+    に渡す named リストを構築する（かつて存在した `region_detector.build_region_results()`
+    〈v3.0.0で削除、旧「機器符号（候補）以外も抽出」オプション専用〉の named 構築部分を
+    機器符号抽出パイプライン向けに複製したものが由来。region_detector.py の共有ロジック
+    には手を入れないため、ここに独立して実装している）。
 
     戻り値: (named, next_no_name_idx)
     """
@@ -534,8 +574,7 @@ def build_named_regions(
     regions = analysis.get('regions', [])
     # 番号は複数の無名領域を区別するためだけのものなので、この図面に無名領域が
     # 1つしかない場合は付けない（ユーザー指摘: 番号があるとユーザーがその意味を
-    # 理解できず不安に感じる。2026-07-23。region_detector.build_region_results()
-    # と同じ方針）。
+    # 理解できず不安に感じる。2026-07-23）。
     total_no_name = sum(
         1 for reg in regions
         if not name_selections.get((fname, reg['id']), []) and not reg.get('name_candidates')
@@ -564,19 +603,21 @@ def build_region_output(
     """(text,x,y) リストと named（`build_named_regions()` の出力）から、
     `create_region_excel_output()` に渡せる1ファイル分の集計結果を作る。
 
-    `region_detector.build_region_results()` の集計部分（1ファイル分）を
-    機器符号抽出パイプライン向けに複製したもの（region_detector.py は
-    変更しないため、ここに独立して実装する）。
+    かつて存在した `region_detector.build_region_results()`（v3.0.0で削除）の
+    集計部分（1ファイル分）を機器符号抽出パイプライン向けに複製したものが由来
+    （region_detector.py の共有ロジックには手を入れないため、ここに独立して
+    実装している）。
 
-    戻り値 dict: rows, named（label_count 付与済み）, in_region_count,
-      region_label_counts
+    戻り値 dict: rows（'機器符号候補' 列付き）, named（label_count 付与済み）,
+      in_region_count, region_label_counts
     """
     assigned = assign_region_labels(labels, named)
     cnt, region_of, in_region_count, label_count_per_region, region_label_counts = \
         _aggregate_assigned_labels(assigned)
 
     rows = [
-        {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
+        {'機器符号候補': 'Y' if is_ref_designator_label(t) else None,
+         'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
         for t in cnt
     ]
     if sort_value == 'asc':
@@ -600,15 +641,22 @@ def build_ref_designator_final(
     sort_value: str = 'asc',
 ) -> Dict:
     """通常モード用。`extract_ref_designator_data()` の結果（ファイル名→dict）から
-    `create_ref_designator_excel_output()` に渡せる ref_final を構築する。"""
+    `create_ref_designator_excel_output()` に渡せる ref_final を構築する。
+
+    `ref_designator_count`（v3.0.0新設）は rows のうち '機器符号候補' が 'Y' の
+    行の '個数' 合計（Summary シートの「機器符号候補ラベル数」に使う）。
+    """
     ref_final = {}
     for fname, data in ref_data_by_file.items():
         rows = build_labeled_rows(data['labels'])
         if sort_value == 'desc':
             rows.sort(key=lambda r: r['ラベル'], reverse=True)
+        ref_designator_count = sum(r['個数'] for r in rows if r['機器符号候補'] == 'Y')
         ref_final[fname] = {
             'rows': rows,
             'total_in_frame': data['total_in_frame'],
+            'frames': data.get('frames', 0),
+            'ref_designator_count': ref_designator_count,
             'warning': data.get('warning'),
             'main_drawing_number': data.get('main_drawing_number'),
             'source_drawing_number': data.get('source_drawing_number'),
@@ -616,6 +664,85 @@ def build_ref_designator_final(
             'subtitle': data.get('subtitle'),
         }
     return ref_final
+
+
+def build_all_regions_summary(
+    analysis: dict,
+    name_selections: dict,
+    fname: str,
+    labels: List[Tuple[str, float, float]],
+) -> List[dict]:
+    """「領域一覧」シート用: 検出済みの**全領域**（確定・未確定を問わない）について、
+    領域名・面積率・領域内ラベル数・領域内機器符号候補数を1ファイル分構築する。
+
+    `build_named_regions()` は「確定済み」または「候補が元々無い（no name）」領域
+    しか対象にしない（候補はあるがユーザーが未確定の領域は丸ごと除外される）ため、
+    「領域一覧」用には独立に全領域を走査する（v3.0.0、要求「検出結果にかかわらず
+    検出した領域をすべて記載」への対応）。
+
+    領域名:
+      - 確定済み（`name_selections` に選択あり）: その名前
+      - 候補はあるが未確定: 候補をカンマ区切りで列挙（採否に関わらず全候補、
+        Tier→距離順）
+      - 候補なし: "no name"（`build_named_regions()` と同じ番号付け規則。
+        この場合は自動確定として扱う）
+
+    領域内ラベル数・領域内機器符号候補数は、確定状況に関わらずポリゴン内包判定で
+    数える（`assign_region_labels()` を、確定名の代わりに領域 id をキーにした
+    仮の named リストで呼び出すことで、確定済み領域用の `build_region_output()`
+    と同じ判定ロジックを再利用する）。ラベル側の '領域' 列・領域別ラベル一覧には
+    含めない（未確定領域の名称候補をラベルの所属先として確定させないため。
+    意図的な非対称、2026-08 ユーザー確認）。
+
+    Returns:
+        list[dict]: [{'id', 'frame', 'name', 'area_pct', 'label_count',
+                       'ref_designator_count'}, ...]（regions の順）
+    """
+    regions = analysis.get('regions', [])
+
+    # 'name' キーは assign_region_labels() 内で `if nm and ...` と真偽値判定
+    # されるため、reg['id'] をそのまま使うと id=0 の領域が偽値扱いで無視されて
+    # しまう（実際に発生したバグ）。常に truthy な文字列にする。
+    def _pseudo_name(region_id):
+        return f"region-{region_id}"
+
+    pseudo_named = [{'polygon': reg['polygon'], 'name': _pseudo_name(reg['id'])} for reg in regions]
+    assigned = assign_region_labels(labels, pseudo_named)
+    count_by_id = defaultdict(int)
+    ref_count_by_id = defaultdict(int)
+    for (text, _x, _y, names) in assigned:
+        matched = is_ref_designator_label(text)
+        for nm in names:
+            count_by_id[nm] += 1
+            if matched:
+                ref_count_by_id[nm] += 1
+
+    # 番号は複数の無名領域を区別するためだけのものなので、この図面に無名領域が
+    # 1つしかない場合は付けない（build_named_regions() と同じ方針）。
+    total_no_name = sum(1 for reg in regions if not reg.get('name_candidates'))
+    no_name_idx = 0
+
+    rows = []
+    for reg in regions:
+        chosen = name_selections.get((fname, reg['id']), [])
+        candidates = [text for (_dist, text) in reg.get('name_candidates', [])]
+        if chosen:
+            name = ', '.join(dict.fromkeys(chosen))
+        elif candidates:
+            name = ', '.join(candidates)
+        else:
+            no_name_idx += 1
+            name = "no name" if total_no_name == 1 else f"no name {no_name_idx}"
+        pseudo = _pseudo_name(reg['id'])
+        rows.append({
+            'id': reg['id'],
+            'frame': reg['frame'],
+            'name': normalize_width(name),
+            'area_pct': reg['area_pct'],
+            'label_count': count_by_id.get(pseudo, 0),
+            'ref_designator_count': ref_count_by_id.get(pseudo, 0),
+        })
+    return rows
 
 
 def build_ref_designator_region_results(
@@ -627,19 +754,20 @@ def build_ref_designator_region_results(
     """領域付きモード用。`extract_ref_designator_data()` の結果と領域検出結果から
     `create_region_excel_output()` に渡せる region_results を構築する。
 
-    `filtered_count`/`final_count` は「機器符号（候補）以外も抽出」ON時の
-    `region_detector.build_region_results()` と同じキー名で提供する
-    （app.py の抽出結果統計テーブルが両方の結果を同じ列名で表示するため）。
-    本パイプラインには除外・確認の概念が無いため、`filtered_count` は
-    「図面枠内・図面情報枠外のラベルのうち、3候補パターンに一致しなかった数」
-    （`total_in_frame - final_count`）を意味する。
+    `ref_designator_count`（v3.0.0新設）は rows のうち '機器符号候補' が 'Y' の
+    行の '個数' 合計（Summary シートの「機器符号候補ラベル数」に使う）。
+    `subtitle` も併せて格納する（v3.0.0、Summary シートにサブタイトルが表示
+    されていなかった不具合の修正）。`region_rows` は「領域一覧」シート用の
+    全領域データ（`build_all_regions_summary()` 参照）。
     """
     region_results = {}
     for fname, data in ref_data_by_file.items():
         analysis = region_analyses[fname]
         named, _ = build_named_regions(analysis, name_selections_by_file[fname], fname)
         out = build_region_output(data['labels'], named, sort_value)
-        final_count = sum(r['個数'] for r in out['rows'])
+        ref_designator_count = sum(r['個数'] for r in out['rows'] if r['機器符号候補'] == 'Y')
+        region_rows = build_all_regions_summary(
+            analysis, name_selections_by_file[fname], fname, data['labels'])
         region_results[fname] = {
             'rows': out['rows'],
             'named': out['named'],
@@ -647,11 +775,12 @@ def build_ref_designator_region_results(
             'regions_detected': len(analysis.get('regions', [])),
             'regions_named': len({r['id'] for r in named}),
             'total_in_frame': data['total_in_frame'],
-            'filtered_count': data['total_in_frame'] - final_count,
-            'final_count': final_count,
+            'ref_designator_count': ref_designator_count,
             'in_region_count': out['in_region_count'],
             'drawing_number': analysis.get('main_drawing_number') or '',
             'title': analysis.get('title'),
+            'subtitle': analysis.get('subtitle'),
             'region_label_counts': out['region_label_counts'],
+            'region_rows': region_rows,
         }
     return region_results

@@ -1,8 +1,19 @@
-"""create_excel_output / create_region_excel_output のスモークテスト。
+"""create_ref_designator_excel_output / create_region_excel_output のスモークテスト。
 
 Excel 生成関数が最小の入力で例外なく完走し、
 正しいシート構成の Excel を返すことを検証する。
 ロジックの詳細（書式・列幅）ではなく「動作する・壊れていない」を確認する。
+
+v3.0.0（2026-08）: 「機器符号（候補）以外も抽出」オプション廃止に伴い
+`create_excel_output()` が削除されたため、そのテスト（`test_create_excel_output_*`）
+も削除した。あわせて `Total` シートは `抽出ラベル一覧` に改称、各ラベル一覧系
+シートに「機器符号候補」列（'Y' または None）を追加、Summary シートは通常/領域
+両モード共通の8列固定（`図番`/`タイトル`/`サブタイトル`列の条件付き追加は廃止）、
+`領域一覧` は `ページ No.` 列を廃止し `ファイル名×領域名` でマージ・合算する
+仕様に変更されている。`region_detector.build_region_results()` に依存していた
+テスト（`test_build_region_results_*`）は、対応する動作が
+`ref_designator.build_named_regions()` に移った関数レベルのテストとして
+`tests/regression/test_ref_designator.py` に移設した。
 """
 import sys
 import os
@@ -15,7 +26,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from model.excel_output import (  # noqa: E402
-    create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
+    create_ref_designator_excel_output, create_region_excel_output,
 )
 
 
@@ -28,128 +39,19 @@ def _load_wb(data: bytes):
 
 
 # ---------------------------------------------------------------------------
-# create_excel_output
-# ---------------------------------------------------------------------------
-
-def test_create_excel_output_returns_bytes():
-    results = {
-        '/tmp/foo.dxf': (['R10', 'CN3', 'R10'], {
-            'filename': 'foo.dxf',
-            'final_count': 3,
-            'main_drawing_number': 'EE0001-001-01A',
-            'source_drawing_number': '',
-            'title': 'TEST',
-            'subtitle': '',
-        }),
-    }
-    data = create_excel_output(results, 'asc')
-    assert isinstance(data, bytes)
-    assert len(data) > 0
-
-
-def test_create_excel_output_sheet_names():
-    results = {
-        '/tmp/circuit.dxf': (['R10', 'CN3'], {
-            'filename': 'circuit.dxf',
-            'final_count': 2,
-            'main_drawing_number': '',
-            'source_drawing_number': '',
-            'title': '',
-            'subtitle': '',
-        }),
-    }
-    wb = _load_wb(create_excel_output(results, 'asc'))
-    assert 'Summary' in wb.sheetnames
-    assert 'Total' in wb.sheetnames
-    assert 'circuit' in wb.sheetnames   # 拡張子なし
-
-
-def test_create_excel_output_sort_option_desc():
-    """sort_option='desc' でも例外なく完走する（フィルタ・妥当性チェックは v1.6.0 で削除済み）"""
-    results = {
-        '/tmp/x.dxf': (['R10', 'CHAMBER', 'CN3'], {
-            'filename': 'x.dxf',
-            'final_count': 3,
-            'main_drawing_number': '',
-            'source_drawing_number': '',
-            'title': '',
-            'subtitle': '',
-        }),
-    }
-    data = create_excel_output(results, 'desc')
-    wb = _load_wb(data)
-    assert 'Summary' in wb.sheetnames
-
-
-def test_create_excel_output_empty_results():
-    """ファイルが0件でも例外なく返る"""
-    data = create_excel_output({}, 'asc')
-    wb = _load_wb(data)
-    assert 'Summary' in wb.sheetnames
-
-
-def test_create_excel_output_sorted_by_filename():
-    """Summary の行順・ファイルシートの並びとも、投入順ではなくファイル名昇順になる。"""
-    results = {
-        '/tmp/z.dxf': (['R10'], {'filename': 'z_file.dxf', 'final_count': 1,
-                                 'main_drawing_number': '', 'source_drawing_number': '',
-                                 'title': '', 'subtitle': ''}),
-        '/tmp/a.dxf': (['CN1'], {'filename': 'a_file.dxf', 'final_count': 1,
-                                 'main_drawing_number': '', 'source_drawing_number': '',
-                                 'title': '', 'subtitle': ''}),
-        '/tmp/m.dxf': (['GND'], {'filename': 'm_file.dxf', 'final_count': 1,
-                                 'main_drawing_number': '', 'source_drawing_number': '',
-                                 'title': '', 'subtitle': ''}),
-    }
-    wb = _load_wb(create_excel_output(results, 'asc'))
-    summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
-    assert summary_filenames == ['a_file.dxf', 'm_file.dxf', 'z_file.dxf']
-
-    data_sheets = [n for n in wb.sheetnames if n not in ('Summary', 'Total')]
-    assert data_sheets == ['a_file', 'm_file', 'z_file']
-
-
-def test_create_excel_output_total_sheet_has_drawing_number_column():
-    """Total シートの C 列に、そのラベルが登場する図番一覧が入る。
-    複数図番にまたがるラベルは ', ' 区切り・ソート済みで結合される。
-    図番未抽出のファイルはファイル名（拡張子なし）にフォールバックする。"""
-    results = {
-        '/tmp/a.dxf': (['CN1', 'GND'], {
-            'filename': 'a.dxf', 'final_count': 2,
-            'main_drawing_number': 'EE5678-600-02B', 'source_drawing_number': '',
-            'title': '', 'subtitle': '',
-        }),
-        '/tmp/b.dxf': (['CN1'], {
-            'filename': 'b.dxf', 'final_count': 1,
-            'main_drawing_number': 'EE1234-500-01A', 'source_drawing_number': '',
-            'title': '', 'subtitle': '',
-        }),
-        '/tmp/c.dxf': (['R10'], {
-            'filename': 'c.dxf', 'final_count': 1,
-            'main_drawing_number': '', 'source_drawing_number': '',
-            'title': '', 'subtitle': '',
-        }),
-    }
-    wb = _load_wb(create_excel_output(results, 'asc'))
-    ws = wb['Total']
-    header = [c.value for c in ws[1]]
-    assert header == ['ラベル', '個数', '図番']
-
-    rows = {row[0].value: row[2].value for row in ws.iter_rows(min_row=2)}
-    assert rows['CN1'] == 'EE1234-500-01A, EE5678-600-02B'   # 2図番、ソート済み
-    assert rows['GND'] == 'EE5678-600-02B'
-    assert rows['R10'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
-
-
-# ---------------------------------------------------------------------------
 # create_ref_designator_excel_output
 # ---------------------------------------------------------------------------
 
 def _make_ref_designator_results():
     return {
         'fileA.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 2}, {'ラベル': 'R10', '個数': 1}],
+            'rows': [
+                {'機器符号候補': 'Y', 'ラベル': 'CN1', '個数': 2},
+                {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1},
+            ],
             'total_in_frame': 10,
+            'ref_designator_count': 3,
+            'frames': 1,
             'main_drawing_number': 'EE1234-500-01A',
             'source_drawing_number': 'EE0001-500-01A',
             'title': 'TITLE A',
@@ -158,6 +60,8 @@ def _make_ref_designator_results():
         'fileB.dxf': {
             'rows': [],
             'total_in_frame': 5,
+            'ref_designator_count': 0,
+            'frames': 1,
             'main_drawing_number': None,
             'source_drawing_number': None,
             'title': None,
@@ -173,74 +77,98 @@ def test_create_ref_designator_excel_output_returns_bytes():
 
 
 def test_create_ref_designator_excel_output_sheet_and_values():
-    """機器符号（候補）0件のファイル（fileB）はシートを作らない
-    （`rows` が空のファイルシートはスキップする従来挙動を固定する）。"""
+    """rows が空のファイルシート（fileB）はスキップする従来挙動を固定する。
+    Summary は通常モードでも常に8列（検出領域数は0）。"""
     wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'asc'))
-    assert wb.sheetnames == ['Summary', 'Total', 'fileA']
+    assert wb.sheetnames == ['Summary', '抽出ラベル一覧', 'fileA']
 
     summary = wb['Summary']
     header = [c.value for c in summary[1]]
-    assert header == ['ファイル名', '図面枠内ラベル数', '機器符号数',
-                      '図番', '流用元図番', 'タイトル', 'サブタイトル']
+    assert header == ['ファイル名', '総抽出ラベル数', '機器符号候補ラベル数', 'ページ数',
+                      '検出領域数', '図番', 'タイトル', 'サブタイトル']
     row_a = [c.value for c in summary[2]]
-    assert row_a == ['fileA.dxf', 10, 3, 'EE1234-500-01A', 'EE0001-500-01A', 'TITLE A', 'SUB A']
+    assert row_a == ['fileA.dxf', 10, 3, 1, 0, 'EE1234-500-01A', 'TITLE A', 'SUB A']
 
-    total_rows = [(c[0].value, c[1].value) for c in wb['Total'].iter_rows(min_row=2)]
-    assert total_rows == [('CN1', 2), ('R10', 1)]
-
-    total_header = [c.value for c in wb['Total'][1]]
-    assert total_header == ['ラベル', '個数', '図番']
-    total_drawing_numbers = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    ws = wb['抽出ラベル一覧']
+    total_header = [c.value for c in ws[1]]
+    assert total_header == ['機器符号候補', 'ラベル', '個数', '図番']
+    total_rows = [(c[0].value, c[1].value, c[2].value) for c in ws.iter_rows(min_row=2)]
+    assert total_rows == [('Y', 'CN1', 2), ('Y', 'R10', 1)]
+    total_drawing_numbers = {row[1].value: row[3].value for row in ws.iter_rows(min_row=2)}
     assert total_drawing_numbers == {'CN1': 'EE1234-500-01A', 'R10': 'EE1234-500-01A'}
 
 
 def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_and_merge():
-    """Total シートの図番列: 複数図番にまたがるラベルは ', ' 区切り・ソート済み、
-    図番未抽出のファイルはファイル名（拡張子なし）にフォールバックする。"""
+    """抽出ラベル一覧シートの図番列: 複数図番にまたがるラベルは ', ' 区切り・
+    ソート済み、図番未抽出のファイルはファイル名（拡張子なし）にフォールバックする。"""
     results = {
         'a.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'rows': [{'機器符号候補': 'Y', 'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'ref_designator_count': 1, 'frames': 1,
             'main_drawing_number': 'EE5678-600-02B',
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
         'b.dxf': {
-            'rows': [{'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'rows': [{'機器符号候補': 'Y', 'ラベル': 'CN1', '個数': 1}], 'total_in_frame': 1,
+            'ref_designator_count': 1, 'frames': 1,
             'main_drawing_number': 'EE1234-500-01A',
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
         'c.dxf': {
-            'rows': [{'ラベル': 'R10', '個数': 1}], 'total_in_frame': 1,
+            'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1}], 'total_in_frame': 1,
+            'ref_designator_count': 1, 'frames': 1,
             'main_drawing_number': None,
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
     }
     wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
-    rows = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    rows = {row[1].value: row[3].value for row in wb['抽出ラベル一覧'].iter_rows(min_row=2)}
     assert rows['CN1'] == 'EE1234-500-01A, EE5678-600-02B'
     assert rows['R10'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
 
 
 def test_create_ref_designator_excel_output_sort_desc():
     wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'desc'))
-    labels = [row[0].value for row in wb['fileA'].iter_rows(min_row=2)]
+    labels = [row[1].value for row in wb['fileA'].iter_rows(min_row=2)]
     assert labels == ['R10', 'CN1']
 
 
 def test_create_ref_designator_excel_output_sorted_by_filename():
     """Summary の行順がファイル名昇順になる（投入順が逆でも並び替わる）。"""
     results = {
-        'zzz.dxf': {'rows': [{'ラベル': 'R1', '個数': 1}], 'total_in_frame': 1,
-                    'main_drawing_number': None,
+        'zzz.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R1', '個数': 1}], 'total_in_frame': 1,
+                    'ref_designator_count': 1, 'frames': 1, 'main_drawing_number': None,
                     'source_drawing_number': None, 'title': None, 'subtitle': None},
-        'aaa.dxf': {'rows': [{'ラベル': 'R2', '個数': 1}], 'total_in_frame': 1,
-                    'main_drawing_number': None,
+        'aaa.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R2', '個数': 1}], 'total_in_frame': 1,
+                    'ref_designator_count': 1, 'frames': 1, 'main_drawing_number': None,
                     'source_drawing_number': None, 'title': None, 'subtitle': None},
     }
     wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
     summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
     assert summary_filenames == ['aaa.dxf', 'zzz.dxf']
-    data_sheets = [n for n in wb.sheetnames if n not in ('Summary', 'Total')]
+    data_sheets = [n for n in wb.sheetnames if n not in ('Summary', '抽出ラベル一覧')]
     assert data_sheets == ['aaa', 'zzz']
+
+
+def test_create_ref_designator_excel_output_marks_non_matching_labels_as_none():
+    """機器符号候補パターンに一致しないラベル（スペース入り等）は「機器符号候補」
+    列が None のまま出力される。"""
+    results = {
+        'a.dxf': {
+            'rows': [
+                {'機器符号候補': 'Y', 'ラベル': 'CN1', '個数': 1},
+                {'機器符号候補': None, 'ラベル': 'NOTE ONE', '個数': 1},
+            ],
+            'total_in_frame': 2, 'ref_designator_count': 1, 'frames': 1,
+            'main_drawing_number': None, 'source_drawing_number': None,
+            'title': None, 'subtitle': None,
+        },
+    }
+    wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
+    ws = wb['a']
+    rows = {row[1].value: row[0].value for row in ws.iter_rows(min_row=2)}
+    assert rows['CN1'] == 'Y'
+    assert rows['NOTE ONE'] is None
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +179,8 @@ def _make_region_results(fname='circuit.dxf'):
     return {
         fname: {
             'rows': [
-                {'ラベル': 'R10', '個数': 2, '領域': 'RACK1'},
-                {'ラベル': 'CN3', '個数': 1, '領域': ''},
+                {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 2, '領域': 'RACK1'},
+                {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1, '領域': ''},
             ],
             'named': [
                 {'polygon': [], 'name': 'RACK1', 'id': 0,
@@ -262,9 +190,16 @@ def _make_region_results(fname='circuit.dxf'):
             'regions_detected': 1,
             'regions_named': 1,
             'total_in_frame': 3,
-            'filtered_count': 0,
-            'final_count': 3,
+            'ref_designator_count': 3,
             'in_region_count': 2,
+            'drawing_number': '',
+            'title': None,
+            'subtitle': None,
+            'region_label_counts': {'RACK1': {'R10': 2}},
+            'region_rows': [
+                {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 25.0,
+                 'label_count': 2, 'ref_designator_count': 2},
+            ],
         }
     }
 
@@ -278,43 +213,43 @@ def test_create_region_excel_output_returns_bytes():
 def test_create_region_excel_output_sheet_names():
     wb = _load_wb(create_region_excel_output(_make_region_results()))
     assert 'Summary' in wb.sheetnames
-    assert 'Total' in wb.sheetnames
+    assert '抽出ラベル一覧' in wb.sheetnames
     assert '領域一覧' in wb.sheetnames
     assert 'circuit' in wb.sheetnames
 
 
 def test_create_region_excel_output_total_sheet_position_and_values():
-    """`Total` シートは `Summary` 直後に配置され、全ファイル横断でラベルを
-    ユニーク集計する（`rows` の『領域』列の値は無視して個数のみ合算）。"""
+    """`抽出ラベル一覧` シートは `Summary` 直後に配置され、全ファイル横断で
+    ラベルをユニーク集計する（`rows` の『領域』列の値は無視して個数のみ合算）。"""
     wb = _load_wb(create_region_excel_output(_make_region_results()))
-    assert wb.sheetnames.index('Total') == wb.sheetnames.index('Summary') + 1
+    assert wb.sheetnames.index('抽出ラベル一覧') == wb.sheetnames.index('Summary') + 1
 
-    ws = wb['Total']
+    ws = wb['抽出ラベル一覧']
     header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
-    assert header == ['ラベル', '個数', '図番']
-    rows = {row[0].value: row[1].value for row in ws.iter_rows(min_row=2)}
+    assert header == ['機器符号候補', 'ラベル', '個数', '図番']
+    rows = {row[1].value: row[2].value for row in ws.iter_rows(min_row=2)}
     assert rows == {'R10': 2, 'CN3': 1}
 
 
 def test_create_region_excel_output_total_sheet_drawing_number_merge():
-    """複数ファイルにまたがる同一ラベルは、Total シートの図番列で
+    """複数ファイルにまたがる同一ラベルは、抽出ラベル一覧シートの図番列で
     ABC順・カンマ区切りに結合される（`drawing_number` 未抽出時はファイル名
     〔拡張子なし〕にフォールバック）。"""
     results = {}
     results.update(_make_region_results('a.dxf'))
     results.update(_make_region_results('b.dxf'))
     wb = _load_wb(create_region_excel_output(results))
-    rows = {row[0].value: row[2].value for row in wb['Total'].iter_rows(min_row=2)}
+    rows = {row[1].value: row[3].value for row in wb['抽出ラベル一覧'].iter_rows(min_row=2)}
     assert rows['R10'] == 'a, b'
 
 
 def test_create_region_excel_output_total_sheet_absent_when_no_labels():
-    """全ファイルにラベルが1件も無い場合、Total シート自体が作られない
-    （他モードの Total と同じ `skip_if_empty` 挙動）。"""
+    """全ファイルにラベルが1件も無い場合、抽出ラベル一覧シート自体が作られない
+    （他モードと同じ `skip_if_empty` 挙動）。"""
     results = _make_region_results()
     results['circuit.dxf']['rows'] = []
     wb = _load_wb(create_region_excel_output(results))
-    assert 'Total' not in wb.sheetnames
+    assert '抽出ラベル一覧' not in wb.sheetnames
 
 
 def test_create_region_excel_output_summary_row_count():
@@ -341,50 +276,42 @@ def test_create_region_excel_output_sorted_by_filename():
     summary_filenames = [row[0].value for row in wb['Summary'].iter_rows(min_row=2)]
     assert summary_filenames == ['aaa.dxf', 'zzz.dxf']
     data_sheets = [n for n in wb.sheetnames
-                  if n not in ('Summary', 'Total', '領域一覧', '領域別ラベル一覧')]
+                  if n not in ('Summary', '抽出ラベル一覧', '領域一覧', '領域別ラベル一覧')]
     assert data_sheets == ['aaa', 'zzz']
 
 
-def test_create_region_excel_output_summary_omits_drawing_number_title_when_not_extracted():
-    """`title` キーが無い（＝『図面番号・タイトル・サブタイトルを抽出』オプション
-    未使用）場合、Summary シートに『図番』『タイトル』列は追加されない
-    （既存の region モード出力との後方互換性）。"""
+def test_create_region_excel_output_summary_always_has_eight_columns():
+    """Summary シートは通常モード・領域モード共通の8列で、抽出結果の有無に
+    かかわらず常にこの構成で出力される（v3.0.0、旧『図面番号・タイトル・
+    サブタイトルを抽出』オプション廃止に伴い列の条件付き追加は廃止。値が
+    無い場合は空文字を書き込むが、xlsxwriter/openpyxlの往復では空文字は
+    Noneとして読み戻される既知の挙動のため、Noneで検証する）。"""
     wb = _load_wb(create_region_excel_output(_make_region_results()))
     header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
-    assert '図番' not in header
-    assert 'タイトル' not in header
+    assert header == ['ファイル名', '総抽出ラベル数', '機器符号候補ラベル数', 'ページ数',
+                      '検出領域数', '図番', 'タイトル', 'サブタイトル']
+    row = list(wb['Summary'].iter_rows(min_row=2, max_row=2, values_only=True))[0]
+    row_dict = dict(zip(header, row))
+    assert row_dict['図番'] is None
+    assert row_dict['タイトル'] is None
+    assert row_dict['サブタイトル'] is None
 
 
-def test_create_region_excel_output_summary_includes_drawing_number_title_when_extracted():
-    """`title` キーが None でない場合（『図面番号・タイトル・サブタイトルを抽出』
-    オプション使用時）、Summary シートに『図番』『タイトル』列が追加され、
-    `DXF-label-compare` の `load_summary_titles()` が要求する列構成
-    （『図番』『タイトル』）を満たす（2026-07-23、region モードのSummaryに
-    この2列が無く、B側の図番フィルタが領域モード出力に対して機能しなかった
-    欠落の修正）。"""
+def test_create_region_excel_output_summary_includes_drawing_number_and_title_values():
+    """図番・タイトル・サブタイトルが抽出されている場合はその値がそのまま入る
+    （`DXF-label-compare` の『B側図番フィルタ』が要求する『図番』『タイトル』列を
+    満たす。2026-07-23の欠落修正 v3.0.0でも維持）。"""
     results = _make_region_results()
     results['circuit.dxf']['drawing_number'] = 'EE0001-001-01A'
     results['circuit.dxf']['title'] = 'UNIT内結線図'
+    results['circuit.dxf']['subtitle'] = 'SUB'
     wb = _load_wb(create_region_excel_output(results))
     header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
-    assert '図番' in header
-    assert 'タイトル' in header
     row = list(wb['Summary'].iter_rows(min_row=2, max_row=2, values_only=True))[0]
     row_dict = dict(zip(header, row))
     assert row_dict['図番'] == 'EE0001-001-01A'
     assert row_dict['タイトル'] == 'UNIT内結線図'
-
-
-def test_create_region_excel_output_summary_title_extracted_but_empty_still_adds_columns():
-    """タイトル抽出は有効だったが実際の抽出結果が空文字だったケース
-    （`title` キーは `''`＝None でない）でも、列自体は追加される
-    （空文字と『未抽出』は区別する）。"""
-    results = _make_region_results()
-    results['circuit.dxf']['title'] = ''
-    wb = _load_wb(create_region_excel_output(results))
-    header = [c.value for c in next(wb['Summary'].iter_rows(min_row=1, max_row=1))]
-    assert '図番' in header
-    assert 'タイトル' in header
+    assert row_dict['サブタイトル'] == 'SUB'
 
 
 # ---------------------------------------------------------------------------
@@ -400,121 +327,6 @@ def test_normalize_width_basic():
     assert normalize_width('') == ''
 
 
-def test_create_excel_output_merges_zenkaku_and_hankaku_labels():
-    """半角 CN1 と全角 ＣＮ１ は同じラベルとして1行に合算される（ユーザー指定、
-    2026-07-03: 出力ファイルのラベルはすべて半角にして集計・記録する）。"""
-    results = {
-        '/tmp/z.dxf': (['CN1', 'ＣＮ１', 'ＣＮ１'], {
-            'filename': 'z.dxf',
-            'final_count': 3,
-            'main_drawing_number': '',
-            'source_drawing_number': '',
-            'title': '',
-            'subtitle': '',
-        }),
-    }
-    wb = _load_wb(create_excel_output(results, 'asc'))
-    ws = wb['Total']
-    rows = {ws.cell(row=i, column=1).value: ws.cell(row=i, column=2).value
-            for i in range(2, ws.max_row + 1)}
-    assert rows == {'CN1': 3}
-
-
-def test_build_region_results_normalizes_names_and_labels():
-    """build_region_results は領域名・ラベルとも半角へ正規化して集計する
-    （合成データによる単体テスト。半角と全角の同一ラベルが1行に合算される）。"""
-    from model.region_detector import build_region_results
-    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
-    analyses = {
-        'z.dxf': {
-            'frames': [(0, 100, 0, 100)],
-            'labels': [('ＣＮ１', 10, 10), ('CN1', 20, 20), ('ＧＮＤ', 30, 30)],
-            'regions': [{
-                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
-                'name_candidates': [(2.5, 'ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ')],
-            }],
-        }
-    }
-    selections = {('z.dxf', 0): ['ＳＹＳＴＥＭ　Ｉ／Ｆ　ＢＯＸ']}
-    rr = build_region_results(analyses, selections, 'asc')
-    data = rr['z.dxf']
-    assert [r['name'] for r in data['named']] == ['SYSTEM I/F BOX']
-    rows = {r['ラベル']: (r['個数'], r['領域']) for r in data['rows']}
-    assert rows == {
-        'CN1': (2, 'SYSTEM I/F BOX'),   # 全角・半角が合算される
-        'GND': (1, 'SYSTEM I/F BOX'),
-    }
-
-
-def test_build_region_results_no_name_omits_number_when_single():
-    """名称候補の無い領域がこの図面に1個だけの場合、番号を付けず「no name」
-    のみにする（2026-07-23、ユーザー指摘: 番号は複数の無名領域を区別する
-    ためのものであり、1個しか無いのに番号が付くと意味が伝わらず不安になる）。"""
-    from model.region_detector import build_region_results
-    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
-    analyses = {
-        'z.dxf': {
-            'frames': [(0, 100, 0, 100)],
-            'labels': [],
-            'regions': [{
-                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
-                'name_candidates': [],
-            }],
-        }
-    }
-    rr = build_region_results(analyses, {}, 'asc')
-    assert [r['name'] for r in rr['z.dxf']['named']] == ['no name']
-
-
-def test_build_region_results_no_name_numbers_when_multiple():
-    """名称候補の無い領域が2個以上ある場合は、従来通り連番で区別する。"""
-    from model.region_detector import build_region_results
-    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
-    analyses = {
-        'z.dxf': {
-            'frames': [(0, 100, 0, 100)],
-            'labels': [],
-            'regions': [
-                {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0, 'name_candidates': []},
-                {'id': 1, 'frame': 0, 'polygon': square, 'area_pct': 50.0, 'name_candidates': []},
-            ],
-        }
-    }
-    rr = build_region_results(analyses, {}, 'asc')
-    names = sorted(r['name'] for r in rr['z.dxf']['named'])
-    assert names == ['no name 1', 'no name 2']
-
-
-def test_build_region_results_captures_title_when_present():
-    """analysis に 'title' がある場合（『図面番号・タイトル・サブタイトルを抽出』
-    オプション使用時）は region_results にもそのまま引き継がれ、無い場合は
-    None のままになる（`create_region_excel_output` の図番/タイトル列判定に使う）。"""
-    from model.region_detector import build_region_results
-    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
-
-    def _analysis(extra=None):
-        base = {
-            'frames': [(0, 100, 0, 100)],
-            'labels': [],
-            'regions': [{
-                'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
-                'name_candidates': [],
-            }],
-        }
-        base.update(extra or {})
-        return base
-
-    with_title = {'with_title.dxf': _analysis({
-        'main_drawing_number': 'EE0001-001-01A', 'title': 'UNIT内結線図'})}
-    rr = build_region_results(with_title, {}, 'asc')
-    assert rr['with_title.dxf']['title'] == 'UNIT内結線図'
-    assert rr['with_title.dxf']['drawing_number'] == 'EE0001-001-01A'
-
-    without_title = {'no_title.dxf': _analysis()}
-    rr2 = build_region_results(without_title, {}, 'asc')
-    assert rr2['no_title.dxf']['title'] is None
-
-
 def test_zenkaku_circuit_symbol_recognized_by_filter():
     """全角の機器符号（ＣＮ１）も filter_non_circuit_symbols が機器符号として
     認識する（判定は半角相当・返り値は元の表記のまま）。"""
@@ -525,19 +337,44 @@ def test_zenkaku_circuit_symbol_recognized_by_filter():
 
 
 # ---------------------------------------------------------------------------
-# 「領域一覧」列名変更（「図面」→「ページ No.」）・「領域別ラベル一覧」新設
+# 「領域一覧」刷新（v3.0.0: ページNo.列廃止・全領域記載・ファイル名×領域名でマージ）
 # ---------------------------------------------------------------------------
 
-def test_region_list_sheet_uses_page_no_header():
-    """「領域一覧」シートの列見出しが「ページ No.」であること（旧「図面」から変更）。
-    中身はファイル内の図面枠の通し番号のままで、DXF図番ではない。"""
+def test_region_list_sheet_has_no_page_no_column():
+    """v3.0.0で「ページ No.」列は廃止された。領域一覧のヘッダーは
+    ファイル名・領域名・面積率[%]・領域内ラベル数・領域内機器符号候補数の5列。"""
     wb = _load_wb(create_region_excel_output(_make_region_results()))
     ws = wb['領域一覧']
     headers = [c.value for c in ws[1]]
-    assert 'ページ No.' in headers
+    assert headers == ['ファイル名', '領域名', '面積率[%]', '領域内ラベル数', '領域内機器符号候補数']
+    assert 'ページ No.' not in headers
     assert '図面' not in headers
-    col = headers.index('ページ No.') + 1
-    assert ws.cell(row=2, column=col).value == 1   # frame(=0) + 1
+
+
+def test_create_region_excel_output_region_list_merges_by_filename_and_name():
+    """`region_rows` に同一ファイル・同一領域名の行が複数（ページ横断）ある場合、
+    面積率・領域内ラベル数・領域内機器符号候補数を合算して1行にまとめる
+    （v3.0.0、`ページ No.` 廃止に伴う仕様）。"""
+    results = _make_region_results()
+    results['circuit.dxf']['region_rows'] = [
+        {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 20.0, 'label_count': 3, 'ref_designator_count': 2},
+        {'id': 1, 'frame': 1, 'name': 'RACK1', 'area_pct': 15.0, 'label_count': 1, 'ref_designator_count': 1},
+        {'id': 2, 'frame': 0, 'name': 'CM DRV, PSW UNIT', 'area_pct': 10.0, 'label_count': 0, 'ref_designator_count': 0},
+    ]
+    wb = _load_wb(create_region_excel_output(results))
+    ws = wb['領域一覧']
+    rows = {row[1]: row for row in ws.iter_rows(min_row=2, values_only=True)}
+    assert rows['RACK1'] == ('circuit.dxf', 'RACK1', 35.0, 4, 3)
+    assert rows['CM DRV, PSW UNIT'] == ('circuit.dxf', 'CM DRV, PSW UNIT', 10.0, 0, 0)
+
+
+def test_create_region_excel_output_region_list_autofilter_and_summary_no_filter():
+    """Summary シート以外の全シートにオートフィルタが設定される（v3.0.0）。"""
+    wb = _load_wb(create_region_excel_output(_make_region_results()))
+    assert wb['Summary'].auto_filter.ref is None
+    assert wb['領域一覧'].auto_filter.ref is not None
+    assert wb['抽出ラベル一覧'].auto_filter.ref is not None
+    assert wb['circuit'].auto_filter.ref is not None
 
 
 def _make_multi_file_region_results():
@@ -551,10 +388,15 @@ def _make_multi_file_region_results():
                  'frame': 0, 'area_pct': 30.0, 'label_count': 6},
             ],
             'frames': 1, 'regions_detected': 1, 'regions_named': 1,
-            'total_in_frame': 6, 'filtered_count': 0, 'final_count': 6,
+            'total_in_frame': 6, 'ref_designator_count': 6,
             'in_region_count': 6,
             'drawing_number': 'EE6492-039-38A',
+            'title': None, 'subtitle': None,
             'region_label_counts': {'RACK1': {'R001': 5, 'GND': 1}},
+            'region_rows': [
+                {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 30.0,
+                 'label_count': 6, 'ref_designator_count': 6},
+            ],
         },
         'b.dxf': {
             'rows': [], 'named': [
@@ -562,10 +404,15 @@ def _make_multi_file_region_results():
                  'frame': 0, 'area_pct': 30.0, 'label_count': 3},
             ],
             'frames': 1, 'regions_detected': 1, 'regions_named': 1,
-            'total_in_frame': 3, 'filtered_count': 0, 'final_count': 3,
+            'total_in_frame': 3, 'ref_designator_count': 3,
             'in_region_count': 3,
             'drawing_number': '',   # 未抽出 → ファイル名にフォールバック
+            'title': None, 'subtitle': None,
             'region_label_counts': {'RACK1': {'R001': 3}},
+            'region_rows': [
+                {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 30.0,
+                 'label_count': 3, 'ref_designator_count': 3},
+            ],
         },
     }
 
@@ -586,7 +433,8 @@ def test_build_region_label_summary_aggregates_across_files():
 
 def test_create_region_excel_output_label_summary_sheet():
     """「領域別ラベル一覧」シートが「領域一覧」の直後に作成され、指定のヘッダー・
-    データ配置になっていること。ファイルに存在しないラベルの個数は 0 で埋まる。"""
+    データ配置になっていること。「機器符号候補」列は「ラベル」列の直左に挿入される
+    （v3.0.0）。ファイルに存在しないラベルの個数は 0 で埋まる。"""
     results = _make_multi_file_region_results()
     wb = _load_wb(create_region_excel_output(results))
 
@@ -594,21 +442,20 @@ def test_create_region_excel_output_label_summary_sheet():
 
     ws = wb['領域別ラベル一覧']
     header = [c.value for c in ws[1]]
-    assert header == ['領域名', 'ラベル', '合計個数', '図番', '個数', '図番', '個数']
+    assert header == ['領域名', '機器符号候補', 'ラベル', '合計個数', '図番', '個数', '図番', '個数']
 
     rows = {}
     for row in ws.iter_rows(min_row=2, values_only=True):
-        rows[row[1]] = row  # ラベルをキーに
+        rows[row[2]] = row  # ラベル（col2）をキー
 
     r001 = rows['R001']
     assert r001[0] == 'RACK1'
-    assert r001[2] == 8
-    assert r001[3] == 'EE6492-039-38A' and r001[4] == 5
-    assert r001[5] == 'b' and r001[6] == 3
+    assert r001[1] == 'Y'   # R001 は機器符号候補パターンに一致
+    assert r001[3] == 8
+    assert r001[4] == 'EE6492-039-38A' and r001[5] == 5
+    assert r001[6] == 'b' and r001[7] == 3
 
     gnd = rows['GND']
-    assert gnd[2] == 1
-    assert gnd[3] == 'EE6492-039-38A' and gnd[4] == 1
-    assert gnd[5] == 'b' and gnd[6] == 0   # file2 に無いラベルは 0
-
-
+    assert gnd[3] == 1
+    assert gnd[4] == 'EE6492-039-38A' and gnd[5] == 1
+    assert gnd[6] == 'b' and gnd[7] == 0   # file2 に無いラベルは 0

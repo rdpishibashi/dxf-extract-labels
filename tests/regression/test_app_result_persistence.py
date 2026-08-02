@@ -97,10 +97,12 @@ def browser():
 
 
 def test_excel_result_persists_after_extract(streamlit_server, browser):
-    """候補モード（既定）+「図面番号・タイトル・サブタイトルを抽出」+
-    「端子一覧を抽出」ON、「領域を検出」OFF（既定）で「ラベルを抽出」を
-    押した直後もExcelダウンロードボタンが表示され続けること
-    （消えずに残ること）を確認する。"""
+    """通常モード（既定）+「端子一覧を抽出」ON、「領域を検出」OFF（既定）で
+    「ラベルを抽出」を押した直後もExcelダウンロードボタンが表示され続けること
+    （消えずに残ること）を確認する。
+
+    v3.0.0で「図面番号・タイトル・サブタイトルを抽出」オプションは廃止された
+    （常に抽出されるようになった）ため、このテストではチェックしない。"""
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     try:
         page.goto(streamlit_server, wait_until='networkidle')
@@ -114,7 +116,6 @@ def test_excel_result_persists_after_extract(streamlit_server, browser):
         # input への click()（force=True でも）は要素がビューポート外にあり失敗する。
         # input に click イベントを直接ディスパッチすることで、実際のマウス座標に
         # 依存せず確実にチェック状態を切り替える。
-        page.get_by_role('checkbox', name='図面番号・タイトル・サブタイトルを抽出').dispatch_event('click')
         page.get_by_role('checkbox', name='端子一覧を抽出').dispatch_event('click')
         page.wait_for_timeout(300)
 
@@ -131,9 +132,12 @@ def test_excel_result_persists_after_extract(streamlit_server, browser):
 
 
 def test_region_mode_excel_result_produced(streamlit_server, browser):
-    """領域検出モード（「領域を検出」ON）+「機器符号（候補）以外も抽出」ONで、
-    領域検出→領域選択を完了→ラベル抽出までエラーなくExcel出力されることを
-    確認する。
+    """領域検出モード（「領域を検出」ON）で、領域検出→領域選択を完了→
+    ラベル抽出までエラーなくExcel出力されることを確認する。
+
+    v3.0.0で「機器符号（候補）以外も抽出」オプションは廃止され、領域検出モードは
+    常に機器符号抽出パイプライン（`ref_designator.build_ref_designator_region_results()`）
+    を経由するようになった。
 
     `app.py` の 809行の単一 `app()` 関数を `_render_intro`/`_render_upload_section`/
     `_render_options_section`/`_render_region_config_form`/
@@ -161,7 +165,6 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
         page.locator('input[type="file"]').set_input_files(SAMPLE_DXF)
         page.wait_for_timeout(1500)
 
-        page.get_by_role('checkbox', name='機器符号（候補）以外も抽出').dispatch_event('click')
         page.get_by_role('checkbox', name='領域を検出').dispatch_event('click')
         page.wait_for_timeout(500)
 

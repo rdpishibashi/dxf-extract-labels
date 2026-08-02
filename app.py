@@ -9,14 +9,14 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(current_dir, 'model')
 sys.path.insert(0, model_path)
 
-from model.extract_labels import extract_labels, process_multiple_dxf_files
+from model.extract_labels import extract_labels
 from model.region_detector import (
-    analyze_dxf_regions, build_region_results, DEFAULT_REGION_CONFIG, regions_overlap,
+    analyze_dxf_regions, DEFAULT_REGION_CONFIG, regions_overlap,
     collect_unique_region_candidate_names, resolve_globally_decided_name,
     is_region_pending_selection, pending_candidates_for_region,
 )
 from model.excel_output import (
-    create_excel_output, create_ref_designator_excel_output, create_region_excel_output,
+    create_ref_designator_excel_output, create_region_excel_output,
 )
 from model.common_utils import save_uploadedfile
 from model import ref_designator
@@ -74,8 +74,7 @@ _EXTRACT_CLEAR_KEYS = [
 _EXTRACT_CLEAR_PREFIXES = ()
 
 _RESTART_CLEAR_KEYS = [
-    'excel_result', 'output_filename', 'processing_settings',
-    'results', 'is_region_mode', 'region_analyses',
+    'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results', 'region_selection_confirmed',
 ]
@@ -93,17 +92,6 @@ def _temp_dxf_file(uploaded_file):
             os.unlink(tmp)
         except OSError:
             pass
-
-
-def _set_processing_settings(also_extract_non_circuit, extract_drawing_numbers_option,
-                              extract_title_option):
-    """「ラベルを抽出」実行時のオプション設定を session_state に記録する
-    （結果表示セクションでの再現・ダウンロード時のファイル名等に使う）。"""
-    st.session_state.processing_settings = {
-        'also_extract_non_circuit': also_extract_non_circuit,
-        'extract_drawing_numbers': extract_drawing_numbers_option,
-        'extract_title': extract_title_option,
-    }
 
 
 def _clear_session_keys(keys=(), prefixes=()):
@@ -151,7 +139,8 @@ def _gather_name_selections(fname, analysis):
     「領域一覧」でチェックされなかった候補は「採用しない」という意思表示と
     みなす（2026-07-30 ユーザー指定）。そのため、候補が0件チェック済みの
     領域はここでは何も返さない（無所属のまま。候補が元々0件の無名領域は
-    呼び出し先の build_region_results 等が自動 "no name" 命名を行う）。
+    呼び出し先の `ref_designator.build_named_regions()` 等が自動 "no name"
+    命名を行う）。
     """
     checked_names = _global_checked_region_names()
     name_selections = {}
@@ -428,20 +417,17 @@ def _render_intro():
     with st.expander("ℹ️ プログラム説明", expanded=False):
         st.info("\n".join([
             "このツールは、DXFファイルからテキスト要素（ラベル）を抽出し、Excelファイルに出力します。"
-            "既定では、図面枠内・図面情報枠（タイトルブロック）外の機器符号"
-            "（Reference Designator）パターンに一致するラベルを抽出します。",
+            "図面枠内・図面情報枠（タイトルブロック）外の全ラベルを抽出し、"
+            "機器符号（Reference Designator）パターンに一致するかどうかを"
+            "各ラベルに「機器符号候補」として付記します。図番・タイトル・"
+            "サブタイトルも常にSummaryシートに記録します。",
             "",
             "**主なオプション：**",
-            "- 機器符号（候補）以外も抽出：OFF（既定）は図面枠内・図面情報枠外の"
-            "機器符号パターンに一致するラベルを抽出します。ONにすると"
-            "図面枠・図面情報枠・パターンの制限なしに全ラベルを抽出します",
-            "- 図面番号・タイトル・サブタイトルを抽出：図番・タイトル・サブタイトルをSummary"
-            "シートに記録します",
             "- 領域を検出：図面枠内の矩形領域を検出し、領域ごとにラベルを分類します",
             "- 端子一覧を抽出：「UNIT内結線図」の図面を対象に、端子台の端子番号を"
             "「TB List」シートに出力します",
             "",
-            "**使用手順（既定モード）：**",
+            "**使用手順：**",
             "1. DXFファイルをアップロードしてください（複数可）",
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」をONにした場合は、「領域を検出」ボタンで矩形領域を検出し、"
@@ -452,11 +438,15 @@ def _render_intro():
             "できません（変更するには「新しい抽出を開始」を押してください）",
             "",
             "**Excelファイルの内容：**",
-            "- Summaryシート：全ファイルの抽出結果概要",
-            "- Totalシート：全ファイル横断のラベル集計（領域検出時も出力されます）",
-            "- 領域一覧・領域別ラベル一覧シート（領域検出時）：検出した領域ごとの集計",
-            "- 各ファイルシート：個別ファイルの抽出ラベル一覧（領域検出時は「領域」列付き）",
+            "- Summaryシート：全ファイルの抽出結果概要（総抽出ラベル数・機器符号候補"
+            "ラベル数・ページ数・検出領域数・図番・タイトル・サブタイトル）",
+            "- 抽出ラベル一覧シート：全ファイル横断のラベル集計（領域検出時も出力されます）",
+            "- 領域一覧・領域別ラベル一覧シート（領域検出時）：検出した領域ごとの集計"
+            "（領域一覧は検出結果にかかわらず検出した全領域を記載します）",
+            "- 各ファイルシート：個別ファイルの抽出ラベル一覧（機器符号候補列付き、"
+            "領域検出時は「領域」列も付きます）",
             "- TB Listシート（端子一覧を抽出時）：端子台ごとの端子番号一覧",
+            "- Summary以外の全シートにはオートフィルタが設定されています",
         ]))
 
 
@@ -479,8 +469,13 @@ def _render_upload_section():
 
 
 def _render_options_section(locked):
-    """オプション欄（機器符号以外も抽出・図番等抽出・領域検出・端子一覧抽出・
-    並び替え・出力ファイル名）を表示し、選択値を dict で返す。
+    """オプション欄（領域検出・端子一覧抽出・並び替え・出力ファイル名）を表示し、
+    選択値を dict で返す。
+
+    v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
+    抽出」の2オプションを廃止した。図面枠内・図面情報枠外の全ラベルを常に抽出し
+    （機器符号候補かどうかはラベルごとの列として出力）、図番・タイトル・
+    サブタイトルも常に抽出する。
 
     `locked` が True（抽出結果表示中）の間は全ウィジェットを disabled にし、
     選択内容を振り返れるが変更できない状態にする。"""
@@ -491,34 +486,7 @@ def _render_options_section(locked):
     col_left, col_right = st.columns(2)
 
     with col_left:
-        # a) 機器符号（候補）以外も抽出（デフォルト OFF = 機器符号（候補）のみ）
-        also_extract_non_circuit = st.checkbox(
-            "機器符号（候補）以外も抽出",
-            value=False,
-            disabled=locked,
-            help="チェックなし（既定）：図面枠内・図面情報枠（タイトルブロック）外の"
-                 "ラベルのうち、機器符号（Reference Designator）パターンに一致する"
-                 "ものだけを抽出します。\n\n"
-                 "チェックあり：図面枠外・図面情報枠内も含め、すべてのラベルを"
-                 "そのまま抽出します（機器符号パターンの判定は行いません）。\n\n"
-                 "【機器符号パターン例】\n"
-                 "• 英文字のみ: CNCNT, FB\n"
-                 "• 英文字+数字+ハイフン任意: R10, CN3, AAC1B4-07\n"
-                 "• 英字-英字+数字: CN-IF2-1\n"
-                 "• 括弧付き（括弧より前で判定）: FB(), MSS(MOTOR), R10(2.2K)"
-        )
-
-        # b) 図面番号・タイトル・サブタイトルを抽出（統合）
-        extract_all_option = st.checkbox(
-            "図面番号・タイトル・サブタイトルを抽出",
-            value=False,
-            disabled=locked,
-            help="図面番号（例：EE6868-500-01C）、タイトル、サブタイトルをサマリーシートに抽出します。"
-        )
-        extract_drawing_numbers_option = extract_all_option
-        extract_title_option = extract_all_option
-
-        # c) 領域を検出（矩形領域抽出機能全体のON/OFF）
+        # a) 領域を検出（矩形領域抽出機能全体のON/OFF）
         enable_region_detection = st.checkbox(
             "領域を検出",
             value=False,
@@ -526,7 +494,7 @@ def _render_options_section(locked):
             disabled=locked,
             help="ONにすると「領域検出の詳細設定」「領域を検出」ボタン「領域一覧」"
                  "「領域の確認」セクションが表示され、矩形領域付きでラベルを抽出できます。"
-                 "OFFにすると通常モード（機器符号のみ抽出等）になります。"
+                 "OFFにすると通常モードになります。"
         )
         if not enable_region_detection:
             # OFF中に前回検出済みの領域データ（region_analyses）が残っていると、抽出時に
@@ -541,14 +509,14 @@ def _render_options_section(locked):
                 keys=['region_analyses', 'region_selection_confirmed'],
                 prefixes=_REGION_DETECT_CLEAR_PREFIXES)
 
-        # d) 端子一覧を抽出
+        # b) 端子一覧を抽出
         extract_terminal_option = st.checkbox(
             "端子一覧を抽出",
             value=False,
             disabled=locked,
             help="タイトルが「UNIT内結線図」の図面を対象に、TBで始まり英大文字・数字が"
                  "続く端子台ラベルに対応する矩形（LINE+CIRCLEで構成）を検出し、矩形内の"
-                 "端子番号を「TB List」シート（Totalシート直後）に出力します。"
+                 "端子番号を「TB List」シート（抽出ラベル一覧シート直後）に出力します。"
                  "「端子台」でユニークをとり、同じ番号が複数ある場合は件数をカッコで"
                  "表示します（例: 7(2)）。\n\n"
                  "サブタイトルが「TB COMPONENT」の図面（端子台の全端子番号一覧ページ）"
@@ -579,10 +547,6 @@ def _render_options_section(locked):
         if not output_filename.endswith('.xlsx'):
             output_filename += '.xlsx'
     return {
-        'also_extract_non_circuit': also_extract_non_circuit,
-        'extract_all_option': extract_all_option,
-        'extract_drawing_numbers_option': extract_drawing_numbers_option,
-        'extract_title_option': extract_title_option,
         'enable_region_detection': enable_region_detection,
         'extract_terminal_option': extract_terminal_option,
         'sort_value': sort_value,
@@ -715,13 +679,18 @@ def _render_region_config_form(enable_region_detection, locked):
     return region_cfg
 
 
-def _render_region_detection_trigger(uploaded_files, region_cfg, extract_all_option):
+def _render_region_detection_trigger(uploaded_files, region_cfg):
     """「領域を検出」ボタンを表示し、押されたら各ファイルを解析して
     `st.session_state['region_analyses']` に格納する。
 
     表示するかどうか（領域検出ON かつ未検出時のみ）は呼び出し元の `app()` が
     判定する。表示される場面は常に「これが次に行うべき唯一の操作」であるため、
-    常に primary（青）で表示する。"""
+    常に primary（青）で表示する。
+
+    図番・タイトル・サブタイトルは v3.0.0で常に抽出する（旧「図面番号・タイトル・
+    サブタイトルを抽出」オプション廃止に伴う）。`extract_labels()` を呼ぶ際は
+    `extract_drawing_numbers_option`/`extract_title_option` を必ずセットで渡す
+    （`Tools/CLAUDE.md` の呼び出し側オプション整合性ルール）。"""
     # ============================================================
     # 領域を検出
     # ============================================================
@@ -732,16 +701,15 @@ def _render_region_detection_trigger(uploaded_files, region_cfg, extract_all_opt
                 for uf in uploaded_files:
                     with _temp_dxf_file(uf) as tmp:
                         analysis = analyze_dxf_regions(tmp, region_cfg)
-                        if extract_all_option:
-                            _, dn_info = extract_labels(
-                                tmp,
-                                extract_drawing_numbers_option=True,
-                                extract_title_option=True,
-                                original_filename=uf.name,
-                            )
-                            analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
-                            analysis['title'] = dn_info.get('title')
-                            analysis['subtitle'] = dn_info.get('subtitle')
+                        _, dn_info = extract_labels(
+                            tmp,
+                            extract_drawing_numbers_option=True,
+                            extract_title_option=True,
+                            original_filename=uf.name,
+                        )
+                        analysis['main_drawing_number'] = dn_info.get('main_drawing_number')
+                        analysis['title'] = dn_info.get('title')
+                        analysis['subtitle'] = dn_info.get('subtitle')
                         analyses[uf.name] = analysis
                 st.session_state['region_analyses'] = analyses
                 _clear_session_keys(
@@ -934,24 +902,23 @@ def _render_region_confirmation_section(enable_region_detection, locked):
 
 
 def _handle_extract_button(uploaded_files, region_cfg, opts):
-    """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常 ×
-    機器符号候補のみ/機器符号以外も抽出）に応じた抽出処理を実行する。
+    """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常）に
+    応じた抽出処理を実行する。
 
     表示するかどうか（結果表示中でない、かつ領域検出OFFまたは検出済み）は
     呼び出し元の `app()` が判定する。表示される場面は常に「これが次に
     行うべき唯一の操作」であるため、常に primary（青）で表示する。
 
-    `opts` の中身をローカル変数へ展開してから本体（元の app() 内コードと
-    完全に同一）を実行する——本体側は変更せず、置換によるキーワード引数名
-    （例: `extract_labels(extract_drawing_numbers_option=True, ...)`)との
-    衝突リスクを避けるため。"""
+    v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
+    抽出」の2オプションを廃止したため、モードは領域付き/通常の2つのみ
+    （旧4分岐から単純化）。図面枠内・図面情報枠外の全ラベルを常に抽出し
+    （機器符号候補かどうかはラベルごとの列として出力）、図番・タイトル・
+    サブタイトルも常に抽出する。`extract_labels()` を呼ぶ際は
+    `extract_drawing_numbers_option`/`extract_title_option` を必ずセットで渡す
+    （`Tools/CLAUDE.md` の呼び出し側オプション整合性ルール）。"""
     extract_terminal_option = opts['extract_terminal_option']
-    also_extract_non_circuit = opts['also_extract_non_circuit']
     sort_value = opts['sort_value']
-    extract_drawing_numbers_option = opts['extract_drawing_numbers_option']
-    extract_title_option = opts['extract_title_option']
     output_filename = opts['output_filename']
-    extract_all_option = opts['extract_all_option']
 
     # ============================================================
     # ラベルを抽出
@@ -970,111 +937,60 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                 terminal_results = st.session_state.get('terminal_results')
 
                 if 'region_analyses' in st.session_state:
-                    # 領域付きモード
+                    # 領域付きモード: 抽出して直ちにExcelを生成する
                     analyses = st.session_state['region_analyses']
+                    ref_data_by_file = {}
+                    for fname, analysis in analyses.items():
+                        uf = next(f for f in uploaded_files if f.name == fname)
+                        with _temp_dxf_file(uf) as tmp:
+                            data = ref_designator.extract_ref_designator_data(
+                                tmp, frame_lineweight=frame_lineweight, original_filename=fname)
+                        data['main_drawing_number'] = analysis.get('main_drawing_number')
+                        data['title'] = analysis.get('title')
+                        data['subtitle'] = analysis.get('subtitle')
+                        ref_data_by_file[fname] = data
 
-                    if also_extract_non_circuit:
-                        # 図面枠制限・機器符号フィルタなしで全ラベルを対象にする
-                        name_selections = {}
-                        for fname, analysis in analyses.items():
-                            name_selections.update(_gather_name_selections(fname, analysis))
-                        region_results = build_region_results(
-                            analyses, name_selections, sort_value, filter_circuit_only=False)
-
-                        st.session_state.excel_result = create_region_excel_output(
-                            region_results, terminal_results=terminal_results)
-                        st.session_state.output_filename = output_filename
-                        st.session_state['is_region_mode'] = True
-                        st.session_state['region_results_summary'] = {
-                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
-                            for f, d in region_results.items()
-                        }
-                        _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
-                    else:
-                        # 機器符号パイプライン: 抽出して直ちにExcelを生成する
-                        ref_data_by_file = {}
-                        for fname, analysis in analyses.items():
-                            uf = next(f for f in uploaded_files if f.name == fname)
-                            with _temp_dxf_file(uf) as tmp:
-                                data = ref_designator.extract_ref_designator_data(
-                                    tmp, frame_lineweight=frame_lineweight, original_filename=fname)
-                            data['main_drawing_number'] = analysis.get('main_drawing_number')
-                            data['title'] = analysis.get('title')
-                            data['subtitle'] = analysis.get('subtitle')
-                            ref_data_by_file[fname] = data
-
-                        name_selections_by_file = {
-                            fname: _gather_name_selections(fname, analyses[fname])
-                            for fname in ref_data_by_file
-                        }
-                        region_results = ref_designator.build_ref_designator_region_results(
-                            ref_data_by_file, analyses, name_selections_by_file, sort_value)
-                        st.session_state.excel_result = create_region_excel_output(
-                            region_results, terminal_results=terminal_results)
-                        st.session_state.output_filename = output_filename
-                        st.session_state['is_region_mode'] = True
-                        st.session_state['region_results_summary'] = {
-                            f: {k: v for k, v in d.items() if k not in ('named', 'rows')}
-                            for f, d in region_results.items()
-                        }
-                        _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
+                    name_selections_by_file = {
+                        fname: _gather_name_selections(fname, analyses[fname])
+                        for fname in ref_data_by_file
+                    }
+                    region_results = ref_designator.build_ref_designator_region_results(
+                        ref_data_by_file, analyses, name_selections_by_file, sort_value)
+                    st.session_state.excel_result = create_region_excel_output(
+                        region_results, terminal_results=terminal_results)
+                    st.session_state.output_filename = output_filename
+                    st.session_state['is_region_mode'] = True
+                    st.session_state['region_results_summary'] = {
+                        f: {k: v for k, v in d.items() if k not in ('named', 'rows', 'region_rows')}
+                        for f, d in region_results.items()
+                    }
 
                 else:
-                    # 通常モード
-                    if also_extract_non_circuit:
-                        original_filenames = [f.name for f in uploaded_files]
-                        with contextlib.ExitStack() as stack:
-                            temp_files = [stack.enter_context(_temp_dxf_file(f))
-                                         for f in uploaded_files]
-                            results_temp = process_multiple_dxf_files(
-                                temp_files,
-                                sort_order=sort_value,
-                                extract_drawing_numbers_option=extract_drawing_numbers_option,
-                                extract_title_option=extract_title_option,
-                                original_filenames=original_filenames,
+                    # 通常モード: 抽出して直ちにExcelを生成する
+                    ref_data_by_file = {}
+                    for uploaded_file in uploaded_files:
+                        with _temp_dxf_file(uploaded_file) as tmp:
+                            data = ref_designator.extract_ref_designator_data(
+                                tmp, frame_lineweight=frame_lineweight,
+                                original_filename=uploaded_file.name)
+                            _, dn_info = extract_labels(
+                                tmp,
+                                extract_drawing_numbers_option=True,
+                                extract_title_option=True,
+                                original_filename=uploaded_file.name,
                             )
+                            data['main_drawing_number'] = dn_info.get('main_drawing_number')
+                            data['source_drawing_number'] = dn_info.get('source_drawing_number')
+                            data['title'] = dn_info.get('title')
+                            data['subtitle'] = dn_info.get('subtitle')
+                        ref_data_by_file[uploaded_file.name] = data
 
-                            results = {}
-                            for temp_file, original_name in zip(temp_files, original_filenames):
-                                if temp_file in results_temp:
-                                    labels, info = results_temp[temp_file]
-                                    info['filename'] = original_name
-                                    results[original_name] = (labels, info)
-
-                        st.session_state.excel_result = create_excel_output(
-                            results, sort_value, terminal_results=terminal_results)
-                        st.session_state.output_filename = output_filename
-                        st.session_state['is_region_mode'] = False
-                        st.session_state.results = results
-                        _set_processing_settings(True, extract_drawing_numbers_option, extract_title_option)
-                    else:
-                        # 機器符号パイプライン: 抽出して直ちにExcelを生成する
-                        ref_data_by_file = {}
-                        for uploaded_file in uploaded_files:
-                            with _temp_dxf_file(uploaded_file) as tmp:
-                                data = ref_designator.extract_ref_designator_data(
-                                    tmp, frame_lineweight=frame_lineweight,
-                                    original_filename=uploaded_file.name)
-                                if extract_all_option:
-                                    _, dn_info = extract_labels(
-                                        tmp,
-                                        extract_drawing_numbers_option=True,
-                                        extract_title_option=True,
-                                        original_filename=uploaded_file.name,
-                                    )
-                                    data['main_drawing_number'] = dn_info.get('main_drawing_number')
-                                    data['source_drawing_number'] = dn_info.get('source_drawing_number')
-                                    data['title'] = dn_info.get('title')
-                                    data['subtitle'] = dn_info.get('subtitle')
-                            ref_data_by_file[uploaded_file.name] = data
-
-                        ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value)
-                        st.session_state.excel_result = create_ref_designator_excel_output(
-                            ref_final, sort_value, terminal_results=terminal_results)
-                        st.session_state.output_filename = output_filename
-                        st.session_state['is_region_mode'] = False
-                        st.session_state['ref_results_summary'] = ref_final
-                        _set_processing_settings(False, extract_drawing_numbers_option, extract_title_option)
+                    ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value)
+                    st.session_state.excel_result = create_ref_designator_excel_output(
+                        ref_final, sort_value, terminal_results=terminal_results)
+                    st.session_state.output_filename = output_filename
+                    st.session_state['is_region_mode'] = False
+                    st.session_state['ref_results_summary'] = ref_final
 
                 st.session_state['download_done'] = False
 
@@ -1084,24 +1000,23 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
 
 
 def _render_results_section():
-    """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。"""
+    """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。
+
+    v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
+    抽出」の2オプションを廃止したため、モードは領域付き/通常の2つのみ
+    （旧3分岐から単純化）。"""
     # ============================================================
     # 抽出結果
     # ============================================================
     if st.session_state.get('excel_result'):
         is_region_mode = st.session_state.get('is_region_mode', False)
-        settings = st.session_state.get('processing_settings', {})
-        candidate_mode = not settings.get('also_extract_non_circuit', False)
 
         if is_region_mode:
             summ = st.session_state.get('region_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルからラベル抽出が完了しました（領域付き）")
-        elif candidate_mode:
+        else:
             summ = st.session_state.get('ref_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルから機器符号の抽出が完了しました")
-        else:
-            results = st.session_state.get('results', {})
-            st.success(f"{len(results)}個のDXFファイルからラベル抽出が完了しました")
 
         with st.expander("📊 抽出結果統計", expanded=False):
             if is_region_mode:
@@ -1112,48 +1027,26 @@ def _render_results_section():
                         rows.append({
                             'ファイル名': f,
                             '総抽出ラベル数': d.get('total_in_frame', 0),
-                            '除外ラベル数': d.get('filtered_count', 0),
-                            '最終ラベル数': d.get('final_count', 0),
-                            '図面枠数': d.get('frames', 0),
+                            '機器符号候補ラベル数': d.get('ref_designator_count', 0),
+                            'ページ数': d.get('frames', 0),
                             '検出領域数': d.get('regions_detected', 0),
                             '確定領域数': d.get('regions_named', 0),
                             '領域内ラベル数': d.get('in_region_count', 0),
                         })
                     st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-            elif candidate_mode:
+            else:
                 summ = st.session_state.get('ref_results_summary', {})
                 rows = []
                 for f, d in summ.items():
-                    row = {
+                    rows.append({
                         'ファイル名': f,
                         '図面枠内ラベル数': d.get('total_in_frame', 0),
-                        '機器符号数': sum(r['個数'] for r in d.get('rows', [])),
-                    }
-                    if settings.get('extract_drawing_numbers'):
-                        row['図番'] = d.get('main_drawing_number', '') or ''
-                        row['流用元図番'] = d.get('source_drawing_number', '') or ''
-                    if settings.get('extract_title'):
-                        row['タイトル'] = d.get('title', '') or ''
-                        row['サブタイトル'] = d.get('subtitle', '') or ''
-                    rows.append(row)
-                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-            else:
-                results = st.session_state.get('results', {})
-                rows = []
-                for file_path, (labels, info) in results.items():
-                    filename = info.get('filename', os.path.basename(file_path))
-                    row = {
-                        'ファイル名': filename,
-                        '総抽出ラベル数': info.get('total_extracted', 0),
-                        '最終ラベル数': info.get('final_count', 0),
-                    }
-                    if settings.get('extract_drawing_numbers'):
-                        row['図番'] = info.get('main_drawing_number', '')
-                        row['流用元図番'] = info.get('source_drawing_number', '')
-                    if settings.get('extract_title'):
-                        row['タイトル'] = info.get('title', '')
-                        row['サブタイトル'] = info.get('subtitle', '')
-                    rows.append(row)
+                        '機器符号候補ラベル数': d.get('ref_designator_count', 0),
+                        '図番': d.get('main_drawing_number', '') or '',
+                        '流用元図番': d.get('source_drawing_number', '') or '',
+                        'タイトル': d.get('title', '') or '',
+                        'サブタイトル': d.get('subtitle', '') or '',
+                    })
                 st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
         download_done = st.session_state.get('download_done', False)
@@ -1218,8 +1111,7 @@ def app():
     region_selection_confirmed = bool(st.session_state.get('region_selection_confirmed'))
 
     if not locked and opts['enable_region_detection'] and not detected:
-        _render_region_detection_trigger(
-            uploaded_files, region_cfg, opts['extract_all_option'])
+        _render_region_detection_trigger(uploaded_files, region_cfg)
 
     _render_global_region_names_section(locked)
 

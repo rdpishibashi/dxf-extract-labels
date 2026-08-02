@@ -24,12 +24,12 @@
 import math
 import gc
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
-from .common_utils import filter_non_circuit_symbols, normalize_width, select_layout_result
+from .common_utils import normalize_width, select_layout_result
 from .ref_designator_patterns import classify_judgment_detailed, matched_confirmed_category
 
 

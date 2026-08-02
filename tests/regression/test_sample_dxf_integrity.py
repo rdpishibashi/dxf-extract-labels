@@ -18,12 +18,21 @@
     （problems / samples / terminal-detector / viewer-error）を固定順で
     先に探すようにして解決した。
 
+カタログ同期（2026-08-02 追加）:
+    `sample-dxf/README.md` は各データが「何を代表するか」を1行で記録した台帳。
+    データを足したのにカタログに書かない、あるいはカタログに残したままデータを
+    消す、のどちらも起きるため、両方向の一致をテストで強制する。
+    後者は特に危険で、テストは `skipif(not os.path.exists(...))` で黙って緑になる
+    （実際に `test_title_extraction.py` が5件中2件しか検証していなかった）。
+
 このテストが守る不変条件:
     1. curated フォルダ間で同名ファイルが存在しないこと
        （存在すると curated 内での優先順位に依存してしまう）
     2. テストが依存する主要データが、期待するフォルダから解決されること
+    3. curated フォルダの実体とカタログ（README.md）が過不足なく一致すること
 """
 import os
+import re
 import sys
 
 import pytest
@@ -32,6 +41,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
+CATALOG_PATH = os.path.join(SAMPLE_DIR, 'README.md')
 
 # `_find_sample()` が固定順で探索する curated フォルダ（実装と同じ順序・同じ集合）。
 # pairC は同名・別内容が設計上正当なため、意図的に含めない。
@@ -52,6 +62,70 @@ def _curated_files():
             if f.lower().endswith('.dxf'):
                 found.setdefault(f, []).append(os.path.join(sub, f))
     return found
+
+
+def _catalog_entries():
+    """README.md のカタログ表から {ファイル名: 説明} を抽出する。
+
+    表の行は `| \\`NAME.dxf\\` | 説明 | 参照元 |` の形式（1行1ファイル）。
+    行頭が `|` かつ第1セルがバッククォート囲みの .dxf のものだけを拾うため、
+    フォルダ構成表・同期テストの説明表などの他の表は自然に除外される。
+    """
+    entries = {}
+    with open(CATALOG_PATH, encoding='utf-8') as fh:
+        for line in fh:
+            if not line.lstrip().startswith('|'):
+                continue
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            if len(cells) < 2:
+                continue
+            m = re.fullmatch(r'`([^`]+\.dxf)`', cells[0])
+            if m:
+                entries[m.group(1)] = cells[1]
+    return entries
+
+
+def test_catalog_covers_all_curated_files():
+    """curated フォルダの全 .dxf がカタログに1行ずつ載っていること。
+
+    載っていないデータは「なぜ必要か」が誰にも分からなくなり、増える一方で
+    消せなくなる。データを追加したらカタログにも1行足すこと
+    （手順は sample-dxf/README.md「データを追加するときの手順」）。
+    """
+    missing = sorted(set(_curated_files()) - set(_catalog_entries()))
+    assert not missing, (
+        'カタログ（sample-dxf/README.md）に未記載のデータがあります。'
+        '「何を代表するか」を1行で追記してください:\n'
+        + '\n'.join(f'  {n}' for n in missing)
+    )
+
+
+def test_catalog_has_no_stale_entries():
+    """カタログに載っているファイルが実在すること。
+
+    実体が消えてもテストは `skipif(not os.path.exists(...))` で黙って緑になる
+    ため、欠落を検出できるのはここだけ。落ちた場合は「データを復元する」か
+    「カタログから削除する」かを**意識的に**選ぶこと。
+    """
+    stale = sorted(set(_catalog_entries()) - set(_curated_files()))
+    assert not stale, (
+        'カタログに載っているが実体が無いデータがあります。'
+        '復元するか、カタログから削除してください:\n'
+        + '\n'.join(f'  {n}' for n in stale)
+    )
+
+
+def test_catalog_entries_have_description():
+    """カタログの各行に説明が書かれていること（空欄・プレースホルダを禁止）。"""
+    blank = sorted(
+        name for name, desc in _catalog_entries().items()
+        if not desc or desc in ('（要記入）', '(要記入)', '-', '—')
+    )
+    assert not blank, (
+        'カタログの説明が未記入の行があります。用途が分からない場合は'
+        '「**用途不明・要調査**」と明記してください（空欄のままにしない）:\n'
+        + '\n'.join(f'  {n}' for n in blank)
+    )
 
 
 def test_no_duplicate_filenames_across_curated_subdirs():

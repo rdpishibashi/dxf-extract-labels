@@ -45,6 +45,16 @@ def _find_sample(name):
     direct = os.path.join(SAMPLE_DIR, name)
     if os.path.exists(direct):
         return direct
+    # curated フォルダを固定順で先に探す（2026-08 追加）。
+    # 下の os.walk による再帰検索は到達順が保証されず、pairC（同一図番の
+    # 比較元/比較先が同名・別内容で並ぶペアデータ）を先に掴むと、テストが
+    # 意図しない版のDXFを読んでしまう。実際に EE6868-500-01C.dxf 等
+    # 9ファイルが該当していた（pairC 側は設計上同名で正しいため、
+    # データではなく探索順で解決する）。
+    for _sub in ('problems', 'samples', 'terminal-detector', 'viewer-error'):
+        _p = os.path.join(SAMPLE_DIR, _sub, name)
+        if os.path.exists(_p):
+            return _p
     for root, _dirs, files in os.walk(SAMPLE_DIR):
         if name in files:
             return os.path.join(root, name)

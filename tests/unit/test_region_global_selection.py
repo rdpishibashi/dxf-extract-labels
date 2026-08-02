@@ -11,7 +11,8 @@
 
 検証済み仕様（2026-07-30 ユーザー指定。「領域一覧」でチェックされなかった
 候補は「採用しない」という明示的な意思表示とみなす方針に統一）:
-  - 候補0件の領域は対象外（自動 "no name" 命名は build_region_results 側）
+  - 候補0件の領域は対象外（自動 "no name" 命名は
+    `ref_designator.build_named_regions()`/`build_all_regions_summary()` 側）
   - 候補1件の領域は「領域一覧」チェックが唯一のゲート（未チェックなら抽出しない）
   - 候補のうちチェック済みがちょうど1件の領域は、その候補を自動採用する
   - 候補のうちチェック済みが2件以上の領域のみ「領域の確認」での個別選択対象になる
@@ -247,7 +248,7 @@ def test_gather_name_selections_checkbox_ui_index_matches_filtered_list():
 
 def test_gather_name_selections_no_candidates_region_excluded():
     """候補0件の領域はここでは何も返さない
-    （build_region_results 等の自動 "no name" 命名に委ねる）。"""
+    （`ref_designator.build_named_regions()` 等の自動 "no name" 命名に委ねる）。"""
     _set_global_checked()
     analysis = {'regions': [_region(3, [])]}
     assert app._gather_name_selections('a.dxf', analysis) == {}

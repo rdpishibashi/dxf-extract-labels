@@ -18,9 +18,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from model.region_detector import (  # noqa: E402
-    analyze_dxf_regions, assign_region_labels, build_region_results,
+    analyze_dxf_regions, assign_region_labels,
     _point_in_polygon, _polygon_area, regions_overlap,
 )
+from model import ref_designator  # noqa: E402
 
 # サンプル DXF はプロジェクト間で共用するため Tools/sample-dxf/ に集約されている。
 # SAMPLE_DIR はプロジェクト直下の symlink（sample-dxf -> ../sample-dxf）経由で参照する。
@@ -92,22 +93,28 @@ def test_no_frame_found_still_populates_labels_for_non_region_pipeline():
 
     従来 `analyze_dxf_regions()` は図面枠が見つからない場合、`result['labels']`
     を空のまま return していた（『領域検出は面積比等の基準計算に図面枠が必須』
-    という理由で、ラベル収集自体もまとめて諦めていた）。`build_region_results()`
-    （「機器符号（候補）以外も抽出」ON時に使用）は `analysis['labels']` だけを
-    頼りにラベルを集計するため、複数図面を一括入力して「領域を検出」を使うと、
-    図面枠が見つからないこのファイルだけラベルが0件になり出力から消えていた
+    という理由で、ラベル収集自体もまとめて諦めていた）。かつて存在した
+    `region_detector.build_region_results()`（v3.0.0で削除、旧「機器符号（候補）
+    以外も抽出」ON時に使用）は `analysis['labels']` だけを頼りにラベルを
+    集計するため、複数図面を一括入力して「領域を検出」を使うと、図面枠が
+    見つからないこのファイルだけラベルが0件になり出力から消えていた
     （2026-07-23 ユーザー報告）。`ref_designator._collect_all_labels_fallback()`
     と同じ「枠制約なし・重複除去のみ」の方針で `result['labels']` を埋めるよう
     修正し、`regions`/`frames`/`error` の意味（『領域探索自体はできない』）は
-    変えていない。"""
+    変えていない。この動作確認は現在の領域付きパイプライン
+    （`ref_designator.build_region_output()`）経由で行う。半角/全角の正規化
+    （`normalize_labels()`）は実際のパイプラインでも `build_region_output()` の
+    手前（`extract_ref_designator_data()` 側）で行われるため、ここでも同じ順序
+    で適用する（`analyze_dxf_regions()` の生ラベルは全角 'ＣＢ００１' のまま）。"""
     a = analyze_dxf_regions(NO_FRAME_LABELS)
     assert a['error'] is not None
     assert a['frames'] == []
     assert a['regions'] == []
     assert len(a['labels']) > 0
 
-    region_results = build_region_results({'EE6892-455B.dxf': a}, {}, 'asc', filter_circuit_only=False)
-    rows = region_results['EE6892-455B.dxf']['rows']
+    normalized = ref_designator.normalize_labels(a['labels'])
+    out = ref_designator.build_region_output(normalized, named=[], sort_value='asc')
+    rows = out['rows']
     assert rows  # 図面枠が無くてもラベル出力自体は空にならない
     cb001 = [r for r in rows if r['ラベル'] == 'CB001']
     assert cb001 and cb001[0]['領域'] == ''  # 領域は割り当てられない（検出領域が無いため）

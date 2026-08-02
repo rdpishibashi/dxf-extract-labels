@@ -106,8 +106,21 @@ def test_normalize_labels_nfkc_and_strip():
 # ---------------------------------------------------------------------------
 
 def test_build_labeled_rows_without_region():
+    """'機器符号候補' 列は R10/CN3 のようなパターン一致ラベルで 'Y' になる
+    （v3.0.0で全ラベルを対象にするようになったため追加された列）。"""
     rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('R10', 10, 10), ('CN3', 5, 5)])
-    assert rows == [{'ラベル': 'CN3', '個数': 1}, {'ラベル': 'R10', '個数': 2}]
+    assert rows == [
+        {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1},
+        {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 2},
+    ]
+
+
+def test_build_labeled_rows_marks_non_matching_label_as_none():
+    """パターンに一致しないラベル（スペース入り等）は '機器符号候補' が None。"""
+    rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('NOTE ONE', 5, 5)])
+    by_label = {r['ラベル']: r['機器符号候補'] for r in rows}
+    assert by_label['R10'] == 'Y'
+    assert by_label['NOTE ONE'] is None
 
 
 def test_build_labeled_rows_with_region():
@@ -118,6 +131,7 @@ def test_build_labeled_rows_with_region():
     by_label = {r['ラベル']: r for r in rows}
     assert by_label['R10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
+    assert by_label['R10']['機器符号候補'] == 'Y'
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +140,7 @@ def test_build_labeled_rows_with_region():
 
 def test_build_named_regions_auto_names_unnamed():
     """名称候補が無い領域は自動命名される。候補がある領域はユーザー選択
-    （name_selections）が無い限り named に含まれない（build_region_results と同じ挙動）。
+    （name_selections）が無い限り named に含まれない。
     無名領域が1個だけの図面では番号を付けず「no name」のみにする（2026-07-23、
     ユーザー指摘: 番号は複数の無名領域を区別するためのものであり、1個しか
     無いのに番号が付くとその意味が伝わらず不安になるため）。"""
@@ -184,10 +198,13 @@ def test_build_region_output_counts_and_sorts():
 # ---------------------------------------------------------------------------
 
 def test_build_ref_designator_final():
+    """'ref_designator_count'（v3.0.0新設）は '機器符号候補'='Y' の行の
+    個数合計。R10/CN3 はいずれもパターンに一致するため 1+1=2。"""
     ref_data_by_file = {
         'a.dxf': {
             'labels': [('R10', 0, 0), ('CN3', 1, 1)],
             'total_in_frame': 5,
+            'frames': 1,
             'warning': None,
             'main_drawing_number': 'EE1234-500-01A',
             'source_drawing_number': None,
@@ -197,13 +214,21 @@ def test_build_ref_designator_final():
     }
     ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value='asc')
     assert ref_final['a.dxf']['rows'] == [
-        {'ラベル': 'CN3', '個数': 1}, {'ラベル': 'R10', '個数': 1}]
+        {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1},
+        {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1},
+    ]
     assert ref_final['a.dxf']['total_in_frame'] == 5
+    assert ref_final['a.dxf']['frames'] == 1
+    assert ref_final['a.dxf']['ref_designator_count'] == 2
     assert ref_final['a.dxf']['main_drawing_number'] == 'EE1234-500-01A'
     assert ref_final['a.dxf']['title'] == 'TITLE-A'
 
 
 def test_build_ref_designator_region_results():
+    """'ref_designator_count'（v3.0.0新設）が 'final_count'/'filtered_count'
+    （旧「機器符号（候補）以外も抽出」用、v3.0.0で廃止）に代わって提供される。
+    'subtitle' も region_results に引き継がれる（v3.0.0、Summaryシートに
+    サブタイトルが表示されないバグの修正）。"""
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     ref_data_by_file = {
         'a.dxf': {'labels': [('R10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 4},
@@ -214,6 +239,8 @@ def test_build_ref_designator_region_results():
             'regions': [{'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 50.0,
                          'name_candidates': [(1.0, 'RACK1')]}],
             'main_drawing_number': 'EE1234-500-01A',
+            'title': 'TITLE-A',
+            'subtitle': 'SUB-A',
         },
     }
     name_selections_by_file = {'a.dxf': {('a.dxf', 0): ['RACK1']}}
@@ -221,11 +248,106 @@ def test_build_ref_designator_region_results():
         ref_data_by_file, region_analyses, name_selections_by_file, sort_value='asc')
     r = results['a.dxf']
     assert r['total_in_frame'] == 4
-    assert r['final_count'] == 2   # R10 + CN3
-    assert r['filtered_count'] == 2   # total_in_frame(4) - final_count(2)
+    assert r['ref_designator_count'] == 2   # R10 + CN3、いずれもパターン一致
+    assert r['subtitle'] == 'SUB-A'
+    assert r['title'] == 'TITLE-A'
+    assert r['drawing_number'] == 'EE1234-500-01A'
     by_label = {row['ラベル']: row for row in r['rows']}
     assert by_label['R10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
+    assert by_label['R10']['機器符号候補'] == 'Y'
+    # region_rows: 領域一覧用の全領域データ（v3.0.0新設）
+    assert len(r['region_rows']) == 1
+    assert r['region_rows'][0]['name'] == 'RACK1'
+    assert r['region_rows'][0]['label_count'] == 1   # RACK1内はR10のみ
+    assert r['region_rows'][0]['ref_designator_count'] == 1
+
+
+# ---------------------------------------------------------------------------
+# build_all_regions_summary（v3.0.0新設: 「領域一覧」用、全領域を対象にする）
+# ---------------------------------------------------------------------------
+
+def test_build_all_regions_summary_includes_unconfirmed_region():
+    """`build_named_regions()` は候補があるが未確定の領域を除外するが、
+    `build_all_regions_summary()` は確定・未確定を問わずすべての領域を対象にする
+    （v3.0.0、要求「検出結果にかかわらず検出した領域をすべて記載」）。"""
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 30.0,
+             'name_candidates': [(1.0, 'FX CHAMBER'), (2.0, 'CM DRV')]},
+        ]
+    }
+    # name_selections が空 = 「領域一覧」で何もチェックされておらず未確定。
+    # build_named_regions() ではこの領域は named に含まれない。
+    named, _ = ref_designator.build_named_regions(analysis, {}, 'a.dxf')
+    assert named == []
+
+    # build_all_regions_summary() は未確定でも候補をカンマ区切りで載せる。
+    rows = ref_designator.build_all_regions_summary(analysis, {}, 'a.dxf', [])
+    assert len(rows) == 1
+    assert rows[0]['name'] == 'FX CHAMBER, CM DRV'
+
+
+def test_build_all_regions_summary_confirmed_region_uses_chosen_name():
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 30.0,
+             'name_candidates': [(1.0, 'FX CHAMBER'), (2.0, 'CM DRV')]},
+        ]
+    }
+    selections = {('a.dxf', 0): ['FX CHAMBER']}
+    rows = ref_designator.build_all_regions_summary(analysis, selections, 'a.dxf', [])
+    assert rows[0]['name'] == 'FX CHAMBER'
+
+
+def test_build_all_regions_summary_no_candidates_uses_no_name():
+    """候補が元々無い領域は build_named_regions() と同じ番号付け規則で
+    "no name" になる（自動確定扱い）。"""
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 30.0, 'name_candidates': []},
+        ]
+    }
+    rows = ref_designator.build_all_regions_summary(analysis, {}, 'a.dxf', [])
+    assert rows[0]['name'] == 'no name'
+
+
+def test_build_all_regions_summary_counts_labels_regardless_of_confirmation():
+    """領域内ラベル数・領域内機器符号候補数は、確定状況に関わらずポリゴン内包
+    判定で数える（v3.0.0、要求「機器符号（候補）以外も抽出オプションに関係なく
+    カウントする」）。未確定領域（'CM DRV' の候補）にもラベルが割り当てられる。"""
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 30.0,
+             'name_candidates': [(1.0, 'CM DRV')]},   # 未確定（候補のみ）
+        ]
+    }
+    labels = [('R10', 10, 10), ('NOTE ONE', 20, 20), ('CN3', 500, 500)]  # 500,500は矩形外
+    rows = ref_designator.build_all_regions_summary(analysis, {}, 'a.dxf', labels)
+    assert rows[0]['label_count'] == 2       # R10・NOTE ONE（矩形内の2件）
+    assert rows[0]['ref_designator_count'] == 1   # うち機器符号候補はR10のみ
+
+
+def test_build_all_regions_summary_does_not_assign_unconfirmed_name_to_labels():
+    """未確定領域の候補名は、ラベル側の '領域' 列（build_labeled_rows等）には
+    影響しない（意図的な非対称。build_all_regions_summary は領域一覧の集計のみ
+    に使う独立した内包判定であり、build_named_regions/build_region_output の
+    named には含まれないため、ラベルの '領域' 列は空のまま）。"""
+    square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    analysis = {
+        'regions': [
+            {'id': 0, 'frame': 0, 'polygon': square, 'area_pct': 30.0,
+             'name_candidates': [(1.0, 'CM DRV')]},
+        ]
+    }
+    labels = [('R10', 10, 10)]
+    named, _ = ref_designator.build_named_regions(analysis, {}, 'a.dxf')
+    rows = ref_designator.build_labeled_rows(labels, named_regions=named)
+    assert rows[0]['領域'] == ''   # 未確定領域には割り当てられない
 
 
 # ---------------------------------------------------------------------------
@@ -358,20 +480,21 @@ def test_titleblock_content_excluded_from_real_sample(sample_name):
     'EE6868-500-01C.dxf',
     'EE6097-039-06C.dxf',
 ])
-def test_output_labels_all_match_candidate_pattern(sample_name):
-    """出力される機器符号はすべて3候補パターンのいずれかに一致すること
-    （判定は括弧より前の部分に対して行う）。除外パターンは廃止されたため、
-    ここでは形式一致のみを検証する。"""
+def test_is_ref_designator_label_flags_are_consistent_with_classify_labels(sample_name):
+    """v3.0.0で `extract_ref_designator_data()['labels']` は枠内・情報枠外の
+    全ラベルを保持するようになった（旧仕様では3候補パターンに一致するものだけに
+    絞り込んでいた）。機器符号候補かどうかの判定自体は `is_ref_designator_label()`
+    に一本化されており、`classify_labels()` で絞り込んだ結果と完全に一致する
+    ことを実データで検証する。"""
     path = _find_sample(sample_name)
     if not path:
         pytest.skip(f'sample DXF not found: {sample_name}')
 
     data = ref_designator.extract_ref_designator_data(
         path, frame_lineweight=100, original_filename=sample_name)
-    for text, _x, _y in data['labels']:
-        judgment = ref_designator._judgment_text(text)
-        assert ref_designator.CANDIDATE_PATTERN.match(judgment), (
-            f'{text!r} does not match CANDIDATE_PATTERN')
+    flagged = {t for t, _x, _y in data['labels'] if ref_designator.is_ref_designator_label(t)}
+    classified = {t for t, _x, _y in ref_designator.classify_labels(data['labels'])}
+    assert flagged == classified
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
@@ -445,10 +568,11 @@ def test_extract_ref_designator_rows_end_to_end():
         path, frame_lineweight=100, original_filename='EE6491-039-04A.dxf')
     assert result['filename'] == 'EE6491-039-04A.dxf'
     assert result['warning'] is None
+    assert result['frames'] > 0
     assert len(result['rows']) > 0
-    # 行データは {'ラベル': str, '個数': int} の形
+    # 行データは {'機器符号候補': str|None, 'ラベル': str, '個数': int} の形（v3.0.0）
     for sample in result['rows'][:5]:
-        assert set(sample.keys()) == {'ラベル', '個数'}
+        assert set(sample.keys()) == {'機器符号候補', 'ラベル', '個数'}
 
 
 def test_formerly_excluded_words_now_appear_when_outside_info_frame():

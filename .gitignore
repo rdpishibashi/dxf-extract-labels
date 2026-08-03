@@ -198,3 +198,8 @@ log*.txt
 # Symlink to the cross-project shared sample DXF pool (Tools/sample-dxf/) —
 # local-machine convenience, not portable across clones.
 /sample-dxf
+
+# Technical documentation (development-only info, not tracked in public repos)
+/TECHNICAL.md
+/CLAUDE.md
+/docs/

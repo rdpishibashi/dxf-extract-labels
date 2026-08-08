@@ -1,0 +1,54 @@
+⏺ GitHub PAT の発行から Streamlit Cloud への登録までの手順です。
+
+  Step 1: GitHub で Fine-grained PAT を発行
+
+  1. https://github.com/settings/tokens?type=beta にアクセス（Fine-grained
+  tokens ページ。ログイン中のGitHubアカウントで開いてください）
+  2. **「Generate new token」**をクリック
+  3. 以下を設定:
+    - Token name: 分かりやすい名前（例: dxf-extract-labels-decision-log）
+    - Expiration:
+  90日など任意の期間（期限切れ後は再発行してSecretsを更新する必要があります）
+    - Repository access: 「Only select
+  repositories」を選び、rdpishibashi/dxf-label-decisions
+  のみを選択（他のリポジトリへの権限は不要）
+  4. Permissions → Repository permissions を開き、Contents を「Read and
+  write」に設定（これ以外の権限は「No access」のままでOK）
+  5. 一番下の 「Generate token」 をクリック
+  6. 表示されたトークン（github_pat_... で始まる文字列）をその場でコピーしてくだ
+  さい（このページを離れると二度と表示されません）
+  
+  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
+
+  Step 2: Streamlit Cloud の Secrets に登録
+
+  1. https://share.streamlit.io にログイン
+  2. 対象アプリの一覧から、このアプリの右側の「⋮」（三点メニュー）→ Settings
+  3. Secrets タブを開く
+  4. 以下を TOML 形式でそのまま貼り付け:
+
+  [github]
+  token = "github_pat_ここにStep1でコピーしたトークン"
+  repo = "rdpishibashi/dxf-label-decisions"
+
+  5. Save をクリック → アプリが自動的に再起動し、この Secrets が反映されます
+
+  Step 3: 動作確認
+
+  1. アプリで DXF ファイルをアップロード →
+  「ラベルを抽出」→「未確定ラベル」で何件かチェック → 「選択完了」
+  2. 抽出結果の画面に「📝
+  GitHub（rdpishibashi/dxf-label-decisions/decision_log.csv）に N
+  件を記録しました」というキャプションが出れば成功です
+  3. 念のため
+  https://github.com/rdpishibashi/dxf-label-decisions/blob/main/decision_log.csv
+  を開き、行が追加されているか確認してください
+
+  補足: ローカルでも同じ設定を試したい場合
+
+  .streamlit/secrets.toml（このプロジェクトにはまだ存在しません）に同じ内容を書
+  けば、ローカル実行でも GitHub 記録をテストできます。ただし現在の .gitignore
+  には secrets.toml
+  の除外ルールがないため、作成する場合は誤ってコミットしないよう .gitignore に
+  .streamlit/secrets.toml
+  を追加することをお勧めします。追加が必要であれば言ってください。

@@ -24,12 +24,13 @@
 import math
 import gc
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_drawing_numbers
-from .common_utils import filter_non_circuit_symbols, normalize_width
+from .common_utils import normalize_width, select_layout_result
+from .ref_designator_patterns import classify_judgment_detailed, matched_confirmed_category
 
 
 # ============================================================
@@ -57,8 +58,8 @@ DEFAULT_REGION_CONFIG = {
     'span_level_merge': False,  # 共線結合のレベルを「スパンを構成した線分だけ」の平均で
                                 # 算出する（既定はレベルクラスタ全体の平均）。レベル汚染
                                 # フォールバック（analyze_dxf_regions 4パス目）が True で使う。
-    'area_ratio': 0.15,         # 単独の領域の最小面積（枠面積比）
-    'group_area_ratio': 0.10,   # 同名複数ピースを合算した場合の最小合計面積（枠面積比）
+    'area_ratio': 0.05,         # 単独の領域の最小面積（枠面積比、整数%比較。v1.9.0で0.15から変更）
+    'group_area_ratio': 0.10,   # 同名複数ピースを合算した場合の最小合計面積（枠面積比、整数%比較）
     'min_face_ratio': 0.005,    # 個々の閉領域として残す最小面積（枠面積比、ノイズ除去）
     'name_max_dist': 10.0,      # 名称ラベルの境界からの最大距離
     'name_min_dist': 1.0,       # 名称ラベルの境界からの最小距離（線分上=0 を除外）
@@ -71,7 +72,28 @@ DEFAULT_REGION_CONFIG = {
     'exclude_connection_point_regions': True,  # 境界に接続点(円)を持つ領域(配線ループ)を除外
     'connection_point_threshold': 1,    # 境界上の接続点がこの数(個数)以上なら除外
     'connection_point_margin': 0.05,   # 接続点が境界線上とみなす座標距離マージン
+    'name_filter_prefixes': (),  # 指定した文字列のいずれかで名称候補が始まる領域は、
+                                 # 面積閾値(area_ratio)を満たさなくても強制的に採用する
+                                 # （前方一致、複数指定可）。判定は normalize_width() で
+                                 # 半角化してから行う（4節「全角/半角混在への対応」の鉄則）。
+                                 # min_face_ratio によるノイズ下限は救済しない。
 }
+
+
+def _area_ratio_met(area, frame_area, ratio):
+    """面積比較を整数%で行う。
+
+    UI表示（`{:.0f}%`、四捨五入）と同じ丸めで面積比を整数化し、設定値（比率、
+    例 0.05）も同様に整数%化した上で `>=` 比較する。フロート同士の直接比較
+    （`area >= frame_area * ratio`）だと、表示上「5%」に見える領域が僅かな
+    誤差で4.99...%と評価され不採用になる、逆に「4%」表示なのに4.5%相当で
+    採用されるといった、表示値と採否が食い違う挙動を防ぐ。
+    """
+    if frame_area <= 0:
+        return False
+    pct = round(100.0 * area / frame_area)
+    ratio_pct = round(ratio * 100)
+    return pct >= ratio_pct
 
 # 内部定数（マジックナンバーの明示）
 _FRAME_MARGIN = 5       # 図面枠フィルタリング時の座標マージン（枠境界に対し ±5 単位で線分を収集）
@@ -102,19 +124,17 @@ def _is_continuous_linetype(e, doc):
     return lt == 'CONTINUOUS'
 
 
-def _collect_region_geometry(msp, cfg):
-    """msp を1回走査し、INSERT も展開して、図面枠線・領域境界線・テキスト・
-    接続点（CIRCLE を含むブロックの INSERT 位置）を収集する。"""
-    frame_lines = []
-    region_lines = []
-    label_entities = []
-    connection_points = []
+def _collect_region_geometry(doc, cfg):
+    """図面枠線・領域境界線・テキスト・接続点（CIRCLE を含むブロックの
+    INSERT 位置）を収集する。レイアウトの選び方は `select_layout_result()`
+    を参照（Model Space に何かあれば常にそちらを使い、完全に空の場合のみ
+    他レイアウトを順に試す。レイアウトをまたいで混在させない）。
+    """
     flw = cfg['frame_lineweight']
     fcol = cfg['frame_color']
     rlw = cfg['region_lineweight']
     rcol = cfg['region_color']
 
-    doc = getattr(msp, 'doc', None)
     _circle_block = {}
 
     def block_has_circle(name):
@@ -129,65 +149,74 @@ def _collect_region_geometry(msp, cfg):
             _circle_block[name] = has
         return _circle_block[name]
 
-    def handle_line(e, owner_handle=None):
-        lw = getattr(e.dxf, 'lineweight', None)
-        col = getattr(e.dxf, 'color', None)
-        if lw == flw and col == fcol:
-            frame_lines.append((e.dxf.start, e.dxf.end))
-        elif (lw == rlw and col == rcol
-              and _is_continuous_linetype(e, doc)):
-            # 領域境界線のみ handle を保持する（行き止まり枝の報告用。virtual_entities()
-            # 由来（INSERT 展開）は handle が None になるため、所属 INSERT の handle で代替）。
-            region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
+    def collect_from_layout(layout):
+        frame_lines = []
+        region_lines = []
+        region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
+        label_entities = []
+        connection_points = []
 
-    region_lines_lp = []  # LWPOLYLINE 由来の境界線（LINE と分離して収集）
+        def handle_line(e, owner_handle=None):
+            lw = getattr(e.dxf, 'lineweight', None)
+            col = getattr(e.dxf, 'color', None)
+            if lw == flw and col == fcol:
+                frame_lines.append((e.dxf.start, e.dxf.end))
+            elif (lw == rlw and col == rcol
+                  and _is_continuous_linetype(e, doc)):
+                # 領域境界線のみ handle を保持する（行き止まり枝の報告用。
+                # virtual_entities() 由来（INSERT 展開）は handle が None に
+                # なるため、所属 INSERT の handle で代替）。
+                region_lines.append((e.dxf.start, e.dxf.end, e.dxf.handle or owner_handle))
 
-    def handle_lwpolyline_lp(e, owner_handle=None):
-        """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
-        lw = getattr(e.dxf, 'lineweight', None)
-        if (lw != rlw or getattr(e.dxf, 'color', None) != rcol
-                or not _is_continuous_linetype(e, doc)):
-            return
-        try:
-            pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)
-        except Exception:
-            return
-        n = len(pts)
-        if n < 2:
-            return
-        handle = e.dxf.handle or owner_handle
-        close_range = n if e.closed else n - 1
-        for i in range(close_range):
-            p0 = pts[i]
-            p1 = pts[(i + 1) % n]
-            if abs(p0[2]) > 1e-6:
-                continue
-            region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1]), handle))
-
-    for e in msp:
-        t = e.dxftype()
-        if t == 'LINE':
-            handle_line(e)
-        elif t == 'LWPOLYLINE':
-            handle_lwpolyline_lp(e)
-        elif t in ('TEXT', 'MTEXT'):
-            label_entities.append(e)
-        elif t == 'INSERT':
-            if block_has_circle(e.dxf.name):
-                ins = e.dxf.insert
-                connection_points.append((ins[0], ins[1]))
+        def handle_lwpolyline_lp(e, owner_handle=None):
+            """LWPOLYLINE の辺を LINE 相当として収集する（別リストへ）。"""
+            lw = getattr(e.dxf, 'lineweight', None)
+            if (lw != rlw or getattr(e.dxf, 'color', None) != rcol
+                    or not _is_continuous_linetype(e, doc)):
+                return
             try:
-                for v in e.virtual_entities():
-                    vt = v.dxftype()
-                    if vt == 'LINE':
-                        handle_line(v, owner_handle=e.dxf.handle)
-                    elif vt == 'LWPOLYLINE':
-                        handle_lwpolyline_lp(v, owner_handle=e.dxf.handle)
-                    elif vt in ('TEXT', 'MTEXT'):
-                        label_entities.append(v)
+                pts = list(e.get_points())  # (x, y, bulge, start_width, end_width)
             except Exception:
-                pass
-    return frame_lines, region_lines, region_lines_lp, label_entities, connection_points
+                return
+            n = len(pts)
+            if n < 2:
+                return
+            handle = e.dxf.handle or owner_handle
+            close_range = n if e.closed else n - 1
+            for i in range(close_range):
+                p0 = pts[i]
+                p1 = pts[(i + 1) % n]
+                if abs(p0[2]) > 1e-6:
+                    continue
+                region_lines_lp.append(((p0[0], p0[1]), (p1[0], p1[1]), handle))
+
+        for e in layout:
+            t = e.dxftype()
+            if t == 'LINE':
+                handle_line(e)
+            elif t == 'LWPOLYLINE':
+                handle_lwpolyline_lp(e)
+            elif t in ('TEXT', 'MTEXT'):
+                label_entities.append(e)
+            elif t == 'INSERT':
+                if block_has_circle(e.dxf.name):
+                    ins = e.dxf.insert
+                    connection_points.append((ins[0], ins[1]))
+                try:
+                    for v in e.virtual_entities():
+                        vt = v.dxftype()
+                        if vt == 'LINE':
+                            handle_line(v, owner_handle=e.dxf.handle)
+                        elif vt == 'LWPOLYLINE':
+                            handle_lwpolyline_lp(v, owner_handle=e.dxf.handle)
+                        elif vt in ('TEXT', 'MTEXT'):
+                            label_entities.append(v)
+                except Exception:
+                    pass
+
+        return frame_lines, region_lines, region_lines_lp, label_entities, connection_points
+
+    return select_layout_result(doc, collect_from_layout, is_empty=lambda r: not any(r))
 
 
 # ============================================================
@@ -224,7 +253,18 @@ def _polygon_corners(poly, tol=0.5):
     return out[start:] + out[:start]
 
 
-def _point_in_polygon(pt, poly):
+def _point_in_polygon(pt, poly, boundary_eps=1e-4):
+    """ラベルが領域境界線ちょうど（浮動小数点誤差の範囲内）にある場合は内側扱いにする。
+
+    手描き図面の座標は完全一致しないため、名称ラベル・機器符号が領域境界と
+    ほぼ同一座標に配置されることがある。素の ray casting は境界上の点を
+    浮動小数点誤差（1e-7オーダー）次第で内外どちらにも倒すため、同じ図面
+    フォーマットの2図面で片方は境界のわずか内側・もう片方はわずか外側という
+    座標になり、後者だけラベルが領域から漏れる不具合が実データで発生した
+    （2026-07-23、CNPG01 が EE6491-039-21A.dxf で領域無しになる report）。
+    """
+    if _dist_point_to_polygon(pt, poly) <= boundary_eps:
+        return True
     x, y = pt
     inside = False
     n = len(poly)
@@ -436,31 +476,65 @@ def detect_drawing_frames(
 ) -> list[tuple[float, float, float, float]]:
     """lineweight=100・color=7 の線分（呼び出し元の `_collect_region_geometry` で
     既にこの2条件で絞り込まれている）から図面枠（複数可）を検出する。
-    枠の縦長辺が左右ペアで横並びになる前提。戻り値: [(xl,xr,y0,y1), ...]
+    戻り値: [(xl,xr,y0,y1), ...]
 
-    注: 枠の縦辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
+    注: 枠の辺が複数線分に分断されている場合（例: ブロック内で line が分割されて
     いるケース）でも正しく検出できるよう、分類後に共線セグメントを結合してから
-    高さ判定を行う。
+    判定する。
 
-    `min_side`（既定0=フィルタなし）: 2026-06-24以前は400.0固定で、縦辺の高さが
-    これ未満の枠（実例: EE6097-039-06C.dxf、高さ277）を取り落としていた。
-    color=7 条件を追加導入したことで、無関係な短い lineweight=100 線分（実例:
-    色5の小さな線分群、サンプル137件で確認）が混入しなくなったため、高さに
-    よる足切りは不要になった。
+    横辺（上辺・下辺）のペアで x スパンが一致するものを1つの枠の候補とし、
+    その両端 x に対応する縦辺（左辺・右辺）が実在するかを確認して初めて枠として
+    採用する（2026-07-26、高さの異なる複数枠が同一 x 位置に左辺を共有する
+    ケースで不具合発覚・修正）。
+
+    旧実装は縦辺のみを使い「全枠が同じ y 範囲を共有する」ことを前提に x 座標を
+    左右ペアへクラスタ化していたが、`_merge_collinear` は同一 x（レベル）上で
+    y 範囲が重なる線分を無条件で1本に結合するため、高さの異なる2つの枠が
+    左辺を共有する場合（`EE6868-516-01A.dxf`: 枠A x:[25,584] y:[10,410]・
+    枠B x:[25,821] y:[20,574]、両枠とも左辺が x≈25）に、枠A・枠Bの左辺
+    （y:[10,410] と y:[20,574]、x=25で重複）が y:[10,574] という実在しない
+    1本の縦辺へ誤結合され、さらに x クラスタが `[25,584,821]` の奇数個（本来
+    4個のはずが左辺の共有で3個）になることでペアリングが崩れ、枠Bの右辺
+    （821）が捨てられて枠Bが検出されず、実際には大面積の領域（`EFEM UPPER`・
+    `SBS1`）を含む枠が丸ごと検出漏れになっていた。横辺は枠A・枠Bで y レベルが
+    異なるため誤結合せず、x スパンの一致で正しく枠ごとに区別できる。
     """
-    _, V = _split_axis_aligned(frame_lines, eps)
-    # 接触/重複する同一 x 上の線分を 1 本に統合してから高さ判定
-    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で 2 分割されているケース）
-    Vm = _merge_collinear(V, eps, bridge=False)
-    tall = [v for v in Vm if (v[2] - v[1]) >= min_side]
-    if len(tall) < 2:
+    H, V = _split_axis_aligned(frame_lines, eps)
+    # 接触/重複する同一レベル上の線分を1本に統合してから判定
+    # （例: EE6888-631-01A.dxf の右辺が y=367.5 で2分割されているケース）
+    Hm = _merge_collinear(H, eps, bridge=False)  # [(y, x0, x1), ...]
+    Vm = _merge_collinear(V, eps, bridge=False)  # [(x, y0, y1), ...]
+    if len(Hm) < 2 or len(Vm) < 2:
         return []
-    xedges = _cluster_1d([v[0] for v in tall], eps)
-    ys = [v[1] for v in tall] + [v[2] for v in tall]
-    y0, y1 = min(ys), max(ys)
+
+    def _has_vertical_coverage(x, y0, y1):
+        return any(abs(vx - x) <= eps and vy0 - eps <= y0 and y1 <= vy1 + eps
+                   for (vx, vy0, vy1) in Vm)
+
+    Hs = sorted(Hm, key=lambda h: h[0])
+    n = len(Hs)
+    used = set()
     frames = []
-    for i in range(0, len(xedges) - 1, 2):
-        frames.append((xedges[i], xedges[i + 1], y0, y1))
+    for i in range(n):
+        if i in used:
+            continue
+        y_i, x0_i, x1_i = Hs[i]
+        for j in range(i + 1, n):
+            if j in used:
+                continue
+            y_j, x0_j, x1_j = Hs[j]
+            if abs(x0_i - x0_j) > eps or abs(x1_i - x1_j) > eps:
+                continue
+            y0, y1 = min(y_i, y_j), max(y_i, y_j)
+            if (y1 - y0) < min_side:
+                continue
+            xl, xr = min(x0_i, x1_i), max(x0_i, x1_i)
+            if _has_vertical_coverage(xl, y0, y1) and _has_vertical_coverage(xr, y0, y1):
+                frames.append((xl, xr, y0, y1))
+                used.add(i)
+                used.add(j)
+                break
+    frames.sort(key=lambda f: (f[0], f[2]))
     return frames
 
 
@@ -679,6 +753,75 @@ def _find_rectilinear_faces(Hm, Vm, eps):
     return faces, dangling_branches
 
 
+def _branch_leaf_points(branch, attach_tol=0.5):
+    """行き止まり枝(branch)の座標グラフの中で、取り付け点(attachment)以外の
+    次数1端点(leaf、枝の"先端")を返す。通常は1点（単純な行き止まり）。"""
+    edges = branch.get('edges') or []
+    deg = {}
+    for (p1, p2) in edges:
+        deg[p1] = deg.get(p1, 0) + 1
+        deg[p2] = deg.get(p2, 0) + 1
+    attachment = branch.get('attachment')
+    leaves = []
+    for pt, d in deg.items():
+        if d != 1:
+            continue
+        if attachment is not None and math.hypot(pt[0] - attachment[0], pt[1] - attachment[1]) <= attach_tol:
+            continue
+        leaves.append(pt)
+    return leaves
+
+
+def _resplit_face_with_dangling(face_poly, dangling_branches, Hm, Vm, fsnap, local_tol, margin=2.0):
+    """1つの閉領域(face_poly)について、その境界に取り付く行き止まり枝のうち
+    「反対側の端点(leaf)も同じ face_poly の境界に近接する」ものがあれば、
+    face_poly の bbox 内だけに限定して面探索をやり直し、未接続だった内部の
+    仕切り線を復元する。
+
+    グローバルな face_snap やレベル平均化方式には一切触れない——溶接が必要と
+    判明した face の bbox 内という限定された範囲でだけ、より緩い許容誤差
+    （`local_tol`、merge_level_tol 由来の上限）で再接続を試みる。これにより、
+    無関係な遠方の線分同士を誤って結合するリスクを避ける（`EE6888-650-01C.dxf`
+    の FL1F①②③、`_merge_collinear` のレベル平均化ドリフトで内部仕切りの
+    T字接合が face_snap=0.1 では繋がらず、外周だけの1領域に誤マージされていた
+    不具合。グローバルな face_snap 拡大・レベル平均化方式変更はいずれも無関係な
+    別ファイルの誤結合を誘発したため、この局所再トレース方式に切替。2026-07-15）。
+
+    戻り値: (sub_faces | None, consumed_branch_ids)。sub_faces は再トレースで
+    2面以上に分割できた場合のみ非Noneのリスト（元のfaceそのものも含む。
+    合体親候補として後段のN子合体親解消に利用する）。consumed_branch_ids は
+    溶接に使った枝を後段の dangling_edges 報告から除外するための識別子集合。
+    """
+    attach_tol = max(fsnap, 0.5)
+    triggered = False
+    consumed = set()
+    for bi, br in enumerate(dangling_branches):
+        att = br.get('attachment')
+        if att is None or _dist_point_to_polygon(att, face_poly) > attach_tol:
+            continue
+        for leaf in _branch_leaf_points(br, attach_tol):
+            if _dist_point_to_polygon(leaf, face_poly) <= local_tol:
+                triggered = True
+                consumed.add(bi)
+                break
+    if not triggered:
+        return None, consumed
+
+    xs = [p[0] for p in face_poly]
+    ys = [p[1] for p in face_poly]
+    bx0, bx1 = min(xs) - margin, max(xs) + margin
+    by0, by1 = min(ys) - margin, max(ys) + margin
+    local_H = [h for h in Hm if by0 <= h[0] <= by1 and h[2] >= bx0 and h[1] <= bx1]
+    local_V = [v for v in Vm if bx0 <= v[0] <= bx1 and v[2] >= by0 and v[1] <= by1]
+    sub_faces, _sub_dangling = _find_rectilinear_faces(local_H, local_V, local_tol)
+    result = [f for f in sub_faces
+              if all(bx0 - 1 <= x <= bx1 + 1 for x, _y in f)
+              and all(by0 - 1 <= y <= by1 + 1 for _x, y in f)]
+    if len(result) <= 1:
+        return None, set()
+    return result, consumed
+
+
 def _resolve_dangling_handles(dangling_branches, raw_lines, tol=0.5):
     """行き止まり枝（枝ごとの端点ペアのリスト＋取り付け点）について、その経路上に
     ある元のLINE/LWPOLYLINE辺の handle と実座標（クラスタ正規化前）を解決する。
@@ -781,6 +924,22 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, circles=None, raw_lines=None
     # 端点接続ベースの面探索（中ほど交差では繋がない）ため、部品矩形の縦線は領域辺の
     # 途中を横切るだけで接続せず、回り込みは発生しない。
     faces, dangling = _find_rectilinear_faces(Hm, Vm, fsnap)
+    # 局所修復（v1.9.1）: 行き止まり枝の反対端点も同じ face の境界に近接する場合、
+    # その face の bbox 内だけに限定して再トレースし、内部仕切りの未接続T字を復元する
+    # （`_resplit_face_with_dangling` 参照）。
+    local_tol = max(mtol, 0.5)
+    expanded_faces = []
+    consumed_branch_idx = set()
+    for f in faces:
+        sub, consumed = _resplit_face_with_dangling(f, dangling, Hm, Vm, fsnap, local_tol)
+        if sub:
+            expanded_faces.extend(sub)
+            consumed_branch_idx |= consumed
+        else:
+            expanded_faces.append(f)
+    faces = expanded_faces
+    if consumed_branch_idx:
+        dangling = [br for bi, br in enumerate(dangling) if bi not in consumed_branch_idx]
     thr = frame_area * cfg.get('min_face_ratio', 0.005)
     regions = []
     seen = set()
@@ -840,11 +999,55 @@ def _is_valid_name_candidate(t, min_letters, exclude_lowercase, exclude_terms,
     # normalize_width で判定するため、全角 ＲＡＣＫ１ 等が「機器符号として
     # 除外されるのに keep-term は素通り」という不整合を防ぐ）。
     up = normalize_width(t).upper()
+    # 矩形領域名称の1文字目に "(" が来ることはない（例: 全角 "（ＣＬＯＳＥ）" は
+    # 状態表示ラベルであり領域名ではない）。途中に "(" を含む名称
+    # （例 "TMP (TMP-1003LM)"）は対象外。
+    if up.strip().startswith('('):
+        return False
     if any(term.upper() in up for term in (exclude_terms or ())):
         return False
     if exclude_circuit_symbols and not any(k.upper() in up for k in (circuit_keep_terms or ())):
-        matched, _ = filter_non_circuit_symbols([t])
-        if matched:
+        # 2026-07-26 変更: `filter_non_circuit_symbols()`（"英字2文字以上"等の
+        # 粗い正規表現）は、正当な領域名（例 `MFFX`）まで機器符号として誤って
+        # 除外していた（ユーザー報告: `DE5027-563-03A.dxf` 図面1/領域3で
+        # `MFFX` が名称候補にならない不具合。`filter_non_circuit_symbols(['MFFX'])`
+        # が「英字のみ2文字以上」パターンに一致し除外していたことが判明）。
+        # `ref_designator.py` の分類（`reference_designator_list.xlsx` の
+        # `RemainingUnclassified`/`ConfirmedDesignators` で実データ検証済み）に
+        # 判定を置き換える。`classify_judgment_detailed()` の3状態
+        # （'no_match'/'excluded'/'candidate'）をそのまま使う必要がある——
+        # ラッパーの `is_ref_designator_candidate()`（'candidate' のみ True）だけで
+        # 判定すると、'no_match'（スペース等を含み機器符号の形にすら一致しない。
+        # 例 `EFEM UPPER`・`SYSTEM I/F BOX` のような複数語の実在領域名）と
+        # 'excluded'（`GND` 等、既知の非designator語で除外）を区別できず、
+        # 複数語の正当な領域名まで丸ごとブロックする重大な回帰を起こした
+        # （実装中に発覚・訂正）。
+        #   - 'no_match'（形状自体が不一致。複数語・スラッシュ等を含む大半の
+        #     実在領域名）→ 除外しない
+        #   - 'excluded' かつ `unit_names` 以外（`GND`・`MOTOR`等、既知の
+        #     非designator語。旧実装でも機器符号として除外されていた）→ 除外する
+        #   - 'excluded' かつ `unit_names`（`CTC`・`EFEM`・`CASE`・`FOUP`・
+        #     `SHIELD`等）→ 除外しない（2026-07-26 ユーザー報告で追加確認:
+        #     `DE5327-405-26A.dxf` 図面1/領域2で `CTC` が領域名候補にならない
+        #     不具合。`unit_names` は「ユニット/モジュール名」であり
+        #     機器符号（候補）ではないという判定用のカテゴリで、領域名としては
+        #     むしろ正当な候補である。common_nouns/cable_colors/titleblock_terms
+        #     等の他の除外カテゴリとは意味が異なるため、`unit_names` のみ例外
+        #     扱いする）
+        #   - 'candidate' かつ確定 Reference Designator（`R10`・`CN3`・`CNCNT`〈追加
+        #     機器符号パターン `added_desig:CN.*` に一致〉等）→ 除外する
+        #   - 'candidate' かつ未確定（`RemainingUnclassified` 相当、例
+        #     `MFFX`・`FB`）→ 除外しない（今回の主目的）
+        # `RACK1` はこの判定に到達する前に `circuit_keep_terms=('RACK',)` の
+        # 分岐で既にバイパスされるため無関係。分類ロジックは
+        # `ref_designator_patterns`（ezdxf/region_detector.py に依存しない
+        # 純粋な文字列判定モジュール、2026-07-26 分割）から使う——
+        # `ref_designator.py`（DXF抽出パイプライン）は region_detector.py に
+        # 依存するため、そちらを import すると循環依存になる。
+        status, cat = classify_judgment_detailed(up, up)
+        if status == 'excluded' and cat != 'unit_names':
+            return False
+        if status == 'candidate' and matched_confirmed_category(up) is not None:
             return False
     return True
 
@@ -948,6 +1151,39 @@ def _dist_to_vertical_edge(pt, vertical_segs):
     return _dist_to_edge_segments(pt, vertical_segs, axis='x')
 
 
+def _dist_and_center_to_edge_segments(pt, segs, axis='y'):
+    """点から最も近いエッジ分節までの垂直距離と、その分節の中点までの沿軸距離
+    （「中央らしさ」）を (distance, center_offset) で返す（`_dist_to_edge_segments`
+    の拡張版。region_name_candidates() の候補順位付け専用。2026-07-26 追加）。
+
+    最も近い分節の決定基準は `_dist_to_edge_segments` と同じ（垂直距離が最小の
+    分節）。center_offset はその分節の中点から点までの沿軸方向の距離で、
+    小さいほど分節（＝辺）の中央寄りに位置することを意味する。
+    """
+    a, b = pt if axis == 'y' else pt[::-1]
+    best_d = float('inf')
+    best_center = 0.0
+    for (a0, a1, eb) in segs:
+        if a0 <= a <= a1:
+            d = abs(b - eb)
+        else:
+            d = math.hypot(a - (a0 if a < a0 else a1), b - eb)
+        if d < best_d:
+            best_d = d
+            best_center = abs(a - (a0 + a1) / 2.0)
+    return best_d, best_center
+
+
+def _dist_and_center_to_bottom_edge(pt, bottom_segs):
+    """`_dist_and_center_to_edge_segments` の下端横エッジ版。"""
+    return _dist_and_center_to_edge_segments(pt, bottom_segs, axis='y')
+
+
+def _dist_and_center_to_vertical_edge(pt, vertical_segs):
+    """`_dist_and_center_to_edge_segments` の縦エッジ版。"""
+    return _dist_and_center_to_edge_segments(pt, vertical_segs, axis='x')
+
+
 def region_name_candidates(
     polygon: list[tuple[float, float]],
     labels: list[tuple[str, float, float]],
@@ -999,8 +1235,25 @@ def region_name_candidates(
       tier_by_text: {text: tier(1|2|3), ...}（`candidates` と同じ重複除去後の
                     エントリに対応。呼び出し側が「この候補がどれだけ確信度が
                     高いか」を判定するために使う）
+
+    並び順（2026-07-26 変更、ユーザー確定）: 「境界線からの距離→辺の中央からの
+    距離→Tier（下辺>上辺）」の順で全候補を横断的にソートする。従来は
+    「Tier→Tier内で距離」の順（Tier1が常にTier2より優先）だったが、
+    `DE5027-558-01B.dxf` 図面3/領域5 で「Tier2（上辺）候補 SY12 RX〈距離4.5、
+    辺の中央からのオフセット2.5＝ほぼ中央〉が、Tier1（下辺）候補
+    IOG B7〈距離7.3、オフセット26.5＝辺の端で中央から大きく外れる〉より
+    直感的に正しい名称であるにもかかわらず、Tier優先のため後方に表示される」
+    という実例が見つかり、Tier絶対優先の設計を距離優先に改めた。距離の比較は
+    表示用に丸めた値（`round(d, 1)`、UIでの表示丸め`{d:.0f}`とは別に内部的に
+    保持している精度）で行う。生の浮動小数点値で比較すると実質的にほぼ確実に
+    詳細が異なり「辺の中央」がタイブレークとして機能しないため（表示上「同じ
+    距離」に見える候補同士でのみ中央寄り・Tierが意味を持つ）。中央からの
+    オフセットは、各候補が実際に最も近いと判定されたエッジ分節（Tier1/2は
+    `_dist_and_center_to_bottom_edge`/`_dist_and_center_to_vertical_edge`、
+    Tier3はエッジという概念が無いため常に0＝タイブレークに寄与しない）の
+    中点からの沿軸距離。
     """
-    def _scan(edge_segs, dist_fn, require_inside):
+    def _scan(edge_segs, dist_center_fn, require_inside):
         cand = []
         for (t, x, y) in labels:
             if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
@@ -1009,31 +1262,32 @@ def region_name_candidates(
                 continue
             if require_inside and not _point_in_polygon((x, y), polygon):
                 continue
-            d = dist_fn((x, y), edge_segs)
+            d, c = dist_center_fn((x, y), edge_segs)
             if min_dist <= d <= max_dist:
-                cand.append((d, t))
+                cand.append((d, c, t))
         return cand
 
     if rotated_edge_roles:
         tier1_side, tier2_side = rotated_edge_roles
         tier1_edges = _vertical_edges_at_extreme(polygon, tier1_side)
         tier2_edges = _vertical_edges_at_extreme(polygon, tier2_side)
-        dist_fn = _dist_to_vertical_edge
+        dist_center_fn = _dist_and_center_to_vertical_edge
     else:
         tier1_edges = _bottom_edges(polygon)
         # Tier2 は上端エッジに加え、L字型等の切り欠き部の下向きエッジも対象にする
         # （切り欠き直上の名称ラベルを拾う。詳細は _notch_bottom_edges docstring）。
         tier2_edges = _top_edges(polygon) + _notch_bottom_edges(polygon)
-        dist_fn = _dist_to_bottom_edge
+        dist_center_fn = _dist_and_center_to_bottom_edge
 
     tiered = []
     for tier, edges in ((1, tier1_edges), (2, tier2_edges)):
         if not edges:
             continue
-        for d, t in _scan(edges, dist_fn, True):
-            tiered.append((tier, d, t))
+        for d, c, t in _scan(edges, dist_center_fn, True):
+            tiered.append((tier, d, c, t))
 
     # Tier1/2 でも候補ゼロの場合のみ、ポリゴン全体の境界への最短距離でフォールバック
+    # （エッジという概念が無いため中央オフセットは常に0＝タイブレークに寄与しない）
     if not tiered:
         for (t, x, y) in labels:
             if not _is_valid_name_candidate(t, min_letters, exclude_lowercase,
@@ -1042,13 +1296,13 @@ def region_name_candidates(
                 continue
             d = _dist_point_to_polygon((x, y), polygon)
             if min_dist <= d <= max_dist:
-                tiered.append((3, d, t))
+                tiered.append((3, d, 0.0, t))
 
-    tiered.sort(key=lambda c: (c[0], c[1]))
+    tiered.sort(key=lambda c: (round(c[1], 1), c[2], c[0]))
     seen = set()
     out = []
     tier_by_text = {}
-    for tier, d, t in tiered:
+    for tier, d, _c, t in tiered:
         if t in seen:
             continue
         seen.add(t)
@@ -1208,6 +1462,57 @@ def _run_region_detection(lines, det_cfg, frames, frame_area, frame_labels,
     return fc, dangling_by_frame
 
 
+def _apply_cross_frame_frequency_ranking(regions):
+    """同一ファイル内の全フレームを横断して集計した出現頻度（同じ候補テキストが
+    何**フレーム**の候補リストに登場するか）を最優先の並び替えキーとして、各
+    領域の `name_candidates` を再ソートする（2026-07-26、ユーザー確定。集計
+    単位を領域数からフレーム数に変更・2026-07-26追加修正）。
+
+    「同じ名称が複数のページ（フレーム）にまたがって繰り返し現れるほど、
+    その名称が本来の領域名である確信度が高い」という考え方に基づく。実例:
+    `EE6892-039-05B.dxf` の図面1/領域0（L字型ポリゴンの切り欠きに、検出漏れの
+    入れ子小領域の名称ラベルが紛れ込んだケース）で、局所的な距離順では
+    「SENSOR I/F B.D-Ⅲ」〈距離1.2、この図面のどの領域にも他に登場しない
+    孤立候補〉が「SYSTEM I/F BOX」〈距離3.6だが、図面2/3/4の大領域候補
+    （面積74.0%/37.3%/47.7%）にも一貫して登場〉より先に表示・既定選択されて
+    しまっていた。頻度優先の並び替えにより SYSTEM I/F BOX が正しく先頭になる。
+
+    集計単位はフレーム数（同名候補を持つ**別フレーム**の個数。同一ファイル内の
+    全フレームを対象、面積による重み付けはしない）。**領域数ではない**点に
+    注意——当初は領域数で数えていたが、`DE5027-563-03A.dxf` 図面3で、同一
+    フレーム内の複数の異なる小領域それぞれの近くに汎用的な機器符号ラベル
+    「IOG B7」（3領域）が偶然登場し、正解の「SY15 FX (NX-SOD400)」〈距離4.5、
+    2領域〉より領域数で上回ってしまい、距離が遠い（7.3）誤った候補が既定に
+    なる不具合が発覚（2026-07-26 ユーザー報告）。両候補とも実際にはフレーム2
+    にしか登場しておらず、「複数ページにまたがる」という頻度シグナルの前提
+    自体が成立していなかった。フレーム数で数えることで、この2候補はどちらも
+    頻度1で同点になり、頻度では決着せず元の距離順（SY15 FXが正しく優先）に
+    フォールバックする。一方 `SYSTEM I/F BOX` は4つの別フレームにまたがるため
+    引き続き頻度4で正しく救済される。
+
+    `name_candidates` は呼び出し時点で distance→center→tier で安定ソート済み
+    であることを前提に、頻度のみをキーにした安定ソートを重ねがけする（同頻度
+    内では元の distance→center→tier順序を保つ）。
+    `_remove_overlap_claimed_candidates()` より前に呼ぶこと（`_tier_by_text`
+    を参照する。同関数はこれを pop するため）。
+    """
+    freq = defaultdict(set)
+    for r in regions:
+        frame = r.get('frame')
+        for t in {t for _d, t in r.get('name_candidates', [])}:
+            freq[t].add(frame)
+
+    for r in regions:
+        cands = r.get('name_candidates', [])
+        if len(cands) <= 1:
+            continue
+        reordered = sorted(cands, key=lambda c: -len(freq[c[1]]))
+        if reordered != cands:
+            r['name_candidates'] = reordered
+            r['default_name'] = reordered[0][1]
+            r['default_name_tier'] = r.get('_tier_by_text', {}).get(reordered[0][1])
+
+
 def _remove_overlap_claimed_candidates(regions):
     """重なる領域同士で、同じ名称候補テキストをより近い側（小さい距離）の領域
     だけに残し、遠い側からは取り除く（`regions_overlap()` が True の領域間のみ）。
@@ -1354,7 +1659,29 @@ def _resolve_complement_faces(regions, frame_area, next_id=None):
     if next_id is None:
         next_id = max((r['id'] for r in regions), default=-1) + 1
 
-    to_remove = {large_i for large_i, _ in pairs}
+    # 同じ large_i に複数の small_i パートナーが見つかる場合がある——大きい方の
+    # 兄弟（B CHAMBER等）との補完ペアに加え、area_ratio 引き下げにより小さい方の
+    # 兄弟（FX CHAMBER相当の形状）自体も独立採用され、同じ large_i の補完
+    # パートナーとして二重にマッチしてしまうケース（`EE6313-545-01D.dxf`
+    # area_ratio=5%で確認: 78.23%の合体面が、63.64%のB CHAMBERとの補完ペア
+    # に加えて、14.59%の独立採用済み小面ともマッチし、両方が処理されて
+    # 「B CHAMBER」の重複と、Tier評価の異なる誤命名〔VACUUM ROBOT FX〕の
+    # 二重領域を生んでいた。2026-07-14 発見・修正）。各 large_i につき面積最大の
+    # small_i のみを基準面として差分抽出に使い、それ以外の small_i は
+    # 「差分抽出で正しい名称のサブ領域として再生成される側の重複」とみなして
+    # 除去する（独立採用時の名称評価〔Tier制〕より、補完面自身の候補順の方が
+    # 正しい名称を選べるため——後者を優先する）。
+    best_small_for_large = {}
+    for large_i, small_i in pairs:
+        cur = best_small_for_large.get(large_i)
+        if cur is None or regions[small_i]['area'] > regions[cur]['area']:
+            best_small_for_large[large_i] = small_i
+    redundant_small = {small_i for large_i, small_i in pairs
+                       if small_i != best_small_for_large[large_i]}
+    pairs = [(large_i, small_i) for large_i, small_i in pairs
+             if small_i == best_small_for_large[large_i]]
+
+    to_remove = {large_i for large_i, _ in pairs} | redundant_small
     new_regions = [r for i, r in enumerate(regions) if i not in to_remove]
 
     for large_i, small_i in pairs:
@@ -1393,65 +1720,80 @@ def _resolve_complement_faces(regions, frame_area, next_id=None):
 
 
 def _detect_union_parents(regions, tol=1.0, area_tol=1.0):
-    """結合親領域（union parent）の {親インデックス: (子Jインデックス, 子Kインデックス)} を返す。
+    """結合親領域（union parent）の {親インデックス: (子インデックス, ...)} を返す。
 
-    横線分または縦線分で 2 分割された兄弟矩形の「合体親」が補完面として誤検出される
-    ケース（例: L CHAMBER / FX CHAMBER を横線分で分割した図面で、親矩形が別の領域
-    として残る）に対応する。_resolve_complement_faces は頂点数の差（large > small）
-    を前提とするため、全領域が 4 頂点の等頂点数ケースは検出できない。
+    横線分または縦線分で複数分割された兄弟矩形の「合体親」が補完面として誤検出
+    されるケース（例: L CHAMBER / FX CHAMBER を横線分で分割した図面で、親矩形が
+    別の領域として残る）に対応する。_resolve_complement_faces は頂点数の差
+    （large > small）を前提とするため、全領域が 4 頂点の等頂点数ケースは検出
+    できない。子の数は2以上の任意数に対応する（v1.9.1、N子一般化。3分割以上の
+    矩形、例 FL1F①②③、を正しく解消するために必要——2子限定の実装では、3つ以上の
+    兄弟に分割された矩形の合体親を検出できず、外周の合体親が誤って独立領域の
+    まま残ってしまう）。
+
+    子候補の絞り込み: 親Pに内包される（regions_overlapかつ面積がPより小さい）
+    候補を面積の大きい順に走査し、既に選んだ候補と重ならないものだけを貪欲に
+    採用する。面積降順で走査するため、入れ子（例: 兄弟候補の内部にたまたま
+    存在する無関係な小さな詳細領域）があっても、外側の正しい兄弟候補が先に
+    選ばれ、内側のノイズ候補は「既選択候補と重なる」として自然に除外される
+    （「内包候補の中から、他の内包候補に内包されないものだけを子とする」という
+    単純な絞り込みだと、正しい兄弟候補がたまたま無関係な小さな入れ子領域を
+    内部に持つだけで誤って子から除外されてしまう。`DE5434-563-03A.dxf` の
+    `SB-1A(FX1)`〔7.70%〕が内部に無関係な小領域〔4.94%〕を持つケースで発覚。
+    2026-07-15）。
 
     検出条件（全て満たす）:
-      1. area(P) ≈ area(Q) + area(R)  ← P が Q と R の合体サイズ
-      2. P の全コーナーが Q.corners ∪ R.corners に含まれる
-      3. regions_overlap(P, Q) かつ regions_overlap(P, R)  ← P が Q/R を内包
-      4. NOT regions_overlap(Q, R)  ← Q と R は非重複な兄弟
+      1. area(P) ≈ Σ area(子)  ← P が子群の合体サイズ
+      2. P の全コーナーが 子群.corners の和集合に含まれる
+      3. 各子について regions_overlap(P, 子)  ← P が子を内包
+      4. 子同士は互いに重ならない（兄弟、貪欲選択により自動的に満たす）
 
-    戻り値: {parent_idx: (child_j_idx, child_k_idx), ...}
+    戻り値: {parent_idx: (child_idx, ...), ...}
     """
     n = len(regions)
     corners = [r['corners'] for r in regions]
     areas = [r['area'] for r in regions]
+    polys = [r['polygon'] for r in regions]
     result = {}
 
     for i in range(n):
-        if i in result:
+        contained = [j for j in range(n) if j != i
+                     and areas[j] < areas[i] - area_tol
+                     and regions_overlap(polys[i], polys[j])]
+        if len(contained) < 2:
             continue
-        for j in range(n):
-            if j == i:
-                continue
-            for k in range(j + 1, n):
-                if k == i:
-                    continue
-                # 条件 1: 面積一致
-                if abs(areas[i] - areas[j] - areas[k]) > area_tol:
-                    continue
-                # 条件 2: P の全頂点が Q∪R の頂点集合に含まれる
-                if not all(
-                    _vertex_in_corner_set(v, corners[j], tol)
-                    or _vertex_in_corner_set(v, corners[k], tol)
-                    for v in corners[i]
-                ):
-                    continue
-                # 条件 3: P は Q/R を内包（重なる）
-                if not regions_overlap(regions[i]['polygon'], regions[j]['polygon']):
-                    continue
-                if not regions_overlap(regions[i]['polygon'], regions[k]['polygon']):
-                    continue
-                # 条件 4: Q と R は互いに重ならない
-                if regions_overlap(regions[j]['polygon'], regions[k]['polygon']):
-                    continue
-                result[i] = (j, k)
-                break
-            if i in result:
-                break
+        contained.sort(key=lambda j: areas[j], reverse=True)
+        selected = []
+        for j in contained:
+            if not any(regions_overlap(polys[j], polys[s]) for s in selected):
+                selected.append(j)
+        if len(selected) < 2:
+            continue
+        # 条件 1: 面積一致
+        if abs(areas[i] - sum(areas[j] for j in selected)) > area_tol:
+            continue
+        # 条件 2: P の全頂点が子群の頂点集合の和に含まれる
+        child_corner_pool = [c for j in selected for c in corners[j]]
+        if not all(_vertex_in_corner_set(v, child_corner_pool, tol) for v in corners[i]):
+            continue
+        result[i] = tuple(selected)
 
     return result
 
 
-def _force_include_union_children(cands_list, area_tol=1.0, corner_tol=1.0):
+def _force_include_union_children(cands_list, frame_area, area_ratio, area_tol=1.0, corner_tol=1.0):
     """面積フィルタ未適用の生候補リスト `cands_list` に対して合体親（union parent）を
     検出し、子側候補のインデックス集合を返す（呼び出し側が面積閾値を問わず採用する
     ために使う）。
+
+    **合体親自身が単独面積閾値を満たす場合のみ**子をバイパス採用する
+    （`frame_area`・`area_ratio` によるゲート）。ゲートが無いと、単独では
+    閾値未満の異名兄弟2つの合体面がたまたま結合されただけの、実体の薄い
+    小さな親（例 1.4%）でも子だけが無条件採用されてしまう（`EE6888-650-01C.dxf`
+    の`（ＣＬＯＳＥ）`0.81%/`ＣＯＭＭＯＮ ＢＯＸ`0.58%が、親`ＣＡＴＨＯＤＥ
+    ＭＡＩＮＴＥＮＡＮＣＥ ＳＷ`1.39%からバイパス採用されていた不具合。
+    ユーザー報告により追加）。`DE5434-563-03A.dxf`の合体親（15.3%）のように
+    親自身が閾値を満たすケースは従来どおり機能する。
 
     通常の採用判定（単独面積>=20%、または同名2ピース合算>=10%）は、兄弟矩形が
     互いに異なる名称を持ち、かつどちらも単独で閾値未満の場合（例:
@@ -1489,11 +1831,12 @@ def _force_include_union_children(cands_list, area_tol=1.0, corner_tol=1.0):
         complement_involved.add(small_i)
     parent_to_children = _detect_union_parents(enriched, tol=corner_tol, area_tol=area_tol)
     child_idx = set()
-    for i, (j, k) in parent_to_children.items():
-        if i in complement_involved or j in complement_involved or k in complement_involved:
+    for i, children in parent_to_children.items():
+        if i in complement_involved or any(c in complement_involved for c in children):
             continue
-        child_idx.add(j)
-        child_idx.add(k)
+        if not _area_ratio_met(enriched[i]['area'], frame_area, area_ratio):
+            continue
+        child_idx.update(children)
     return child_idx
 
 
@@ -1566,7 +1909,7 @@ def _name_union_parent(parent_region, child_regions, labels, cfg,
 
 
 def _resolve_union_parents(regions, labels=None, cfg=None):
-    """結合親領域（2兄弟矩形の合体）を検出し、名称を再探索した上でリストを返す。
+    """結合親領域（N兄弟矩形の合体、N>=2）を検出し、名称を再探索した上でリストを返す。
 
     子領域が採用済みの名称候補を除外し、底辺中央近接条件を加味して
     合体親固有の名称ラベルを探索する（`_name_union_parent` 参照）。
@@ -1587,10 +1930,10 @@ def _resolve_union_parents(regions, labels=None, cfg=None):
         child_indices = {c for cs in parent_to_children.values() for c in cs}
         # フレーム別に「既使用名称」を管理（異なるフレームは独立して同名を許可）
         parent_claimed_by_frame = defaultdict(set)
-        for parent_idx, (child_j, child_k) in parent_to_children.items():
+        for parent_idx, child_idxs in parent_to_children.items():
             parent = regions[parent_idx]
             parent_frame = parent.get('frame', 0)
-            children = [regions[child_j], regions[child_k]]
+            children = [regions[c] for c in child_idxs]
             # 同一フレーム内の非親・非子領域が使用中の名称を除外対象とする
             same_frame_names = {
                 regions[i]['default_name']
@@ -1656,13 +1999,39 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
         frame_lines, region_lines, region_lines_lp, label_entities, connection_points = \
-            _collect_region_geometry(msp, cfg)
+            _collect_region_geometry(doc, cfg)
 
         frames = detect_drawing_frames(frame_lines, cfg['snap'])
         result['frames'] = frames
         if not frames:
-            result['error'] = ('図面枠（太さ %d の線で囲まれた枠）が見つかりませんでした。'
+            # 領域検出（面積比等の計算・矩形領域の列挙）は図面枠が無いと処理を
+            # 継続できないため、「何が実施できなかったか」を明確に伝える文言に
+            # する（ユーザー指摘、2026-07-14）。
+            result['error'] = ('図面枠（太さ %d の線で囲まれた枠）が見つからなかったため、'
+                               '領域探索を実施することができませんでした。'
                                % cfg['frame_lineweight'])
+            # ただし『ラベル抽出』自体は図面枠に依存しないため、
+            # `ref_designator._collect_all_labels_fallback()` と同じ「枠制約
+            # なし・重複除去のみ」の方針で `result['labels']` を埋める。
+            # 従来はここで空のまま return していたため、`analysis['labels']`
+            # のみを参照する呼び出し側（当時の「機器符号（候補）以外も抽出」
+            # ON時の集計処理、v3.0.0で廃止済み）がこの図面のラベルを一切
+            # 集計できず、複数図面入力時にその図面だけラベルが0件になる
+            # 不具合があった（2026-07-23 ユーザー報告: `EE6892-455B.dxf` 等、
+            # Model/Paper Space分離で図面枠が見つからない図面を含む入力で
+            # 「領域を検出」使用時に発生）。
+            seen = set()
+            fallback_labels = []
+            for it in label_entities:
+                _, clean_text, (x, y) = extract_text_from_entity(it)
+                if not clean_text:
+                    continue
+                key = (clean_text, round(x, 1), round(y, 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                fallback_labels.append((clean_text, x, y))
+            result['labels'] = fallback_labels
             return result
         frame_area = (frames[0][1] - frames[0][0]) * (frames[0][3] - frames[0][2])
         result['frame_area'] = frame_area
@@ -1685,8 +2054,21 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
             frame_labels.append((clean_text, x, y))
         result['labels'] = frame_labels
 
-        single_thr = frame_area * cfg['area_ratio']            # 単独領域の閾値(20%)
-        group_thr = frame_area * cfg.get('group_area_ratio', 0.10)  # 同名複数ピース合算の閾値(10%)
+        area_ratio = cfg['area_ratio']                      # 単独領域の閾値（整数%比較）
+        group_ratio = cfg.get('group_area_ratio', 0.10)      # 同名複数ピース合算の閾値（整数%比較）
+        # エスカレーション（LWPOLYLINE追加・90°回転橋渡し・レベル汚染フォールバック）の
+        # 発動判定は、単独採用閾値(area_ratio)とは独立の gate_ratio を用いる。
+        # area_ratio の既定値が15%から5%に変更されたことで、単独採用には満たない
+        # 小さな候補（従来なら「ゼロ件」扱いでエスカレーションが発動していた）が
+        # 5%以上というだけでヒット扱いになり、エスカレーションが発動しなくなる
+        # 副作用があった（`DE5434-553-10B.dxf` の90°回転枠で、LA CHAMBER等の
+        # 小候補が5%を満たすため回転橋渡しパスが走らず、本来27.89%まで正しく
+        # 検出されるはずの `CN I/F B.D TYPE3 (CN-IF3-1A)` が0.94%の断片のまま
+        # 埋もれて消えていた不具合。2026-07-14 発見）。gate_ratio は
+        # area_ratio と 0.15（エスカレーション機構が実データで検証された時点の
+        # 既定値）の大きい方とし、area_ratio を15%以上に設定した場合はその値に
+        # 追従する。
+        gate_ratio = max(area_ratio, 0.15)
         rotated = _is_globally_rotated(label_entities)
         rotated_edge_roles = _rotated_edge_roles(label_entities) if rotated else None
 
@@ -1696,9 +2078,31 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
             lines_for_detection, cfg, frames, frame_area, frame_labels,
             connection_points, rotated_edge_roles)
 
-        def _zero_hit_frame_indices(cands):
+        def _zero_hit_frame_indices(cands, ratio):
             return [fi for fi, cl in enumerate(cands)
-                    if not any(cf['area'] >= single_thr for cf in cl)]
+                    if not any(_area_ratio_met(cf['area'], frame_area, ratio) for cf in cl)]
+
+        def _bbox_key(cf):
+            xs = [p[0] for p in cf['polygon']]
+            ys = [p[1] for p in cf['polygon']]
+            return (round(min(xs)), round(max(xs)), round(min(ys)), round(max(ys)))
+
+        def _merge_cands_lists(base_list, extra_list):
+            """base_list を優先しつつ、extra_list にのみ存在する候補(bbox基準)を
+            追加する（置き換えではなく合算）。base_list に無いbboxの候補だけを
+            追加することで、base_list（LINE-onlyの正しい検出）がextra_list
+            （LWPOLYLINE追加等、corner-partner判定を乱しうるパス）に完全に
+            上書きされて消える事故を防ぐ（`EE6888-639-01A.dxf` の
+            `SYSTEM I/F BOX **`〔4.61%〕がLWPOLYLINE追加パスでは別の誤った
+            候補に化けて消えていた不具合。2026-07-14）。"""
+            seen = {_bbox_key(cf) for cf in base_list}
+            merged = list(base_list)
+            for cf in extra_list:
+                k = _bbox_key(cf)
+                if k not in seen:
+                    seen.add(k)
+                    merged.append(cf)
+            return merged
 
         # LINE だけで閾値超え候補がゼロだった図面枠に限り、LWPOLYLINE を追加して
         # 再検出する（例: EE6888-631-01A.dxf など境界が LWPOLYLINE で描かれた図面
@@ -1711,7 +2115,18 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         # 発覚の手がかりだった。2026-07-12 修正）。
         # LINE でも十分な候補がある図面枠には LWPOLYLINE を追加しない
         # （小部品の LWPOLYLINE が境界線の corner-partner 判定を誤らせるため）。
-        zero_fis = _zero_hit_frame_indices(frame_cands)
+        # このゲートは gate_ratio（area_ratio と 0.15 の大きい方）で判定する
+        # （回転橋渡しパスと同じ理由。`EE6868-405-10A.dxf` の `EFEM UPPER`
+        # 〔LWPOLYLINE追加が必要・29.03%〕が、同じ枠内の他の小候補〔7.33%等〕が
+        # area_ratio(5%)を満たすだけでゼロ扱いされなくなり、LWPOLYLINE追加パスが
+        # 発動しなくなって検出漏れていた不具合。2026-07-14 発見）。
+        # 採用は「置き換え」ではなく「合算」（`_merge_cands_lists`）で行う——
+        # LWPOLYLINE追加は corner-partner 判定を乱し、既に LINE-only で正しく
+        # 検出できていた候補を壊れた別の候補に化けさせて消してしまうことがある
+        # （`EE6888-639-01A.dxf` の `SYSTEM I/F BOX **`〔4.61%〕で確認）。合算に
+        # よって LINE-only の正しい検出を保持したまま、LWPOLYLINE追加でのみ
+        # 見つかる新規候補（`EFEM UPPER`等）だけを追加できる。
+        zero_fis = _zero_hit_frame_indices(frame_cands, gate_ratio)
         if zero_fis and region_lines_lp:
             lines_for_detection = region_lines + region_lines_lp
             sub_frames = [frames[fi] for fi in zero_fis]
@@ -1719,7 +2134,7 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                 lines_for_detection, cfg, sub_frames, frame_area, frame_labels,
                 connection_points, rotated_edge_roles)
             for j, fi in enumerate(zero_fis):
-                frame_cands[fi] = fc2[j]
+                frame_cands[fi] = _merge_cands_lists(frame_cands[fi], fc2[j])
                 dangling_by_frame[fi] = dg2[j]
 
         # それでも閾値超え候補がゼロだった図面枠に限り、かつラベルの過半数が90°回転
@@ -1732,8 +2147,33 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         # 維持する——通常向きの図面枠で「単に検出ゼロ件だったから」をトリガーに横線分
         # も橋渡ししてしまうと、無関係な隣接矩形を誤って結合する副作用があるため
         # （`_is_globally_rotated` 参照）。
+        # このゲートは gate_ratio（area_ratio と 0.15 の大きい方）で判定する。
+        # このパスは既存候補を「置き換える」が、実際には既存候補を包含する
+        # スーパーセットを返す（橋渡しを追加するだけで、既存の境界検出を壊さない）
+        # ため、area_ratio が低く設定されていても、より大きな正しい領域を見逃さない
+        # よう積極的に発動させる（`DE5434-553-10B.dxf` の90°回転枠で、面積の小さい
+        # 候補〔LA CHAMBER 13.59%等〕が5%を満たすため回転橋渡しパスがスキップされ、
+        # 本来27.89%まで正しく検出されるはずの `CN I/F B.D TYPE3 (CN-IF3-1A)` が
+        # 0.94%の断片のまま埋もれて消えていた不具合。2026-07-14 発見・修正）。
+        # 既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: このゲート
+        # （zero_fis のみ）と直前の LWPOLYLINE 追加ゲートは、いずれも独立に
+        # 「ゼロヒットのフレームのみ」で発動する。あるフレームが1件でも
+        # area_ratio を満たす候補（例 EFEM UPPER）を見つけた時点でどちらの
+        # ゲートも素通りするため、「LWPOLYLINE 追加」と「横ギャップ橋渡し」の
+        # "両方" が揃って初めて閉じる入れ子領域（`EE6868-516-01A.dxf` の
+        # `EFEM UPPER` 内部、`#FEC`〈x:85.3-630.8〉・`#FEB`〈x:110.3-618.0〉を
+        # 辺とする2つの入れ子矩形。上辺の一部が LWPOLYLINE 由来かつ複数分節に
+        # 分かれている）は、フレームが既に1件ヒット済みのため両ゲートとも発動
+        # せず、検出されないまま残る（`_detect_regions()` に両方の条件を直接
+        # 渡せば正しく検出できることを確認済み）。「各図面枠は最低1件見つければ
+        # 良い」という現行のエスカレーション設計の構造的な限界であり、解消には
+        # ゲート条件自体の見直し（全フレームで常に両パスを試して結果を合算する
+        # 等）が必要で影響範囲が広いため、既知の限界として受容する
+        # （ユーザー判断。`test_region_extraction.py` の
+        # `test_known_limitation_nested_regions_require_both_escalations`
+        # 参照）。
         det_cfg = cfg
-        zero_fis = _zero_hit_frame_indices(frame_cands)
+        zero_fis = _zero_hit_frame_indices(frame_cands, gate_ratio)
         if zero_fis and rotated:
             det_cfg = dict(cfg)
             det_cfg['bridge_horizontal_gaps'] = True
@@ -1758,11 +2198,11 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
         #   （1ファイル複数図面は同じユニット群の続きを描くため、同名領域が枠をまたいで
         #    現れることを回復の根拠とする）。
         zero_fis = [fi for fi, cl in enumerate(frame_cands)
-                    if not any(cf['area'] >= single_thr for cf in cl)]
+                    if not any(_area_ratio_met(cf['area'], frame_area, gate_ratio) for cf in cl)]
         hit_names = {cf['default_name']
                      for fi, cl in enumerate(frame_cands) if fi not in zero_fis
                      for cf in cl
-                     if cf['area'] >= single_thr and cf['default_name']}
+                     if _area_ratio_met(cf['area'], frame_area, gate_ratio) and cf['default_name']}
         if zero_fis and hit_names:
             cfg_span = dict(det_cfg)
             cfg_span['span_level_merge'] = True
@@ -1771,7 +2211,7 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                 lines_for_detection, cfg_span, sub_frames, frame_area, frame_labels,
                 connection_points, rotated_edge_roles)
             for j, fi in enumerate(zero_fis):
-                if any(cf['area'] >= single_thr and cf['default_name'] in hit_names
+                if any(_area_ratio_met(cf['area'], frame_area, gate_ratio) and cf['default_name'] in hit_names
                        for cf in fc2[j]):
                     frame_cands[fi] = fc2[j]
                     dangling_by_frame[fi] = dg2[j]
@@ -1786,25 +2226,35 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                 if cf['default_name']:
                     by_name[cf['default_name']].append(cf['area'])
             for nm, areas in by_name.items():
-                if len(areas) >= 2 and sum(areas) >= group_thr:
+                if len(areas) >= 2 and _area_ratio_met(sum(areas), frame_area, group_ratio):
                     target_names.add(nm)
 
         # 3) 採用条件: 個別面積>=単独閾値(20%)、または 名称がターゲット（複数ピース合算で
         #    第1図面が閾値超）、または合体親（union parent）の子と確認された候補
-        #    （`_force_include_union_children`、面積閾値を問わず採用。後述）。
+        #    （`_force_include_union_children`、面積閾値を問わず採用。後述）、または
+        #    名称候補が `name_filter_prefixes` のいずれかで前方一致する候補
+        #    （面積閾値を問わず採用。v1.9.3、ユーザー要望: 抽出したい領域名が
+        #    分かっている場合に面積比とは無関係に抽出できるようにする）。
         #    行き止まり枝は、その取り付け点(attachment)が当該領域のポリゴン境界上に
         #    乗るものだけを、その領域の `dangling_edges` として絞り込む（無関係な
         #    部品・他領域の枝を混在させない）。
         attach_tol = max(cfg.get('face_snap', 0.1), 0.5)
+        name_filter_prefixes = [normalize_width(p) for p in cfg.get('name_filter_prefixes', ()) if p]
         regions = []
         rid = 0
         for fi, cands_list in enumerate(frame_cands):
             frame_dangling = dangling_by_frame[fi] if fi < len(dangling_by_frame) else []
-            force_idx = _force_include_union_children(cands_list)
+            force_idx = _force_include_union_children(cands_list, frame_area, area_ratio)
             for cidx, cf in enumerate(cands_list):
-                if not (cf['area'] >= single_thr
+                name_filter_hit = name_filter_prefixes and any(
+                    normalize_width(t).startswith(p)
+                    for _d, t in cf['name_candidates']
+                    for p in name_filter_prefixes
+                )
+                if not (_area_ratio_met(cf['area'], frame_area, area_ratio)
                         or (cf['default_name'] and cf['default_name'] in target_names)
-                        or cidx in force_idx):
+                        or cidx in force_idx
+                        or name_filter_hit):
                     continue
                 region_dangling = [
                     br for br in frame_dangling
@@ -1827,6 +2277,7 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
                 rid += 1
         regions = _resolve_complement_faces(regions, frame_area, next_id=rid)
         regions = _resolve_union_parents(regions, labels=frame_labels, cfg=cfg)
+        _apply_cross_frame_frequency_ranking(regions)
         _remove_overlap_claimed_candidates(regions)
         result['regions'] = regions
 
@@ -1858,99 +2309,78 @@ def assign_region_labels(
     return out
 
 
-def build_region_results(
-    analyses: dict,
-    name_selections: dict,
-    sort_value: str,
-    filter_circuit_only: bool = False,
-) -> dict:
-    """解析結果とユーザーがチェックした名称から、ファイルごとの領域付きラベル集計を構築する。
+def collect_unique_region_candidate_names(analyses: dict) -> list[str]:
+    """全ファイル・全領域の名称候補（単一候補領域・複数候補領域を問わず）から、
+    NFKC正規化（半角統一）した上でユニークな名称一覧をABC順で返す。
 
-    name_selections: {(filename, region_id): [チェックされた名称, ...]}
-    filter_circuit_only: True のとき機器符号のみを対象とする（非機器符号を除外）。
-
-    出力（集計・記録）の領域名・ラベルは `normalize_width()` で半角へ統一する。
-    図面上の表記が半角/全角どちらでも同じ語は同じ行に集計され、全角の機器符号も
-    正規化後に機器符号フィルタで正しく判定される。
+    「領域一覧」チェックリスト（app.py）の選択肢構築に使う。1つの領域が
+    複数の候補を持つ場合、その全候補（先頭の最有力候補だけでなく）を対象に
+    含める——ユーザーがどの候補を採用するかをこの一覧から選べるようにするため。
     """
-    region_results = {}
-    for fname, analysis in analyses.items():
-        named = []
-        named_region_ids = set()
-        no_name_idx = 0
+    names = set()
+    for analysis in analyses.values():
         for reg in analysis.get('regions', []):
-            chosen_names = name_selections.get((fname, reg['id']), [])
-            if not chosen_names and not reg.get('name_candidates'):
-                no_name_idx += 1
-                chosen_names = [f"no name {no_name_idx}"]
-            for nm in chosen_names:
-                if not nm:
-                    continue
-                named.append({
-                    'polygon': reg['polygon'], 'name': normalize_width(nm),
-                    'id': reg['id'], 'frame': reg['frame'], 'area_pct': reg['area_pct'],
-                })
-                named_region_ids.add(reg['id'])
+            for (_dist, text) in reg.get('name_candidates', []):
+                names.add(normalize_width(text))
+    return sorted(names)
 
-        all_labels = [(normalize_width(t), x, y)
-                      for (t, x, y) in analysis.get('labels', [])]
 
-        if filter_circuit_only:
-            texts = [l[0] for l in all_labels]
-            matched, _ = filter_non_circuit_symbols(texts)
-            matched_set = set(matched)
-            labels = [l for l in all_labels if l[0] in matched_set]
-            filtered_count = len(all_labels) - len(labels)
-        else:
-            labels = all_labels
-            filtered_count = 0
+def _matched_checked_candidates(reg: dict, checked_names: set) -> list:
+    """領域の候補（`name_candidates`）のうち、「領域一覧」でチェック済みの
+    名称と一致するものだけを、元の並び順（Tier→距離順）を保ったまま返す。
 
-        assigned = assign_region_labels(labels, named)
+    「領域一覧」でチェックされなかった候補は「採用しない」という明示的な
+    意思表示とみなすため（2026-07-30 ユーザー指定）、この関数は常に
+    チェック済みの候補のみを対象にする——未チェックの候補を「まだ判断
+    していないので個別確認に回す」形で残すことはしない。
+    """
+    return [
+        (d, t) for (d, t) in reg.get('name_candidates', [])
+        if normalize_width(t) in checked_names
+    ]
 
-        cnt = Counter()
-        region_of = defaultdict(set)
-        in_region_count = 0
-        label_count_per_region = defaultdict(int)
-        region_label_counts = defaultdict(Counter)
-        for (text, x, y, names) in assigned:
-            cnt[text] += 1
-            if names:
-                in_region_count += 1
-            for n in names:
-                region_of[text].add(n)
-                label_count_per_region[n] += 1
-                region_label_counts[n][text] += 1
 
-        rows = [
-            {'ラベル': t, '個数': cnt[t], '領域': ', '.join(sorted(region_of[t]))}
-            for t in cnt
-        ]
-        if sort_value == 'asc':
-            rows.sort(key=lambda r: r['ラベル'])
-        elif sort_value == 'desc':
-            rows.sort(key=lambda r: r['ラベル'], reverse=True)
+def resolve_globally_decided_name(reg: dict, checked_names: set) -> str | None:
+    """領域の候補のうち、「領域一覧」でチェック済みの名称がちょうど1件だけ
+    一致する場合、その候補名を返す（自動決定）。
 
-        for r in named:
-            r['label_count'] = label_count_per_region.get(r['name'], 0)
+    一致が0件（どの候補も「領域一覧」でチェックされていない＝ユーザーは
+    この領域にはどの名称も採用しないことを選んでいる）、または2件以上
+    （どちらを採用するかまだ決められない）の場合は None を返す
+    （2026-07-30、ユーザー指定により変更。旧仕様では2件以上一致時に
+    最優先の候補を自動採用していたが、複数のチェック済み候補が同一領域に
+    競合する場合は「領域の確認」での個別選択に委ねる方針に統一した）。
+    """
+    matched = _matched_checked_candidates(reg, checked_names)
+    if len(matched) == 1:
+        return matched[0][1]
+    return None
 
-        region_results[fname] = {
-            'rows': rows,
-            'named': named,
-            'frames': len(analysis.get('frames', [])),
-            'regions_detected': len(analysis.get('regions', [])),
-            'regions_named': len(named_region_ids),
-            'total_in_frame': len(all_labels),
-            'filtered_count': filtered_count,
-            'final_count': len(labels),
-            'in_region_count': in_region_count,
-            'drawing_number': analysis.get('main_drawing_number') or '',
-            'region_label_counts': {n: dict(c) for n, c in region_label_counts.items()},
-        }
-    return region_results
+
+def pending_candidates_for_region(reg: dict, checked_names: set) -> list:
+    """「領域の確認」でこの領域に提示すべき候補（＝「領域一覧」でチェック済み
+    のものだけ）を、元の並び順を保ったまま返す。`is_region_pending_selection()`
+    が True を返す領域（チェック済み候補が2件以上）に対して使う。未チェックの
+    候補は選択肢自体に含めない（2026-07-30 ユーザー指定）。
+    """
+    return _matched_checked_candidates(reg, checked_names)
+
+
+def is_region_pending_selection(reg: dict, checked_names: set) -> bool:
+    """「領域の確認」でファイルごとの個別選択が必要な領域かどうかを返す。
+
+    領域の候補のうち「領域一覧」でチェック済みのものがちょうど2件以上ある
+    場合のみ True（＝チェック済み候補同士でどちらを採用するか、まだ決め
+    られないケース）。チェック済みが1件なら `resolve_globally_decided_name()`
+    により自動決定され、0件なら「どの候補も採用しない」とみなしてここでも
+    対象にしない（2026-07-30、ユーザー指定）。
+    """
+    return len(_matched_checked_candidates(reg, checked_names)) >= 2
 
 
 def build_region_label_summary(region_results: dict) -> tuple[list[tuple[str, str]], list[dict]]:
-    """`build_region_results()` の結果から、領域名ごとに全ファイル横断でラベルを
+    """機器符号抽出パイプライン（`ref_designator.build_ref_designator_region_results()`）
+    が構築した region_results から、領域名ごとに全ファイル横断でラベルを
     集計した「領域別ラベル一覧」用の行データを構築する。
 
     領域名は同名であれば複数ファイルにまたがって1グループに合算される

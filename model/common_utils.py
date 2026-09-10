@@ -1,8 +1,48 @@
 import os
 import tempfile
-import traceback
 import re
 import unicodedata
+
+def select_layout_result(doc, collect_from_layout, is_empty):
+    """Model Space を優先し、`collect_from_layout(layout)` の結果が
+    `is_empty(result)` を満たす（＝空）場合のみ Model 以外のレイアウトを
+    順に試す共通ヘルパー。**同一レイアウト内で完結した収集結果のみを返す**
+    （レイアウトをまたいで混在させない）。
+
+    Model Space と Paper Space は完全に独立した座標系であり、一方の
+    レイアウトで見つけた図面枠のbboxを、別レイアウトのラベル・図形に対する
+    「枠内か」の判定に使うと、座標が対応せず正しい要素が誤って除外される
+    （`EE6892-455B.dxf`: 図面枠はPaper Space〈`ICADSX Layout`〉のみに存在する
+    一方、実際の機器符号ラベル`CB001`等はModel Spaceにあり、Paper Space
+    由来の枠bboxでModel Spaceのラベルをフィルタすると大半が「枠外」と誤判定
+    され出力から消える不具合が発生した。2026-07-14ユーザー報告。
+    `region_detector.py`・`ref_designator.py`・`terminal_detector.py` の
+    3モジュールに共通する設計方針のため、ここに集約する。2026-07-26、
+    region_detector.py から common_utils.py へ移設——ジオメトリ・領域検出
+    ロジックに依存しない汎用ヘルパーであり、3モジュールの共通依存先として
+    ドメイン特化モジュールより common_utils.py の方が適切なため）。
+
+    Args:
+        doc: ezdxf Document
+        collect_from_layout: layout を受け取り、その1レイアウトに閉じた
+            収集結果を返す関数（呼び出し側で定義する。戻り値の型は自由）
+        is_empty: collect_from_layout の戻り値を受け取り、「内容が空か」を
+            判定する関数
+    """
+    result = collect_from_layout(doc.modelspace())
+    if not is_empty(result):
+        return result
+
+    try:
+        for layout in doc.layouts:
+            if layout.name != 'Model':
+                alt_result = collect_from_layout(layout)
+                if not is_empty(alt_result):
+                    return alt_result
+    except Exception:
+        pass
+
+    return result
 
 def save_uploadedfile(uploadedfile):
     """アップロードされたファイルを一時ディレクトリに保存する"""
@@ -20,13 +60,6 @@ def normalize_width(text):
     if not text:
         return text
     return unicodedata.normalize('NFKC', text)
-
-def handle_error(e, show_traceback=True):
-    """エラーを適切に処理して表示する"""
-    import streamlit as st
-    st.error(f"エラーが発生しました: {str(e)}")
-    if show_traceback:
-        st.error(traceback.format_exc())
 
 def filter_non_circuit_symbols(labels, debug=False):
     """
@@ -100,7 +133,7 @@ def process_circuit_symbol_labels(labels, filter_non_parts=False, validate_ref_d
         labels: 処理対象のラベルリスト
         filter_non_parts: 機器符号以外のラベルをフィルタリングするかどうか
         validate_ref_designators: 未使用（機器符号妥当性チェック機能は v1.6.0 で削除）。
-            `utils/extract_labels.py`（DXF-diff-manager とバイト一致コピーを維持する
+            `model/extract_labels.py`（DXF-diff-manager とバイト一致コピーを維持する
             共有ファイル）がこの引数を渡し続けるため、シグネチャ互換のためだけに残す。
         debug: デバッグ情報を表示するかどうか
 

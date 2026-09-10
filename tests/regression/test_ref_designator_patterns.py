@@ -11,9 +11,11 @@
 検証済み仕様（2026-07-26 確定、reference_designator_candidates.xlsx が正）:
   - パターン: 英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ
   - 判定は括弧より前の部分に対して行う（R10(2.2K) → R10 で判定）
-  - 除外: 単一英大文字・末尾+-・AWG・RACK*・図番・JIS/DWG*・A/B+数字・PE+数字・
+  - 除外: 単一英大文字・末尾+-・AWG・RACK*・図番・A/B+数字・PE+数字・
     L/N/P+数字・X+英字・数字4桁以上連続（配線ラベル）、および
     普通名詞/回路説明/ユニット名/ケーブル色/図面情報枠語の完全一致リスト
+    （旧 jis_dwg_prefix〈JIS*/DWG*〉カテゴリは2026-09-10に削除。
+    `test_jis_dwg_prefix_category_removed` 参照）
   - 追加パターン（reference_deginator_pattern_added.txt、2026-07-26）
 """
 import os
@@ -52,6 +54,33 @@ def test_candidate_pattern_rejects(label):
     assert rdp.is_ref_designator_candidate(label) is False
 
 
+@pytest.mark.parametrize('label,category', [
+    ('X14A', 'letters_digits_letters'),
+    ('RMSS2A', 'letters_digits_letters'),
+    ('AB12CD34', 'letters_digits_letters_digits'),
+    ('R10A1', 'letters_digits_letters_digits'),
+    ('CN1-IF2-1A', 'letters_digits_hyphen_alnum2'),
+    ('AB12-CD-EF', 'letters_digits_hyphen_alnum2'),
+])
+def test_new_candidate_pattern_categories_2026_09_10(label, category):
+    """2026-09-10 ユーザー指示で追加した3カテゴリ（英字繰返し+数字繰返し+
+    英字繰返し／同+数字繰返し／英字繰返し+数字繰返し-英数字繰返し-英数字繰返し）
+    が `matched_pattern_name()` で正しく識別されることを固定する。"""
+    assert rdp.is_ref_designator_candidate(label) is True
+    assert rdp.matched_pattern_name(label) == category
+
+
+def test_new_candidate_patterns_do_not_change_acceptance_set():
+    """追加した3カテゴリは既存の hyphen_letters_digits_any / letters_digits_any
+    に文字列集合として完全に包含されるため、CANDIDATE_PATTERN が受理する
+    文字列集合自体は変化しない（2026-09-10 実装時に長さ6以下・英字A-C/数字0-2/
+    ハイフンの総当たりで確認済み）。ここでは代表的なラベル形で候補判定の
+    真偽が変わらないことを固定する（変わってよいのは matched_pattern_name()
+    が返すカテゴリ名のみ）。"""
+    for label in ('X14A', 'RMSS2A', 'AB12CD34', 'CN1-IF2-1A', 'R10', 'FB', 'CN3'):
+        assert rdp.is_ref_designator_candidate(label) is True
+
+
 # ---------------------------------------------------------------------------
 # is_ref_designator_candidate — 除外パターン（ExclusionPatterns シートが正）
 # ---------------------------------------------------------------------------
@@ -65,8 +94,6 @@ def test_candidate_pattern_rejects(label):
     ('RACK1-2', 'rack_prefix'),
     ('EE1234-500-01A', 'drawing_number'),
     ('DE3527-553-05B', 'drawing_number'),
-    ('JIS123', 'jis_dwg_prefix'),
-    ('DWGNO', 'jis_dwg_prefix'),
     ('A1', 'terminal_row_letter_digit'),
     ('B12', 'terminal_row_letter_digit'),
     ('PE1', 'earth_terminal_digit'),
@@ -91,6 +118,35 @@ def test_candidate_pattern_rejects(label):
 def test_exclusion_categories(label, reason):
     assert rdp.is_ref_designator_candidate(label) is False, (
         f'{label} should be excluded ({reason})')
+
+
+def test_jis_dwg_prefix_category_removed():
+    """`jis_dwg_prefix`（JIS*/DWG*、図面情報枠）は2026-09-10にEXCLUSION_REGEX_
+    CATEGORIESから削除した（ユーザー指示：図面情報枠内は図面情報枠の幾何検出
+    〈`_detect_info_frame_bbox()`〉で事前にスコープ外となっているため、
+    コンテンツベースの除外は不要という判断）。カテゴリ自体が存在しないことを
+    固定する。"""
+    assert not any(name == 'jis_dwg_prefix' for name, _rx, _desc in rdp.EXCLUSION_REGEX_CATEGORIES)
+
+
+def test_dwgno_is_candidate_after_jis_dwg_prefix_removal():
+    """`DWGNO` はjis_dwg_prefix削除後、他のどの除外パターンにも該当しないため
+    候補になる（`region_detector.py`の領域名候補フィルタでの取り扱いが変わる。
+    ただし主抽出パイプライン`extract_ref_designator_data()`はv2.0.0以降
+    除外パターンを使わないため、Excel出力のラベル行自体には影響しない
+    — 詳細はdocs/REF_DESIGNATOR.md「廃止された除外/追加/確定パターン」節参照）。"""
+    assert rdp.is_ref_designator_candidate('DWGNO') is True
+
+
+def test_jis123_still_excluded_via_unrelated_added_pattern():
+    """`JIS123` はjis_dwg_prefix削除後も除外されたままだが、その理由は
+    jis_dwg_prefixではなく、別途2026-07-26にユーザー確定した追加除外パターン
+    （ADDED_EXCLUSION_PATTERNS の `J.*`）が偶然JIS*も含めて広く一致するため
+    （added_excl:J.* — JIS以外のJ始まりの文字列も除外する、別目的の
+    確定済みリストであり、今回のjis_dwg_prefix削除の対象外）。"""
+    assert rdp.is_ref_designator_candidate('JIS123') is False
+    _status, category = rdp.classify_judgment_detailed('JIS123', 'JIS123')
+    assert category == 'added_excl:J.*'
 
 
 def test_x_plus_digit_is_not_excluded():

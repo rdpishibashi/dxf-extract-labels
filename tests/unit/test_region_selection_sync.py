@@ -19,9 +19,19 @@ import app  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def fresh_session_state():
+    # `st.session_state` を辞書に差し替えて Streamlit ランタイム無しにテストする
+    # 手法（本ファイルの docstring 参照）。ただし単純に `st.session_state = {}` で
+    # 終わらせると、本来モジュール属性として存在する `SessionStateProxy`
+    # インスタンスがテスト後も空dictのまま残ってしまい、同一プロセス内で後から
+    # 実行される `streamlit.testing.v1.AppTest` ベースのテストの session_state
+    # 分離が壊れる（2026-09-10、`test_region_list_no_candidates_message.py`
+    # 実装時にこの汚染により不可解な失敗を発見・修正——テスト実行順序に
+    # 依存する形で他テストの session_state が漏れ込んでいた）。
+    # 元の（本物の）オブジェクトを保存し、テスト後に必ず復元する。
+    original_session_state = st.session_state
     st.session_state = {}
     yield
-    st.session_state = {}
+    st.session_state = original_session_state
 
 
 def _region(fname, reg_id, polygon, candidates):

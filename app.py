@@ -21,6 +21,7 @@ from model.excel_output import (
 from model.common_utils import save_uploadedfile
 from model import ref_designator
 from model import terminal_detector
+from config import region_detection_config
 
 
 def handle_error(e, show_traceback=True):
@@ -28,21 +29,6 @@ def handle_error(e, show_traceback=True):
     st.error(f"エラーが発生しました: {str(e)}")
     if show_traceback:
         st.error(traceback.format_exc())
-
-# 領域境界線の色(ACI)選択肢: AutoCAD標準の基本9色（実データで境界線に使われる
-# 色はほぼこの範囲に収まる）。保存済み設定値がこの範囲外（カスタム値）の場合は
-# 表示時に動的に追加し、値を失わないようにする（app()内 frm_region_color 参照）。
-_ACI_COLOR_CHOICES = [
-    (1, "1: 赤"),
-    (2, "2: 黄"),
-    (3, "3: 緑"),
-    (4, "4: シアン"),
-    (5, "5: 青"),
-    (6, "6: マゼンタ"),
-    (7, "7: 白/黒"),
-    (8, "8: グレー"),
-    (9, "9: 明るいグレー"),
-]
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -492,9 +478,10 @@ def _render_options_section(locked):
             value=False,
             key='enable_region_detection',
             disabled=locked,
-            help="ONにすると「領域検出の詳細設定」「領域を検出」ボタン「領域一覧」"
-                 "「領域の確認」セクションが表示され、矩形領域付きでラベルを抽出できます。"
+            help="ONにすると「領域を検出」ボタン「領域一覧」「領域の確認」"
+                 "セクションが表示され、矩形領域付きでラベルを抽出できます。"
                  "OFFにすると通常モードになります。"
+                 "（検出パラメータは config.py の region_detection_config で設定します）"
         )
         if not enable_region_detection:
             # OFF中に前回検出済みの領域データ（region_analyses）が残っていると、抽出時に
@@ -554,129 +541,38 @@ def _render_options_section(locked):
     }
 
 
-def _render_region_config_form(enable_region_detection, locked):
-    """「領域検出の詳細設定」フォームを表示し、確定済みの region_cfg を返す
-    （「設定完了」が押されるまでは保存済み設定 or 既定値を返す）。
+def _build_region_cfg():
+    """`config.py` の `region_detection_config`（旧「領域検出の詳細設定」フォームの
+    11設定）から `region_cfg` を組み立てる。
 
-    `locked` が True の間は全フィールド・「設定完了」ボタンを disabled にする。"""
-    # ============================================================
-    # 領域検出の詳細設定（フォーム形式 — 「設定完了」で確定）
-    # ============================================================
-    _cfg_defaults = dict(DEFAULT_REGION_CONFIG)
-    _cfg_defaults['name_max_dist'] = 10.0  # デフォルトを10に変更
-    saved_cfg = st.session_state.get('saved_region_cfg', _cfg_defaults)
-    region_cfg = dict(saved_cfg)  # 「設定完了」が押されるまではこの値を使用
+    2026-09-10、UIフォーム（st.expander + st.form、「設定完了」ボタン）を撤去し
+    config.py 編集方式に統一した（ユーザー指示）。UIを介さないため戻り値は常に
+    「確定済み」の設定であり、旧実装にあった「設定完了」ボタンを押すまでは
+    保存済み設定 or 既定値を返す、という2段階の状態は無くなった。
 
-    submitted = False
-    if enable_region_detection:
-        with st.expander("領域検出の詳細設定", expanded=False):
-            st.caption("値を変更した後、「設定完了」ボタンを押すと確定されます（ボタンを押さずに変更した値は反映されません）。")
-            with st.form("region_cfg_form"):
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    frm_frame_lw = st.number_input(
-                        "図面枠の太さ",
-                        value=int(saved_cfg['frame_lineweight']),
-                        step=5,
-                        help="図面全体を囲む枠の線の太さ（lineweight）",
-                        key='frm_frame_lineweight', disabled=locked)
-                    frm_region_lw = st.number_input(
-                        "領域境界線の太さ",
-                        value=int(saved_cfg['region_lineweight']),
-                        step=5,
-                        help="矩形領域の境界線の太さ（lineweight）",
-                        key='frm_region_lineweight', disabled=locked)
-                    frm_cp_margin = st.number_input(
-                        "接続点判定マージン（座標）",
-                        value=float(saved_cfg['connection_point_margin']),
-                        min_value=0.0, step=0.01, format="%.2f",
-                        help="接続点（円）が境界線からこの座標距離以内なら「境界上」とみなします。"
-                             "縦ギャップ上に接続点がある場合の橋渡し除外にも使用します。",
-                        key='frm_connection_point_margin', disabled=locked)
-                    _current_region_color = int(saved_cfg['region_color'])
-                    _region_color_choices = list(_ACI_COLOR_CHOICES)
-                    if _current_region_color not in dict(_region_color_choices):
-                        _region_color_choices = _region_color_choices + [
-                            (_current_region_color, f"{_current_region_color}: (カスタム)")]
-                    frm_region_color = st.selectbox(
-                        "領域境界線の色(ACI)",
-                        options=[v for v, _ in _region_color_choices],
-                        index=[v for v, _ in _region_color_choices].index(_current_region_color),
-                        format_func=lambda v: dict(_region_color_choices)[v],
-                        help="矩形領域の境界線の色（既定: 2 = 黄）",
-                        key='frm_region_color', disabled=locked)
-                    frm_filter_prefixes = st.text_input(
-                        "抽出したい領域名の先頭文字列（カンマ区切り・複数可）",
-                        value=','.join(saved_cfg.get('name_filter_prefixes', ())),
-                        help="指定すると、名称候補がこの文字列のいずれかで始まる領域は、"
-                             "面積比の閾値を満たさなくても抽出対象になります"
-                             "（前方一致。全角/半角は区別しません）。空欄なら従来通り"
-                             "面積比のみで判定します。",
-                        key='frm_name_filter_prefixes', disabled=locked)
-                    frm_terms = st.text_input(
-                        "領域名称候補から除外する単語（カンマ区切り）",
-                        value=','.join(saved_cfg['name_exclude_terms']),
-                        help="これらの語を含むラベルを名称候補から除外します",
-                        key='frm_name_exclude_terms', disabled=locked)
-                with rc2:
-                    frm_area_pct = st.number_input(
-                        "最小面積（単独領域・図面枠面積比 %）",
-                        value=min(99, max(1, round(saved_cfg['area_ratio'] * 100))),
-                        min_value=1, max_value=99, step=1,
-                        help="1つの閉領域が単独でこの面積比（四捨五入した整数%）以上のとき抽出対象とします",
-                        key='frm_area_ratio_pct', disabled=locked)
-                    frm_group_pct = st.number_input(
-                        "最小面積（同名複数領域・図面枠面積比 %）",
-                        value=min(50, max(1, round(saved_cfg['group_area_ratio'] * 100))),
-                        min_value=1, max_value=50, step=1,
-                        help="同じ名称の複数ピースを合算したとき、この面積比（四捨五入した整数%）以上なら抽出対象とします。"
-                             "第1図面で成立した名称は他図面でも面積不問で抽出します。",
-                        key='frm_group_area_ratio_pct', disabled=locked)
-                    frm_name_max = st.number_input(
-                        "領域名称ラベルの境界線からの最大距離（座標）",
-                        value=min(20, max(1, int(saved_cfg.get('name_max_dist', 10.0)))),
-                        min_value=1, max_value=20, step=1,
-                        help="下端境界線からこの座標距離以内のラベルを名称候補とします",
-                        key='frm_name_max_dist', disabled=locked)
-                    frm_name_min = st.number_input(
-                        "領域名称ラベルの境界線からの最小距離（座標）",
-                        value=min(10, max(1, int(saved_cfg['name_min_dist']))),
-                        min_value=1, max_value=10, step=1,
-                        help="この距離未満（境界線分上）のラベルは名称候補から除外します",
-                        key='frm_name_min_dist', disabled=locked)
-                    frm_min_letters = st.number_input(
-                        "領域名称候補に必要な文字数",
-                        value=int(saved_cfg['name_min_letters']),
-                        min_value=1, step=1,
-                        help="英字がこの文字数以上のラベルのみ名称候補とします",
-                        key='frm_name_min_letters', disabled=locked)
-
-                submitted = st.form_submit_button("設定完了", type="primary", disabled=locked)
-
-        # フォーム送信時に設定を確定・保存
-        if submitted:
-            region_cfg.update({
-                'frame_lineweight': frm_frame_lw,
-                'region_lineweight': frm_region_lw,
-                'region_color': frm_region_color,
-                'connection_point_margin': frm_cp_margin,
-                'area_ratio': frm_area_pct / 100.0,
-                'group_area_ratio': frm_group_pct / 100.0,
-                'name_max_dist': float(frm_name_max),
-                'name_min_dist': float(frm_name_min),
-                'name_min_letters': frm_min_letters,
-                'name_exclude_terms': tuple(
-                    s.strip() for s in frm_terms.split(',') if s.strip()),
-                'name_filter_prefixes': tuple(
-                    s.strip() for s in frm_filter_prefixes.split(',') if s.strip()),
-            })
-            st.session_state['saved_region_cfg'] = dict(region_cfg)
-            st.session_state['region_cfg_is_saved'] = True
-            st.toast("設定を保存しました", icon="✅")
-
-    if enable_region_detection and st.session_state.get('region_cfg_is_saved'):
-        st.caption("✅ 詳細設定：保存済み")
-    return region_cfg
+    組み立て順: `DEFAULT_REGION_CONFIG`（アルゴリズム内部の既定値一式）→
+    `region_detection_config` の11設定で上書き → `region_detection_config.
+    ADVANCED_OVERRIDES` でさらに上書き（`DEFAULT_REGION_CONFIG` のキーなら
+    何でも指定可能）。既定値のみの場合、返り値は `DEFAULT_REGION_CONFIG` と
+    完全に等価になる（`tests/regression/test_config_region_cfg.py` で固定）。
+    """
+    cfg = dict(DEFAULT_REGION_CONFIG)
+    rc = region_detection_config
+    cfg.update({
+        'frame_lineweight': rc.FRAME_LINEWEIGHT,
+        'region_lineweight': rc.REGION_LINEWEIGHT,
+        'connection_point_margin': rc.CONNECTION_POINT_MARGIN,
+        'region_color': rc.REGION_COLOR,
+        'name_filter_prefixes': tuple(rc.NAME_FILTER_PREFIXES),
+        'name_exclude_terms': tuple(rc.NAME_EXCLUDE_TERMS),
+        'area_ratio': rc.AREA_RATIO_PERCENT / 100.0,
+        'group_area_ratio': rc.GROUP_AREA_RATIO_PERCENT / 100.0,
+        'name_max_dist': float(rc.NAME_MAX_DIST),
+        'name_min_dist': float(rc.NAME_MIN_DIST),
+        'name_min_letters': rc.NAME_MIN_LETTERS,
+    })
+    cfg.update(rc.ADVANCED_OVERRIDES)
+    return cfg
 
 
 def _render_region_detection_trigger(uploaded_files, region_cfg):
@@ -747,6 +643,12 @@ def _render_global_region_names_section(locked):
     analyses = st.session_state['region_analyses']
     all_names = collect_unique_region_candidate_names(analyses)
     if not all_names:
+        # 「領域を検出」は実行済みだが、面積条件（config.py の area_ratio /
+        # group_area_ratio）を満たす領域が1件も無かった（`analyses[...]['regions']`
+        # が全ファイルで空）ケース。旧UIの「面積条件を満たす領域が検出されません
+        # でした。詳細設定の調整をお試しください。」から、詳細設定UIが撤去された
+        # ことに伴い2026-09-10に文言変更（ユーザー指示）。
+        st.info("一定面積の領域は検出されませんでした。")
         return
 
     st.subheader("領域一覧")
@@ -1075,8 +977,9 @@ def _render_results_section():
 def app():
     """全体の表示制御（5状態）:
 
-    A) 結果表示中（`excel_result`あり）: オプション・詳細設定・領域一覧・
+    A) 結果表示中（`excel_result`あり）: オプション・領域一覧・
        領域の確認は表示するが操作不可（disabled、振り返り専用）。
+       （領域検出パラメータは config.py 側の設定のため、この状態遷移の対象外）
        「領域を検出」「領域選択を完了」「ラベルを抽出」ボタンはいずれも非表示
        （「新しい抽出を開始」でのみ次のサイクルへ進める）。
     B) 領域検出ON・未検出: 「領域を検出」ボタンのみ表示（常に青）。
@@ -1105,7 +1008,7 @@ def app():
 
     opts = _render_options_section(locked)
 
-    region_cfg = _render_region_config_form(opts['enable_region_detection'], locked)
+    region_cfg = _build_region_cfg()
 
     detected = 'region_analyses' in st.session_state
     region_selection_confirmed = bool(st.session_state.get('region_selection_confirmed'))

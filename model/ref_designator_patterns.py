@@ -37,12 +37,27 @@ from typing import Dict, List, Optional, Tuple
 # ============================================================
 
 # (カテゴリ名, 正規表現, 説明) — reference_designator_candidates.xlsx の
-# Patterns シートと同じ3カテゴリ。CANDIDATE_PATTERN はこれらの OR で導出する
+# Patterns シートに由来する3カテゴリに、2026-09-10 ユーザー指示で3カテゴリを
+# 追加した計6カテゴリ。CANDIDATE_PATTERN はこれらの OR で導出する
 # （tools/reference_designator_analyzer.py 等、外部ツールが個別カテゴリ名を
 # 参照できるよう名前付きで公開する）。
+#
+# 追加した3カテゴリ（letters_digits_letters/letters_digits_letters_digits/
+# letters_digits_hyphen_alnum2）は、既存の hyphen_letters_digits_any /
+# letters_digits_any に文字列集合として完全に包含される（2026-09-10、長さ6
+# 以下の総当たりで確認済み）。そのためこれらを追加しても CANDIDATE_PATTERN が
+# 受理する文字列集合自体は変化しない——変わるのは `matched_pattern_name()` が
+# より具体的なカテゴリ名を返すようになる点のみ。より限定的な（包含される側の）
+# パターンを先に判定させるため、包含する既存パターンより前に配置する。
 PATTERN_CATEGORIES = [
     ('hyphen_letters_digits_any', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+[A-Z0-9-]*$'),
      '英字繰返し-英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
+    ('letters_digits_letters', re.compile(r'^[A-Z]+[0-9]+[A-Z]+$'),
+     '英字繰返し + 数字繰返し + 英字繰返し'),
+    ('letters_digits_letters_digits', re.compile(r'^[A-Z]+[0-9]+[A-Z]+[0-9]+$'),
+     '英字繰返し + 数字繰返し + 英字繰返し + 数字繰返し'),
+    ('letters_digits_hyphen_alnum2', re.compile(r'^[A-Z]+[0-9]+-[A-Z0-9]+-[A-Z0-9]+$'),
+     '英字繰返し + 数字繰返し - 英数字繰返し - 英数字繰返し'),
     ('letters_digits_any', re.compile(r'^[A-Z]+[0-9]+[A-Z0-9-]*$'),
      '英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
     ('letters_only', re.compile(r'^[A-Z]+$'),
@@ -142,8 +157,6 @@ EXCLUSION_REGEX_CATEGORIES = [
      'RACK*（ユニット名）'),
     ('drawing_number', re.compile(r'^[A-Z]{2}[0-9]{4}-[0-9]{3}(-[0-9]{2})?[A-Z]?$'),
      '図番（例 EE1234-500-01A、DE3527-553-05B）'),
-    ('jis_dwg_prefix', re.compile(r'^(JIS|DWG)[A-Z0-9]*$'),
-     'JIS*/DWG*（図面情報枠）'),
     ('terminal_row_letter_digit', re.compile(r'^[AB][0-9]+$'),
      'A+1*/B+1*（機器端子の行番号）'),
     ('earth_terminal_digit', re.compile(r'^PE[0-9]+$'),

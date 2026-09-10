@@ -101,6 +101,41 @@ def test_classify_labels_judges_before_parenthesis_but_outputs_original():
     assert ref_designator.classify_labels(labels) == labels
 
 
+@pytest.mark.parametrize('label', [
+    # 括弧の直前にスペースがある実データ表記（2026-09-11、ユーザー提供の
+    # extracted_labels.xlsx「抽出ラベル一覧」シートで、機器符号候補列が空欄に
+    # なっていた94件中73件がこの形。「機器符号候補のはずなのに一致しない」と
+    # いう報告を受けて発覚した不具合の修正）。
+    'CB002 (15A)',
+    'Q10 (Q2)',
+    'TMP (TMP-1003LM)',
+    'MC001 (-000-05)2/2',
+    # ' **' 区切り（2026-09-11 ユーザー指示。実データ表記
+    # '型式 ** (正式な型番)'）。
+    'FL1F1 ** (FL1F-H12RCE)',
+    'SX03 ** (NX-SID800)',
+    # 'W No.' 前方一致（2026-09-11 ユーザー指示）。実データでピリオド直後の
+    # スペース有無・末尾説明文・数字4桁連続を含む型番など表記ゆれがある。
+    'W No.M06004',
+    'W No. C35019',
+    'W No.M06008(CC050VZRB)',
+    'W No.M39300 ACCESSORY CABLE (MR-J3ENCBL10M-A1-H)',
+])
+def test_is_ref_designator_label_2026_09_11_fixes(label):
+    """機器符号候補として扱われるべき実データ表記（括弧前の空白除去・' **'区切り・
+    'W No.'前方一致）が、主抽出パイプラインの `is_ref_designator_label()`
+    （「機器符号候補」列の判定に使う関数、除外パターン不使用）で正しく候補と
+    判定されることを固定する。"""
+    assert ref_designator.is_ref_designator_label(label) is True
+
+
+def test_is_ref_designator_label_w_no_prefix_rejects_non_matching_casing():
+    """'W No.' の大文字小文字・スペースの有無を区別する（実データの文中注記
+    'Wno.M39301' 等〈ラベルではなく説明文中の言及〉を誤って候補にしないため）。"""
+    assert ref_designator.is_ref_designator_label('Wno.M39301') is False
+    assert ref_designator.is_ref_designator_label('w no.M06004') is False
+
+
 # ---------------------------------------------------------------------------
 # normalize_labels
 # ---------------------------------------------------------------------------

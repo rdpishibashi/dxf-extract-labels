@@ -37,18 +37,26 @@ from typing import Dict, List, Optional, Tuple
 # ============================================================
 
 # (カテゴリ名, 正規表現, 説明) — reference_designator_candidates.xlsx の
-# Patterns シートに由来する3カテゴリに、2026-09-10 ユーザー指示で3カテゴリを
-# 追加した計6カテゴリ。CANDIDATE_PATTERN はこれらの OR で導出する
-# （tools/reference_designator_analyzer.py 等、外部ツールが個別カテゴリ名を
-# 参照できるよう名前付きで公開する）。
+# Patterns シートに由来する3カテゴリに、2026-09-10 ユーザー指示で3カテゴリ、
+# 2026-09-11 ユーザー指示でさらに1カテゴリを追加した計7カテゴリ。
+# CANDIDATE_PATTERN はこれらの OR で導出する（tools/reference_designator_
+# analyzer.py 等、外部ツールが個別カテゴリ名を参照できるよう名前付きで公開する）。
 #
-# 追加した3カテゴリ（letters_digits_letters/letters_digits_letters_digits/
-# letters_digits_hyphen_alnum2）は、既存の hyphen_letters_digits_any /
-# letters_digits_any に文字列集合として完全に包含される（2026-09-10、長さ6
-# 以下の総当たりで確認済み）。そのためこれらを追加しても CANDIDATE_PATTERN が
-# 受理する文字列集合自体は変化しない——変わるのは `matched_pattern_name()` が
-# より具体的なカテゴリ名を返すようになる点のみ。より限定的な（包含される側の）
-# パターンを先に判定させるため、包含する既存パターンより前に配置する。
+# 2026-09-10 に追加した3カテゴリ（letters_digits_letters/
+# letters_digits_letters_digits/letters_digits_hyphen_alnum2）は、既存の
+# hyphen_letters_digits_any / letters_digits_any に文字列集合として完全に
+# 包含される（長さ6以下の総当たりで確認済み）。そのためこれらを追加しても
+# CANDIDATE_PATTERN が受理する文字列集合自体は変化しない——変わるのは
+# `matched_pattern_name()` がより具体的なカテゴリ名を返すようになる点のみ。
+# より限定的な（包含される側の）パターンを先に判定させるため、包含する
+# 既存パターンより前に配置する。
+#
+# 2026-09-11 に追加した w_no_prefix は他カテゴリと異なり**前方一致**
+# （末尾に `.*` を持つため、`^(?:...)$` の全体アンカー内で「'W No.' で始まれば
+# 残りは何でもよい」という意味になる）。`_judgment_text()`（括弧/` **`より前）
+# が既に切り出した文字列の形（英大文字+数字+記号のみ）を前提とする他カテゴリと
+# 異なり、`W No.M06004` のように大文字小文字混在・ピリオドを含む実データの
+# 表記をそのまま候補と認めるためのユーザー指定の例外。
 PATTERN_CATEGORIES = [
     ('hyphen_letters_digits_any', re.compile(r'^[A-Z]+-[A-Z]+[0-9]+[A-Z0-9-]*$'),
      '英字繰返し-英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
@@ -62,6 +70,8 @@ PATTERN_CATEGORIES = [
      '英字繰返し + 数字繰返し + 英数字/ハイフン任意(0可)'),
     ('letters_only', re.compile(r'^[A-Z]+$'),
      '英字繰返しのみ'),
+    ('w_no_prefix', re.compile(r'^W No\..*$'),
+     '"W No." で始まる（前方一致。ケーブル/ワイヤ番号表記）'),
 ]
 _PATTERN_CORE = '|'.join(rx.pattern[1:-1] for _n, rx, _d in PATTERN_CATEGORIES)
 CANDIDATE_PATTERN = re.compile(r'^(?:%s)$' % _PATTERN_CORE)
@@ -311,9 +321,27 @@ def normalize_label(label: str) -> str:
 
 
 def _judgment_text(normalized_label: str) -> str:
-    """判定用文字列を返す（括弧以降を除く）。例: 'R10(2.2K)' -> 'R10'。"""
-    idx = normalized_label.find('(')
-    return normalized_label[:idx] if idx >= 0 else normalized_label
+    """判定用文字列を返す（括弧・` **`〈半角スペース+アスタリスク2個〉以降と、
+    その直前の空白を除く）。例: 'R10(2.2K)' -> 'R10'、
+    'FL1F1 ** (FL1F-H12RCE)' -> 'FL1F1'。
+
+    どちらのデリミタが先に現れるかは文字列ごとに異なるため、両方の出現位置を
+    調べて早い方（文字列中でより左にある方）を採用する。
+
+    **末尾空白除去（2026-09-11 追加）**: デリミタの直前に空白がある場合
+    （`'CB002 (15A)'` 等、`(` の前にスペースを挟む表記）、除去せずに残すと
+    判定用文字列が `'CB002 '`（末尾スペース付き）になり、どの候補パターンにも
+    一致しなくなる不具合があった（実データで多数確認: `CB002 (15A)`・
+    `Q10 (Q2)`・`TMP (TMP-1003LM)` 等）。デリミタの有無に関わらず
+    `.rstrip()` するため、デリミタが無い場合（呼び出し側が既に
+    `normalize_label()` で前後空白除去済みの文字列を渡す想定）は実質的に
+    何もしない安全な操作である。"""
+    idx_paren = normalized_label.find('(')
+    idx_star = normalized_label.find(' **')
+    candidates = [i for i in (idx_paren, idx_star) if i >= 0]
+    idx = min(candidates) if candidates else -1
+    judgment = normalized_label[:idx] if idx >= 0 else normalized_label
+    return judgment.rstrip()
 
 
 def classify_judgment_detailed(

@@ -82,6 +82,136 @@ def test_new_candidate_patterns_do_not_change_acceptance_set():
 
 
 # ---------------------------------------------------------------------------
+# _judgment_text — 括弧/" **" 前の末尾空白除去（2026-09-11）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label,expected_judgment', [
+    # 括弧の直前にスペースがある実データ表記（ユーザー提供のExcelで94件中73件が
+    # この形で該当。'extracted_labels.xlsx' の「抽出ラベル一覧」シートで
+    # ユーザーが黄色背景にして「機器符号のはずなのに未一致」と報告した実例）。
+    ('CB002 (15A)', 'CB002'),
+    ('CP (15A)', 'CP'),
+    ('ELB001 (400A/200mA)', 'ELB001'),
+    ('F (1.1A)', 'F'),
+    ('Q10 (Q2)', 'Q10'),
+    ('TMP (TMP-1003LM)', 'TMP'),
+    ('VR2 (2KΩ)', 'VR2'),
+    # 括弧が複数・閉じ括弧の後にも文字が続く実データ表記（先頭の "(" だけが
+    # 判定対象。'(-000-05)2/2' 部分は無視される——既存仕様のまま）。
+    ('MC001 (-000-05)2/2', 'MC001'),
+    ('XFAN1 (-000-11)3/9', 'XFAN1'),
+    # スペースが無い既存の代表例（回帰なしの確認）。
+    ('R10(2.2K)', 'R10'),
+    # 括弧が無い場合は従来通り全体（前後空白は呼び出し側で除去済みの想定）。
+    ('R10', 'R10'),
+])
+def test_judgment_text_strips_trailing_space_before_paren(label, expected_judgment):
+    """括弧の直前に空白があっても、判定用文字列からその空白を除去する
+    （除去しないと 'CB002 ' のように末尾スペース付きになり、どの候補パターンにも
+    一致しなくなっていた不具合。ユーザー提供Excelでの実データ報告により発覚）。
+
+    `CANDIDATE_PATTERN` を直接検証する（`is_ref_designator_candidate()` は
+    除外パターンも併用する別関数——例えば `F` は `single_letter_position`
+    除外に該当するため、本テストの対象外。「区切り文字の前でどこを切り出すか」
+    という `_judgment_text()` 自体の振る舞いのみを検証する）。"""
+    assert rdp._judgment_text(label) == expected_judgment
+    assert rdp.CANDIDATE_PATTERN.match(expected_judgment) is not None
+
+
+@pytest.mark.parametrize('label,expected_judgment', [
+    # ' **' 区切り（実データ表記: '型式 ** (正式な型番)'。ユーザー提供Excelでの
+    # 実例）。
+    ('FL1F1 ** (FL1F-H12RCE)', 'FL1F1'),
+    ('SX03 ** (NX-SID800)', 'SX03'),
+    ('SY01 ** (NX-SOD400)', 'SY01'),
+    ('Y02 ** (NX-OD4256)', 'Y02'),
+])
+def test_judgment_text_splits_at_double_asterisk_delimiter(label, expected_judgment):
+    """' **'（半角スペース+アスタリスク2個）の前で判定する
+    （2026-09-11 ユーザー指示）。括弧が無い場合でも ' **' だけで区切れる。
+
+    `CANDIDATE_PATTERN` を直接検証する（`is_ref_designator_candidate()` は
+    除外パターンも併用する別関数——`SX03`/`SY01`/`Y02` は PLC信号名として
+    `added_excl:SXn*`等の除外に該当するため、本テストの対象外）。"""
+    assert rdp._judgment_text(label) == expected_judgment
+    assert rdp.CANDIDATE_PATTERN.match(expected_judgment) is not None
+
+
+@pytest.mark.parametrize('label,expected_judgment', [
+    ('FL1F1 ** X10', 'FL1F1'),       # 括弧無し、' **' のみ
+    ('FL1F1 ** (X10)', 'FL1F1'),     # ' **' が '(' より先に現れる → ' **' 優先
+    ('FL1F1(X) ** Y', 'FL1F1'),      # '(' が ' **' より先に現れる → '(' 優先
+])
+def test_judgment_text_uses_earlier_delimiter(label, expected_judgment):
+    """'(' と ' **' の両方が出現する場合、文字列中でより左（早い方）を
+    デリミタとして採用する。"""
+    assert rdp._judgment_text(label) == expected_judgment
+
+
+def test_judgment_text_no_delimiter_is_unaffected():
+    """デリミタ（'(' / ' **'）が無い場合は元の文字列のまま
+    （末尾空白除去は呼び出し側が既に normalize_label() で除去済みの文字列を
+    渡す前提のため、実質的な影響が無いことの確認）。"""
+    assert rdp._judgment_text('R10') == 'R10'
+    assert rdp._judgment_text('') == ''
+
+
+# ---------------------------------------------------------------------------
+# 候補パターン — "W No." 前方一致（2026-09-11 ユーザー指示）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label', [
+    'W No.M06004',
+    'W No.M06004B',
+    'W No.M06008(CC050VZRB)',       # 括弧付き（前方一致のため丸ごと含めてよい）
+    'W No. C35019',                  # ピリオドの後にスペースがある実データ表記
+    'W No.M39300 ACCESSORY CABLE (MR-J3ENCBL10M-A1-H)',  # 末尾に英語説明が続く実データ表記
+    'W No.M65B31',                   # コード部が英字+数字混在
+])
+def test_w_no_prefix_is_candidate(label):
+    """'W No.' で始まるラベルは機器符号候補とする（2026-09-11 ユーザー指示）。
+    前方一致のため、コード部の形式（ピリオド直後のスペース有無・末尾の説明文・
+    括弧付き型番等）を問わない。実データ（sample-dxf 全体で123件のバリエーション
+    を実測）で確認済みの表記ゆれを網羅する。
+
+    `CANDIDATE_PATTERN`（判定用文字列＝`_judgment_text()`適用後）を直接検証する
+    ——`is_ref_designator_candidate()` は除外パターンも併用する別関数
+    （`region_detector.py`の領域名候補フィルタ専用）で、'M06008'/'C35019'等の
+    数字4桁連続を含むコード部は `wiring_digit_run` 除外に該当してしまうため、
+    本カテゴリの検証には使えない（意図的な仕様——配線ラベルを領域名候補から
+    除外する既存ルールと衝突するのは正しい挙動であり、本ラベルの用途は
+    主抽出パイプラインの「機器符号候補」列判定〈`ref_designator.
+    is_ref_designator_label()`、除外パターン不使用〉のみ）。"""
+    judgment = rdp._judgment_text(label)
+    assert rdp.CANDIDATE_PATTERN.match(judgment) is not None
+    assert rdp.matched_pattern_name(judgment) == 'w_no_prefix'
+
+
+def test_w_no_prefix_used_by_main_pipeline_without_exclusion():
+    """主抽出パイプラインの `is_ref_designator_label()`（除外パターン不使用、
+    「機器符号候補」列の判定に使う実体）では、数字4桁連続を含む実データ表記
+    （'W No.M06008(CC050VZRB)' 等）も問題なく候補として扱われることを確認する
+    （`wiring_digit_run` 除外は `is_ref_designator_candidate()` 側のみに適用され、
+    こちらには影響しない）。"""
+    from model.ref_designator import is_ref_designator_label
+    assert is_ref_designator_label('W No.M06008(CC050VZRB)') is True
+    assert is_ref_designator_label('W No. C35019') is True
+    assert is_ref_designator_label(
+        'W No.M39300 ACCESSORY CABLE (MR-J3ENCBL10M-A1-H)') is True
+
+
+def test_w_no_prefix_requires_exact_casing_and_spacing():
+    """'W No.' は大文字小文字・スペースの有無を区別する（実データで確認した
+    表記 'W No.'〈大文字W・半角スペース・大文字N・小文字o・ピリオド〉のみを
+    対象とする。'Wno.'〈スペース無し〉は対象外——実データにも文中の注記
+    '／Wno.M39301ケーブル変更。' のような、ラベルではなく文章中の言及として
+    現れる表記があり、これを機器符号候補として誤って拾わないため）。"""
+    for bad in ('Wno.M39301', 'w no.M06004', 'W NO.M06004'):
+        judgment = rdp._judgment_text(bad)
+        assert rdp.CANDIDATE_PATTERN.match(judgment) is None, bad
+
+
+# ---------------------------------------------------------------------------
 # is_ref_designator_candidate — 除外パターン（ExclusionPatterns シートが正）
 # ---------------------------------------------------------------------------
 

@@ -44,6 +44,30 @@ def select_layout_result(doc, collect_from_layout, is_empty):
 
     return result
 
+def is_invisible(e):
+    """DXFの`invisible`属性（グループコード60、1=非表示）が立っている
+    エンティティかを返す。CADソフト上で「非表示」に設定された図形
+    （紙面には一切表示されない）は、たとえDXFファイル中に座標・テキスト
+    として存在していても、図面枠検出・ラベル収集・領域検出・端子検出の
+    いずれの対象にもしてはならない（2026-09-10、ユーザー報告により
+    `ref_designator.py`に追加。ULVAC標準の改版運用では、旧版のタイトル
+    ブロックを削除せずinvisibleにして履歴として保持する例があるため、
+    他の収集経路でも起こりうる不具合として2026-09-11、region_detector.py・
+    terminal_detector.py・extract_labels.pyへも横展開し、この共通ヘルパーに
+    集約した。詳細は`tests/regression/test_ref_designator.py`の
+    invisible関連テストを参照）。
+
+    呼び出し側は次の3箇所すべてでチェックする必要がある（`virtual_entities()`
+    は親INSERTのinvisible属性を継承しないため、INSERT自身のチェックを
+    省くと、INSERT自身がinvisibleでも展開後の中身は素通りしてしまう）:
+      1. 直接配置エンティティ
+      2. INSERT自身（invisibleなINSERTは中身ごと丸ごと除外する）
+      3. `virtual_entities()`で展開した仮想エンティティ（親が可視でも
+         個々の子エンティティにinvisibleが立っている場合があるため）
+    """
+    return bool(e.dxf.get('invisible', 0))
+
+
 def save_uploadedfile(uploadedfile):
     """アップロードされたファイルを一時ディレクトリに保存する"""
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploadedfile.name)[1]) as f:

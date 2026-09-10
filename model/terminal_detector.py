@@ -71,7 +71,7 @@ from collections import Counter, defaultdict
 import ezdxf
 
 from .extract_labels import extract_text_from_entity, extract_labels
-from .common_utils import normalize_width, select_layout_result
+from .common_utils import normalize_width, select_layout_result, is_invisible
 from .region_detector import _label_rotation_angle
 
 
@@ -131,6 +131,11 @@ def _collect_geometry(doc):
         circles = []    # (cx, cy, r)
 
         def handle_entity(e):
+            # invisible属性（非表示設定）が立ったエンティティは紙面に一切表示されない
+            # ため、ラベル・端子台矩形辺・橋渡しCIRCLEいずれの対象にもしない
+            # （is_invisibleのdocstring参照）。
+            if is_invisible(e):
+                return
             t = e.dxftype()
             if t in ('TEXT', 'MTEXT'):
                 _raw, cleaned, (x, y) = extract_text_from_entity(e)
@@ -150,6 +155,11 @@ def _collect_geometry(doc):
 
         for e in layout:
             if e.dxftype() == 'INSERT':
+                # INSERT自身がinvisibleなら、中身ごと丸ごと除外する
+                # （is_invisibleのdocstring参照。virtual_entities()は親の
+                # invisible属性を継承しないため、ここで明示的にチェックする）。
+                if is_invisible(e):
+                    continue
                 try:
                     for v in e.virtual_entities():
                         handle_entity(v)

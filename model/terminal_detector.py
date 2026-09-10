@@ -9,9 +9,18 @@
                 （矩形領域抽出＝`region_detector.py` の領域境界線と同じ識別キー）
   - 端子(ギャップ補完): lineweight=50 かつ color=4(ACI水色) の CIRCLE。
     部品（端子記号）が辺の途中に配置されて LINE を途切れさせている箇所を、
-    この CIRCLE が橋渡しする。**CIRCLE による橋渡しが1箇所以上ある矩形のみを
-    端子台矩形として扱う**（LINEのみで閉じた矩形は、矩形領域抽出の領域境界線
-    そのものである可能性があり判別できないため、対象外とする。ユーザー確認済み）。
+    この CIRCLE が橋渡しする。
+
+  端子台矩形として採用する条件は次のいずれか（それ以外の、単にLINEのみで
+  閉じた矩形は、矩形領域抽出の領域境界線そのものである可能性があり判別
+  できないため対象外とする。ユーザー確認済み）:
+  - **CIRCLEによる辺の橋渡しが1箇所以上ある**（従来からの条件）
+  - **bboxの内側にあり、最寄りの辺からの距離が自身の半径の
+    `_INSIDE_CIRCLE_EDGE_RATIO`(2.5)倍以内の対象CIRCLEを
+    `_MIN_INSIDE_EDGE_CIRCLES`(2)個以上含む**。辺のLINEが途切れず閉じており、
+    端子CIRCLEが辺の上ではなく矩形の内側に、辺に沿って並ぶ描き方の端子台に
+    対応する（`EE6312-000-01A.dxf`のTBCB001W/TBDCPST等で確認。橋渡し要件
+    のみでは候補段階で除外されていた）。
 
 対象ファイル判定:
   タイトル（NFKC正規化後）に「UNIT内結線図」を含み、かつサブタイトルが
@@ -78,6 +87,8 @@ _MATCH_MAX_DIST = 10.0      # ラベル-矩形辺間のマッチとして許容�
 _MATCH_XY_TOL = 1.0         # ラベルが矩形の幅(高さ)範囲内とみなす許容誤差
 _MIN_RECT_SIZE = 1.0        # 矩形として扱う最小の幅・高さ
 _ROTATION_THRESHOLD = 0.5   # 図面回転判定の閾値（ラベルの過半数が90°回転で「回転」）
+_INSIDE_CIRCLE_EDGE_RATIO = 2.5  # 内側CIRCLEを「辺に付属する端子」とみなす半径倍率
+_MIN_INSIDE_EDGE_CIRCLES = 2     # 端子台矩形とみなすのに必要な内側CIRCLE数
 
 # 候補ラベル: "TB" + 英大文字/数字の繰り返し（1文字以上）。後続の文字列は問わない。
 _TB_LABEL_PATTERN = re.compile(r'^TB[A-Z0-9]+')
@@ -177,11 +188,17 @@ def _detect_rotation_mode(texts, threshold=_ROTATION_THRESHOLD):
 def _build_rect_candidates(lines, circles, endpoint_tol=_ENDPOINT_TOL,
                             bridge_axis_tol=_BRIDGE_AXIS_TOL,
                             bridge_search_range=_BRIDGE_SEARCH_RANGE,
-                            min_size=_MIN_RECT_SIZE):
-    """LINE(辺)とCIRCLE(橋渡し)から、端子台矩形候補のリストを構築する。
+                            min_size=_MIN_RECT_SIZE,
+                            inside_edge_ratio=_INSIDE_CIRCLE_EDGE_RATIO,
+                            min_inside_edge_circles=_MIN_INSIDE_EDGE_CIRCLES):
+    """LINE(辺)とCIRCLE(橋渡し/内側端子)から、端子台矩形候補のリストを構築する。
 
-    各候補は {'xl','xr','y0','y1'} の bbox。CIRCLE橋渡しが1箇所も無い連結成分、
-    および4辺すべてが揃っていない連結成分は候補から除外する。
+    各候補は {'xl','xr','y0','y1'} の bbox。4辺すべてが揃っていない連結成分は
+    候補から除外する。さらに、次のいずれも満たさない連結成分も除外する:
+      - CIRCLEによる辺の橋渡しが1箇所以上ある
+      - bboxの内側にあり、最寄りの辺からの距離が自身の半径の`inside_edge_ratio`倍
+        以内の対象CIRCLEを`min_inside_edge_circles`個以上含む（辺のLINEは途切れず
+        閉じているが、端子CIRCLEが辺の上ではなく矩形内側に辺沿いで並ぶ描き方）
     """
     endpoints = []  # 全LINE端点 [(x, y), ...]（偶数idx=始点、奇数idx=終点）
     for (x1, y1, x2, y2) in lines:
@@ -258,8 +275,6 @@ def _build_rect_candidates(lines, circles, endpoint_tol=_ENDPOINT_TOL,
     rects = []
     for _root, idxs in components.items():
         has_bridge = any(endpoint_key(i) in bridged_keys for i in idxs)
-        if not has_bridge:
-            continue
 
         pts = [endpoints[i] for i in idxs]
         xs = [p[0] for p in pts]
@@ -267,6 +282,19 @@ def _build_rect_candidates(lines, circles, endpoint_tol=_ENDPOINT_TOL,
         xl, xr, y0, y1 = min(xs), max(xs), min(ys), max(ys)
         if xr - xl < min_size or y1 - y0 < min_size:
             continue
+
+        if not has_bridge:
+            # 橋渡しが無い場合、bbox内側にあり最寄りの辺に近接する対象CIRCLE
+            # （辺沿いに並ぶ端子）が一定数あれば、端子台矩形として採用する。
+            inside_edge_count = 0
+            for (cx, cy, r) in circles:
+                if not (xl <= cx <= xr and y0 <= cy <= y1):
+                    continue
+                dist_to_edge = min(cx - xl, xr - cx, cy - y0, y1 - cy)
+                if dist_to_edge <= r * inside_edge_ratio:
+                    inside_edge_count += 1
+            if inside_edge_count < min_inside_edge_circles:
+                continue
 
         member_line_idxs = {i // 2 for i in idxs}
 

@@ -698,6 +698,34 @@ def _render_global_region_names_section(locked):
             st.rerun()
 
 
+def _region_confirmation_targets(analyses, checked_names):
+    """「領域の確認」に表示すべきファイルを判定する（純粋関数）。
+
+    表示対象は次のいずれか:
+      - 「領域一覧」でチェック済みの候補が2件以上残っている領域（＝どれを
+        採用するか競合している領域）を1つ以上持つファイル
+      - 図面枠未検出以外の genuine なエラーを持つファイル（要選択領域が
+        0件でも、エラー自体をユーザーに見せる必要があるため対象に含める）
+
+    図面枠が見つからない既知の未対応ケース（`_FRAME_NOT_FOUND_ERROR_MARKER`）
+    は対象から除く。戻り値はファイル名でソートした
+    `[(fname, analysis, pending_regions), ...]`。
+    """
+    targets = []
+    for fname, analysis in sorted(analyses.items()):
+        err = analysis.get('error')
+        if err and _FRAME_NOT_FOUND_ERROR_MARKER in err:
+            continue  # 図面枠が見つからない既知の未対応ケースは表示しない
+        regions = analysis.get('regions', [])
+        pending_regions = [
+            r for r in regions if is_region_pending_selection(r, checked_names)
+        ]
+        if not err and not pending_regions:
+            continue  # 個別選択が不要なファイルは表示しない
+        targets.append((fname, analysis, pending_regions))
+    return targets
+
+
 def _render_region_confirmation_section(enable_region_detection, locked):
     """「領域の確認」セクション: 「領域一覧」でチェック済みの候補が2件以上
     残っている領域（＝どれを採用するか競合している領域）だけを対象に、
@@ -710,7 +738,13 @@ def _render_region_confirmation_section(enable_region_detection, locked):
     「領域選択を完了」が押される（`region_selection_confirmed` が True になる）
     までは表示しない（2026-07-30 ユーザー指定。「領域一覧」でのチェック中に
     表示内容が頻繁に変化するのを避け、ユーザーが一括選択を終えたタイミングで
-    まとめて残りの個別選択を提示する）。"""
+    まとめて残りの個別選択を提示する）。
+
+    表示対象ファイルが1件も無い場合（＝全領域が「領域一覧」で決定済み）は、
+    見出し・キャプションを含めセクション自体を一切描画しない（2026-09-10
+    ユーザー指定。要選択領域の名称決定・「（領域選択しない）」・genuine な
+    エラー表示は、このセクションにしか操作手段が無い一方、それが1つも無い
+    「空」の状態では何のアクションも取れないため）。"""
     # ============================================================
     # 領域の確認
     # ============================================================
@@ -720,6 +754,10 @@ def _render_region_confirmation_section(enable_region_detection, locked):
 
     analyses = st.session_state['region_analyses']
     checked_names = _global_checked_region_names()
+    targets = _region_confirmation_targets(analyses, checked_names)
+    if not targets:
+        return
+
     st.subheader("領域の確認")
     st.caption(
         "「領域一覧」でチェックした候補が2件以上残っている領域（どれを採用する"
@@ -728,17 +766,8 @@ def _render_region_confirmation_section(enable_region_detection, locked):
     )
 
     rendered_any = False
-    for fname, analysis in sorted(analyses.items()):
+    for fname, analysis, pending_regions in targets:
         err = analysis.get('error')
-        if err and _FRAME_NOT_FOUND_ERROR_MARKER in err:
-            continue  # 図面枠が見つからない既知の未対応ケースは表示しない
-        regions = analysis.get('regions', [])
-        pending_regions = [
-            r for r in regions if is_region_pending_selection(r, checked_names)
-        ]
-        if not err and not pending_regions:
-            continue  # 個別選択が不要なファイルは表示しない
-
         if rendered_any:
             st.divider()
         rendered_any = True
@@ -754,8 +783,9 @@ def _render_region_confirmation_section(enable_region_detection, locked):
         if dn_parts:
             st.caption("　/　".join(dn_parts))
         n_frames = len(analysis.get('frames', []))
+        n_regions = len(analysis.get('regions', []))
         st.caption(
-            f"図面枠 {n_frames} 個 / 検出領域 {len(regions)} 個"
+            f"図面枠 {n_frames} 個 / 検出領域 {n_regions} 個"
             f"（うち要選択 {len(pending_regions)} 個）"
         )
         if err:
@@ -811,9 +841,6 @@ def _render_region_confirmation_section(enable_region_detection, locked):
                     args=(fname, reg['id'], len(cands), checked_names),
                     disabled=locked,
                 )
-
-    if not rendered_any:
-        st.info("すべての領域が「領域一覧」で決定済みです。")
 
 
 def _handle_extract_button(uploaded_files, region_cfg, opts):
@@ -919,11 +946,14 @@ def _render_results_section():
 
     v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
     抽出」の2オプションを廃止したため、モードは領域付き/通常の2つのみ
-    （旧3分岐から単純化）。"""
+    （旧3分岐から単純化）。「領域の確認」セクションを空のときは表示しなく
+    したこと（2026-09-10）に伴い、「抽出結果プレビュー」等の置き場として
+    「抽出結果」という見出しのセクションをここに新設した。"""
     # ============================================================
     # 抽出結果
     # ============================================================
     if st.session_state.get('excel_result'):
+        st.subheader("抽出結果")
         is_region_mode = st.session_state.get('is_region_mode', False)
 
         if is_region_mode:

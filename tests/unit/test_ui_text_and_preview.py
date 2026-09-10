@@ -1,4 +1,4 @@
-"""ユーザー指示4件（2026-09-11）の UI 検証。
+"""ユーザー指示4件（2026-09-11）＋「領域の確認」空表示抑制（2026-09-10）の UI 検証。
 
 1. 「領域の確認」セクション: 図面枠が見つからない既知の未対応ケース
    （`_FRAME_NOT_FOUND_ERROR_MARKER`）は表示しない。
@@ -7,6 +7,10 @@
 3. 「抽出結果統計」（集計テーブル）→「抽出結果プレビュー」（Excelシート選択+表示、
    DXF-diff-manager と同じパターン）への置き換え。
 4. ダウンロードボタンの文言変更（「Excelをダウンロード」→「抽出結果をダウンロード」）。
+5. 「領域の確認」は表示対象ファイルが1件も無い場合、見出し・キャプション・
+   「すべての領域が…決定済みです。」を含め一切描画しない（2026-09-10）。
+   判定は純粋関数 `_region_confirmation_targets()` に切り出し、
+   `_render_results_section()` には「抽出結果」という見出しを新設した。
 
 `app.py` は Streamlit のウィジェットを直接描画する関数群のため、
 `streamlit.testing.v1.AppTest.from_string()` で実際にスクリプトとして実行し、
@@ -23,7 +27,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 from model.excel_output import create_ref_designator_excel_output  # noqa: E402
-from app import _FRAME_NOT_FOUND_ERROR_MARKER  # noqa: E402
+from app import _FRAME_NOT_FOUND_ERROR_MARKER, _region_confirmation_targets  # noqa: E402
 
 
 def _minimal_excel_bytes():
@@ -106,6 +110,72 @@ def test_confirmation_unaffected_when_no_error():
     assert at.markdown.len == 0
 
 
+def test_confirmation_section_fully_hidden_when_no_targets():
+    """表示対象ファイルが1件も無い場合（＝全領域が「領域一覧」で決定済み）、
+    「領域の確認」の見出し・キャプション・「すべての領域が…決定済みです。」の
+    いずれも描画しない（2026-09-10、セクション自体の空表示を抑制）。"""
+    at = _run_confirmation({
+        'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
+    })
+    assert at.exception.len == 0
+    assert at.subheader.len == 0
+    assert at.caption.len == 0
+    assert at.info.len == 0
+    assert not any('決定済み' in str(i.value) for i in at.info)
+
+
+# ---------------------------------------------------------------------------
+# 5. `_region_confirmation_targets()` — 表示対象ファイルの判定（純粋関数）
+# ---------------------------------------------------------------------------
+
+
+def test_targets_empty_when_no_pending_and_no_error():
+    """要選択領域が0件・エラーも無いファイルは対象に含まれない。"""
+    analyses = {
+        'clean.dxf': {'error': None, 'regions': []},
+    }
+    assert _region_confirmation_targets(analyses, checked_names=set()) == []
+
+
+def test_targets_empty_when_only_frame_not_found_error():
+    """図面枠未検出の既知エラーのみのファイルは対象に含まれない。"""
+    err = '図面枠が見つからなかったため、' + _FRAME_NOT_FOUND_ERROR_MARKER
+    analyses = {
+        'no_frame.dxf': {'error': err, 'regions': []},
+    }
+    assert _region_confirmation_targets(analyses, checked_names=set()) == []
+
+
+def test_targets_include_genuine_error_even_with_no_pending_regions():
+    """要選択領域が0件でも、genuine なエラーを持つファイルは対象に含まれる
+    （エラー表示の唯一の場所であるため）。"""
+    err = 'DXFファイルの読み込みに失敗しました: corrupt file'
+    analyses = {
+        'broken.dxf': {'error': err, 'regions': []},
+    }
+    targets = _region_confirmation_targets(analyses, checked_names=set())
+    assert len(targets) == 1
+    fname, analysis, pending_regions = targets[0]
+    assert fname == 'broken.dxf'
+    assert pending_regions == []
+
+
+def test_targets_include_files_with_pending_regions():
+    """チェック済み候補が2件以上残る領域を持つファイルは対象に含まれる。"""
+    reg = {
+        'id': 0, 'frame': 0, 'area_pct': 50.0, 'corners': [],
+        'name_candidates': [(1.0, 'A'), (2.0, 'B')],
+    }
+    analyses = {
+        'contested.dxf': {'error': None, 'regions': [reg]},
+    }
+    targets = _region_confirmation_targets(analyses, checked_names={'A', 'B'})
+    assert len(targets) == 1
+    fname, analysis, pending_regions = targets[0]
+    assert fname == 'contested.dxf'
+    assert pending_regions == [reg]
+
+
 # ---------------------------------------------------------------------------
 # 2. 「DXFファイルのアップロード」— ラベル文言変更
 # ---------------------------------------------------------------------------
@@ -186,3 +256,13 @@ def test_download_button_label_changed():
     button_labels = [b.label for b in at.download_button]
     assert '抽出結果をダウンロード' in button_labels
     assert 'Excelをダウンロード' not in button_labels
+
+
+def test_results_section_has_extraction_results_subheader():
+    """「領域の確認」を空のときに表示しなくした（2026-09-10）ことに伴い、
+    抽出結果プレビュー等の置き場として「抽出結果」という見出しの
+    セクションが表示されることを固定する。"""
+    at = _run_results_section()
+    assert at.exception.len == 0
+    subheader_values = [s.value for s in at.subheader]
+    assert '抽出結果' in subheader_values

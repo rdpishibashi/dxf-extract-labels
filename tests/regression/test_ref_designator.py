@@ -39,6 +39,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from model import ref_designator  # noqa: E402
+from model.region_detector import _collect_region_geometry, DEFAULT_REGION_CONFIG  # noqa: E402
+from model.terminal_detector import _collect_geometry as _collect_terminal_geometry  # noqa: E402
+from model.extract_labels import extract_labels  # noqa: E402
 
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
 
@@ -638,6 +641,131 @@ def test_invisible_titleblock_content_excluded_from_real_sample(sample_name):
     } & all_texts
     assert not old_titleblock_leakage, (
         f'invisible旧タイトルブロックの内容が漏れている: {old_titleblock_leakage}')
+
+
+def test_invisible_excluded_from_region_geometry():
+    """invisible=1 のエンティティは region_detector._collect_region_geometry()
+    の収集対象にもならない（2026-09-11、ref_designator.py以外の収集経路への
+    横展開）。直接配置の境界LINE・TEXT・INSERT自身（CIRCLE内包ブロックの
+    接続点カウント）・INSERT展開後のTEXTの4パターンを確認する。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    cfg = DEFAULT_REGION_CONFIG
+
+    # 可視の領域境界LINE（lineweight=25, color=2）
+    msp.add_line((0, 0), (10, 0), dxfattribs={'lineweight': 25, 'color': 2})
+    # 非表示の領域境界LINE（同じ識別キーだが invisible=1）
+    invisible_line = msp.add_line((0, 20), (10, 20), dxfattribs={'lineweight': 25, 'color': 2})
+    invisible_line.dxf.invisible = 1
+
+    # 可視ラベルと非表示ラベル
+    msp.add_text('VISIBLE', dxfattribs={'insert': (0, 5)})
+    invisible_text = msp.add_text('HIDDEN', dxfattribs={'insert': (0, 25)})
+    invisible_text.dxf.invisible = 1
+
+    # CIRCLE を含むブロック（接続点候補）
+    circle_block = doc.blocks.new(name='CONN_PT')
+    circle_block.add_circle((0, 0), radius=1)
+
+    # 可視INSERT（接続点として数えられるべき）
+    msp.add_blockref('CONN_PT', (50, 50))
+    # 非表示INSERT（中身ごと除外され、接続点として数えられてはならない）
+    invisible_insert = msp.add_blockref('CONN_PT', (60, 60))
+    invisible_insert.dxf.invisible = 1
+
+    # テキストを含むブロック（INSERT展開後のTEXT収集経路の確認用）
+    text_block = doc.blocks.new(name='TEXT_BLK')
+    text_block.add_text('FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('TEXT_BLK', (100, 100))
+
+    frame_lines, region_lines, region_lines_lp, label_entities, connection_points = (
+        _collect_region_geometry(doc, cfg))
+
+    label_texts = {e.dxf.text for e in label_entities if e.dxftype() == 'TEXT'}
+    assert 'VISIBLE' in label_texts
+    assert 'HIDDEN' not in label_texts
+    assert 'FROM_INSERT' in label_texts
+    assert len(region_lines) == 1  # 可視LINEのみ
+    assert len(connection_points) == 1  # 可視INSERTのみ
+
+
+def test_invisible_excluded_from_terminal_geometry():
+    """invisible=1 のエンティティは terminal_detector._collect_geometry()
+    の収集対象にもならない（2026-09-11、横展開）。TEXT・端子台矩形辺LINE・
+    橋渡しCIRCLEの3種、および直接配置・INSERT自身・INSERT展開後のいずれの
+    経路でも除外されることを確認する。"""
+    from model.terminal_detector import TB_LINE_WEIGHT, TB_LINE_COLOR, TB_CIRCLE_WEIGHT, TB_CIRCLE_COLOR
+
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+
+    # 可視の端子台矩形辺LINE
+    msp.add_line((0, 0), (10, 0), dxfattribs={'lineweight': TB_LINE_WEIGHT, 'color': TB_LINE_COLOR})
+    # 非表示の端子台矩形辺LINE
+    invisible_line = msp.add_line(
+        (0, 20), (10, 20), dxfattribs={'lineweight': TB_LINE_WEIGHT, 'color': TB_LINE_COLOR})
+    invisible_line.dxf.invisible = 1
+
+    # 可視の橋渡しCIRCLE
+    msp.add_circle((5, 5), radius=1, dxfattribs={'lineweight': TB_CIRCLE_WEIGHT, 'color': TB_CIRCLE_COLOR})
+    # 非表示の橋渡しCIRCLE
+    invisible_circle = msp.add_circle(
+        (5, 25), radius=1, dxfattribs={'lineweight': TB_CIRCLE_WEIGHT, 'color': TB_CIRCLE_COLOR})
+    invisible_circle.dxf.invisible = 1
+
+    # 可視テキストと非表示テキスト
+    msp.add_text('VISIBLE', dxfattribs={'insert': (0, 5)})
+    invisible_text = msp.add_text('HIDDEN', dxfattribs={'insert': (0, 25)})
+    invisible_text.dxf.invisible = 1
+
+    # 非表示INSERT（中身ごと除外されるべき）
+    text_block = doc.blocks.new(name='TB_TEXT_BLK')
+    text_block.add_text('FROM_INSERT_HIDDEN', dxfattribs={'insert': (0, 0)})
+    invisible_insert = msp.add_blockref('TB_TEXT_BLK', (100, 100))
+    invisible_insert.dxf.invisible = 1
+
+    texts, lines, circles = _collect_terminal_geometry(doc)
+
+    text_values = {t for t, _x, _y, _rot in texts}
+    assert 'VISIBLE' in text_values
+    assert 'HIDDEN' not in text_values
+    assert 'FROM_INSERT_HIDDEN' not in text_values
+    assert len(lines) == 1  # 可視LINEのみ
+    assert len(circles) == 1  # 可視CIRCLEのみ
+
+
+def test_invisible_excluded_from_extract_labels_direct_call():
+    """invisible=1 のエンティティは extract_labels()（機器符号抽出とは独立した
+    ラベル抽出APIの本体）でも収集されない（2026-09-11、横展開）。MODEL_SPACE
+    直接配置・INSERT展開の2経路を、既存のref_designator経由テストとは別に
+    extract_labels()を直接呼んで確認する。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    msp.add_text('VISIBLE_DIRECT', dxfattribs={'insert': (0, 0)})
+    invisible_text = msp.add_text('HIDDEN_DIRECT', dxfattribs={'insert': (10, 10)})
+    invisible_text.dxf.invisible = 1
+
+    text_block = doc.blocks.new(name='LBL_BLK')
+    text_block.add_text('VISIBLE_FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('LBL_BLK', (50, 50))
+
+    hidden_block = doc.blocks.new(name='HIDDEN_LBL_BLK')
+    hidden_block.add_text('HIDDEN_FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    hidden_insert = msp.add_blockref('HIDDEN_LBL_BLK', (60, 60))
+    hidden_insert.dxf.invisible = 1
+
+    with tempfile.NamedTemporaryFile(suffix='.dxf', delete=False) as f:
+        path = f.name
+    doc.saveas(path)
+    try:
+        labels, info = extract_labels(path)
+    finally:
+        os.remove(path)
+
+    assert 'VISIBLE_DIRECT' in labels
+    assert 'HIDDEN_DIRECT' not in labels
+    assert 'VISIBLE_FROM_INSERT' in labels
+    assert 'HIDDEN_FROM_INSERT' not in labels
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():

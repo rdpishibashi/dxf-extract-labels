@@ -3,7 +3,8 @@
 組み合わせ表:
   - _TB_LABEL_PATTERN: TB+英大文字/数字（候補）/ TB+漢字・TB+スペース（非候補）
   - _build_rect_candidates: 単一CIRCLE橋渡し矩形 / 複数CIRCLE橋渡し矩形 /
-    CIRCLE橋渡しが無いLINEのみの矩形（除外）
+    CIRCLE橋渡しが無いLINEのみの矩形（除外）/ 橋渡しが無い閉じた矩形＋
+    辺近接の内側CIRCLEが2個以上（採用）・中央寄り（除外）・1個のみ（除外）
   - _label_rect_distances / _match_labels_to_rects: ラベルが矩形の上（primary）/
     下（secondary）/ 隣接2矩形の上下衝突（優先度によるグリーディ解消）/
     対応する矩形が無い（unmatched）/ 90°回転時の左右優先
@@ -100,6 +101,45 @@ class TestBuildRectCandidates(unittest.TestCase):
             (0, 0, 10, 0),                 # 下辺のみ（上辺が無い）
         ]
         circles = [(0, 5, 1.0)]
+        rects = td._build_rect_candidates(lines, circles)
+        self.assertEqual(rects, [])
+
+    # 橋渡しの無い閉じた矩形＋内側CIRCLE（EE6312-000-01A.dxf の
+    # TBCB001W/TBDCPST のような、辺のLINEが途切れず端子CIRCLEが矩形内側に
+    # 辺沿いで並ぶ描き方）に対応する3ケース。
+
+    def test_closed_rect_with_two_edge_near_inside_circles_is_adopted(self):
+        # 10x10の閉じた矩形（橋渡し無し）。左辺(x=0)寄りに、辺からの距離が
+        # 半径の2.5倍以内のCIRCLEを2個置く。
+        lines = [
+            (0, 0, 0, 10), (10, 0, 10, 10),
+            (0, 0, 10, 0), (0, 10, 10, 10),
+        ]
+        circles = [(1.5, 3, 1.0), (1.5, 7, 1.0)]  # dist_to_edge=1.5, ratio=1.5
+        rects = td._build_rect_candidates(lines, circles)
+        self.assertEqual(len(rects), 1)
+        r = rects[0]
+        self.assertAlmostEqual(r['xl'], 0)
+        self.assertAlmostEqual(r['xr'], 10)
+
+    def test_closed_rect_with_centered_inside_circles_is_excluded(self):
+        # 同じ閉じた矩形。CIRCLEが中央寄りで辺からの距離が半径の2.5倍を超える
+        # 場合は「辺に付属する端子」とみなさず除外する。
+        lines = [
+            (0, 0, 0, 10), (10, 0, 10, 10),
+            (0, 0, 10, 0), (0, 10, 10, 10),
+        ]
+        circles = [(5, 5, 1.0), (5, 4, 1.0)]  # dist_to_edge=5, ratio=5.0
+        rects = td._build_rect_candidates(lines, circles)
+        self.assertEqual(rects, [])
+
+    def test_closed_rect_with_single_edge_near_inside_circle_is_excluded(self):
+        # 辺近接のCIRCLEが1個だけでは _MIN_INSIDE_EDGE_CIRCLES(2) に満たず除外する。
+        lines = [
+            (0, 0, 0, 10), (10, 0, 10, 10),
+            (0, 0, 10, 0), (0, 10, 10, 10),
+        ]
+        circles = [(1.5, 5, 1.0)]
         rects = td._build_rect_candidates(lines, circles)
         self.assertEqual(rects, [])
 

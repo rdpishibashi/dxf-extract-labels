@@ -124,7 +124,7 @@ def test_excel_result_persists_after_extract(streamlit_server, browser):
 
         assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
             'ラベル抽出後にエラーが表示された')
-        assert page.get_by_role('button', name='Excelをダウンロード').count() > 0, (
+        assert page.get_by_role('button', name='抽出結果をダウンロード').count() > 0, (
             'ラベル抽出後にExcelダウンロードボタンが表示されない'
             '（excel_resultが「領域を検出」OFFガードで誤って消されるバグの再発）')
     finally:
@@ -185,7 +185,7 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
 
         assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
             'ラベル抽出後にエラーが表示された（領域検出モードの回帰）')
-        assert page.get_by_role('button', name='Excelをダウンロード').count() > 0, (
+        assert page.get_by_role('button', name='抽出結果をダウンロード').count() > 0, (
             '領域検出モードでExcelダウンロードボタンが表示されない')
     finally:
         page.close()

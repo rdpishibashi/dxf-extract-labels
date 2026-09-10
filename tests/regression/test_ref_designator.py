@@ -30,7 +30,9 @@ lineweight単独では無関係な線分を拾い検出が壊れることを実�
 """
 import os
 import sys
+import tempfile
 
+import ezdxf
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -134,6 +136,20 @@ def test_is_ref_designator_label_w_no_prefix_rejects_non_matching_casing():
     'Wno.M39301' 等〈ラベルではなく説明文中の言及〉を誤って候補にしないため）。"""
     assert ref_designator.is_ref_designator_label('Wno.M39301') is False
     assert ref_designator.is_ref_designator_label('w no.M06004') is False
+
+
+@pytest.mark.parametrize('label', [
+    # Ω（オーム記号）を含む語の直前で区切る（2026-09-11 ユーザー指示）。
+    # ユーザー提供Excelで「機器符号候補のはず」と報告された括弧なし表記。
+    'R0 2.2KΩ',
+    'R1 2.2KΩ',
+    'R84 4.7KΩ',
+])
+def test_is_ref_designator_label_ohm_symbol_fix(label):
+    """括弧を使わずスペース区切りで抵抗値（Ω）が続く実データ表記が、主抽出
+    パイプラインの `is_ref_designator_label()` で正しく候補と判定される
+    ことを固定する。"""
+    assert ref_designator.is_ref_designator_label(label) is True
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +556,88 @@ def test_is_ref_designator_label_flags_are_consistent_with_classify_labels(sampl
     flagged = {t for t, _x, _y in data['labels'] if ref_designator.is_ref_designator_label(t)}
     classified = {t for t, _x, _y in ref_designator.classify_labels(data['labels'])}
     assert flagged == classified
+
+
+# ---------------------------------------------------------------------------
+# invisible エンティティの除外（2026-09-11、ユーザー報告）
+# ---------------------------------------------------------------------------
+
+def _build_doc_with_invisible_entities():
+    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'R10'と、
+    非表示(invisible=1)のラベル'Takahashi'・非表示の図面枠風LINE4本を配置する。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    for p1, p2 in [((0, 0), (200, 0)), ((200, 0), (200, 100)),
+                   ((200, 100), (0, 100)), ((0, 100), (0, 0))]:
+        msp.add_line(p1, p2, dxfattribs={'lineweight': 100, 'color': 7})
+    msp.add_text('R10', dxfattribs={'insert': (10, 10)})
+    invisible_text = msp.add_text('Takahashi', dxfattribs={'insert': (50, 50)})
+    invisible_text.dxf.invisible = 1
+    # 非表示の「図面枠風」LINE4本（可視の主枠とは別の場所、invisible=1）。
+    # 実データ〈EE6892-612-01B.dxf〉では旧版タイトルブロックの罫線も
+    # invisible=1 のまま残っていたことを踏まえた組み合わせ確認。
+    for p1, p2 in [((300, 0), (500, 0)), ((500, 0), (500, 100)),
+                   ((500, 100), (300, 100)), ((300, 100), (300, 0))]:
+        line = msp.add_line(p1, p2, dxfattribs={'lineweight': 100, 'color': 7})
+        line.dxf.invisible = 1
+    return doc
+
+
+def _save_and_collect(doc):
+    with tempfile.NamedTemporaryFile(suffix='.dxf', delete=False) as f:
+        path = f.name
+    doc.saveas(path)
+    try:
+        return ref_designator.collect_in_frame_labels(path, frame_lineweight=100)
+    finally:
+        os.remove(path)
+
+
+def test_invisible_label_excluded_from_collected_labels():
+    """invisible=1 のTEXT/MTEXTエンティティは、DXFファイル中に座標・テキストが
+    実在していても、機器符号抽出結果に一切現れない（2026-09-11、ユーザー報告:
+    `EE6892-612-01B.dxf` の設計者名'Takahashi'が、図面上には表示されない
+    〈invisible=1〉にもかかわらず抽出結果に含まれていた不具合の修正）。"""
+    result = _save_and_collect(_build_doc_with_invisible_entities())
+    assert result['error'] is None
+    texts = {t for (t, _x, _y) in result['labels']}
+    assert 'R10' in texts
+    assert 'Takahashi' not in texts
+
+
+def test_invisible_line_does_not_form_extra_frame():
+    """invisible=1 のLINE（図面枠と同じlineweight/colorでも）は図面枠検出の
+    対象にしない。可視の主枠1つだけが検出されることを固定する。"""
+    result = _save_and_collect(_build_doc_with_invisible_entities())
+    assert result['error'] is None
+    assert len(result['frames']) == 1
+    assert result['frames'][0] == (0.0, 200.0, 0.0, 100.0)
+
+
+@pytest.mark.parametrize('sample_name', ['EE6892-612-01B.dxf'])
+def test_invisible_titleblock_content_excluded_from_real_sample(sample_name):
+    """実データ〈EE6892-612-01B.dxf〉: 同一図面枠内に新旧2つのタイトルブロックが
+    横並びで存在し、旧タイトルブロック一式（設計者名'Takahashi'を含む、
+    `APPRV`/`CHECK`/`DESIG`/`DRAW`/`TITLE`等のラベルとその罫線）は全て
+    invisible=1 で図面上には表示されない。これらが抽出結果に一切現れない
+    ことを実データで確認する（`_detect_info_frame_bbox()`による幾何除外とは
+    独立した、invisibleフラグによる除外——旧タイトルブロックは現行のものより
+    左に離れた位置にあり、幾何検出の対象クラスタにそもそも含まれないため、
+    この確認はinvisible除外が正しく効いていることの直接的な検証になる）。"""
+    path = _find_sample(sample_name)
+    if not path:
+        pytest.skip(f'sample DXF not found: {sample_name}')
+
+    data = ref_designator.extract_ref_designator_data(
+        path, frame_lineweight=100, original_filename=sample_name)
+    assert data['warning'] is None
+    all_texts = {t for t, _x, _y in data['labels']}
+
+    old_titleblock_leakage = {
+        'Takahashi', 'APPRV', 'CHECK', 'DESIG', 'DRAW', '流用元図番',
+    } & all_texts
+    assert not old_titleblock_leakage, (
+        f'invisible旧タイトルブロックの内容が漏れている: {old_titleblock_leakage}')
 
 
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():

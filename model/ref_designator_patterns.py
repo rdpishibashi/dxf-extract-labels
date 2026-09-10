@@ -321,12 +321,21 @@ def normalize_label(label: str) -> str:
 
 
 def _judgment_text(normalized_label: str) -> str:
-    """判定用文字列を返す（括弧・` **`〈半角スペース+アスタリスク2個〉以降と、
-    その直前の空白を除く）。例: 'R10(2.2K)' -> 'R10'、
-    'FL1F1 ** (FL1F-H12RCE)' -> 'FL1F1'。
+    """判定用文字列を返す（括弧・` **`〈半角スペース+アスタリスク2個〉・
+    「単位記号Ωを含む語の直前の空白」のうち最も左にある位置以降と、その
+    直前の空白を除く）。例: 'R10(2.2K)' -> 'R10'、
+    'FL1F1 ** (FL1F-H12RCE)' -> 'FL1F1'、'R0 2.2KΩ' -> 'R0'。
 
-    どちらのデリミタが先に現れるかは文字列ごとに異なるため、両方の出現位置を
-    調べて早い方（文字列中でより左にある方）を採用する。
+    3種のデリミタ（`(`・` **`・Ω語の直前の空白）のどれが先に現れるかは
+    文字列ごとに異なるため、それぞれの出現位置を調べて最も早い（文字列中で
+    より左にある）ものを採用する。
+
+    **Ω区切り（2026-09-11 追加、ユーザー指示）**: 抵抗値等の単位記号 `Ω`
+    を含む実データ表記（`'R0 2.2KΩ'`・`'R84 4.7KΩ'` 等、括弧を使わずスペース
+    区切りで定数値が続く）に対応する。`Ω` の出現位置を探し、その手前に
+    ある最も近いスペースをデリミタ位置とする（`rfind` で `Ω` より前を検索）。
+    スペースが見つからない場合（`Ω` を含む語が文字列の先頭にある等）は
+    このデリミタは適用しない。
 
     **末尾空白除去（2026-09-11 追加）**: デリミタの直前に空白がある場合
     （`'CB002 (15A)'` 等、`(` の前にスペースを挟む表記）、除去せずに残すと
@@ -338,7 +347,10 @@ def _judgment_text(normalized_label: str) -> str:
     何もしない安全な操作である。"""
     idx_paren = normalized_label.find('(')
     idx_star = normalized_label.find(' **')
-    candidates = [i for i in (idx_paren, idx_star) if i >= 0]
+    idx_omega_char = normalized_label.find('Ω')
+    idx_omega_space = (
+        normalized_label.rfind(' ', 0, idx_omega_char) if idx_omega_char >= 0 else -1)
+    candidates = [i for i in (idx_paren, idx_star, idx_omega_space) if i >= 0]
     idx = min(candidates) if candidates else -1
     judgment = normalized_label[:idx] if idx >= 0 else normalized_label
     return judgment.rstrip()

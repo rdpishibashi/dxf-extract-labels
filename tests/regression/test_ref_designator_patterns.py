@@ -156,6 +156,31 @@ def test_judgment_text_no_delimiter_is_unaffected():
     assert rdp._judgment_text('') == ''
 
 
+@pytest.mark.parametrize('label,expected_judgment', [
+    # Ω（オーム記号）を含む語の直前のスペースで区切る（2026-09-11 ユーザー指示）。
+    # 括弧を使わずスペース区切りで定数値が続く実データ表記
+    # （ユーザー提供Excelの「抽出ラベル一覧」シートで報告された未一致19件）。
+    ('R0 2.2KΩ', 'R0'),
+    ('R1 2.2KΩ', 'R1'),
+    ('R84 4.7KΩ', 'R84'),
+    # Ωを含む語がkΩのように単位接頭辞付きでも同様に区切れる。
+    ('R1 (2.2kΩ 1W)', 'R1'),  # '(' の方が Ω直前スペースより左 → '(' 優先
+])
+def test_judgment_text_splits_before_ohm_symbol_word(label, expected_judgment):
+    """Ω（オーム記号）を含む語の直前にあるスペースをデリミタとして扱う。
+    '(' / ' **' と同様、最も左（早い方）のデリミタが優先される
+    （'R1 (2.2kΩ 1W)' は '(' が Ω直前のスペースより先に現れるため '(' で
+    区切られる。結果は同じ 'R1' になるが、優先順位としては '(' が勝つ）。"""
+    assert rdp._judgment_text(label) == expected_judgment
+    assert rdp.CANDIDATE_PATTERN.match(expected_judgment) is not None
+
+
+def test_judgment_text_ohm_symbol_without_preceding_space_is_unaffected():
+    """Ωを含む語の前にスペースが無い場合（Ωを含む語が文字列の先頭にある等）は、
+    Ω区切りを適用しない（区切る位置が無いため元の動作のまま）。"""
+    assert rdp._judgment_text('2.2KΩ') == '2.2KΩ'
+
+
 # ---------------------------------------------------------------------------
 # 候補パターン — "W No." 前方一致（2026-09-11 ユーザー指示）
 # ---------------------------------------------------------------------------

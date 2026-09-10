@@ -56,15 +56,15 @@ import streamlit as st
 from app import _render_region_confirmation_section
 st.session_state['region_analyses'] = {analyses}
 st.session_state['region_selection_confirmed'] = True
-_render_region_confirmation_section(enable_region_detection=True, locked=False)
+_render_region_confirmation_section(enable_region_detection=True, locked={locked})
 '''
 
 
-def _run_confirmation(analyses):
+def _run_confirmation(analyses, locked=False):
     # Python の repr() で埋め込む（json.dumps() だと None が 'null' になり
     # 埋め込み先のPythonソースとして不正になるため）。
     script = _CONFIRM_SCRIPT_TEMPLATE.format(
-        project_root=PROJECT_ROOT, analyses=repr(analyses))
+        project_root=PROJECT_ROOT, analyses=repr(analyses), locked=locked)
     at = AppTest.from_string(script)
     at.run()
     return at
@@ -122,6 +122,18 @@ def test_confirmation_section_fully_hidden_when_no_targets():
     assert at.caption.len == 0
     assert at.info.len == 0
     assert not any('決定済み' in str(i.value) for i in at.info)
+
+
+def test_confirmation_section_fully_hidden_when_no_targets_and_locked():
+    """結果表示中（`locked=True`、振り返り専用状態）でも、表示対象ファイルが
+    1件も無ければ同様に何も描画しない（組み合わせ表の状態A確認）。"""
+    at = _run_confirmation({
+        'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
+    }, locked=True)
+    assert at.exception.len == 0
+    assert at.subheader.len == 0
+    assert at.caption.len == 0
+    assert at.info.len == 0
 
 
 # ---------------------------------------------------------------------------

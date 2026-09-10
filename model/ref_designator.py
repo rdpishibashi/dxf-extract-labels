@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 
 import ezdxf
 
-from .common_utils import normalize_width, select_layout_result
+from .common_utils import normalize_width, select_layout_result, is_invisible
 from .extract_labels import extract_text_from_entity, _block_has_text_content
 from .region_detector import detect_drawing_frames, assign_region_labels
 from .ref_designator_patterns import CANDIDATE_PATTERN, normalize_label, _judgment_text
@@ -93,19 +93,6 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
     def is_frame_line(e):
         return (getattr(e.dxf, 'lineweight', None) == frame_lineweight
                 and getattr(e.dxf, 'color', None) == frame_color)
-
-    def is_invisible(e):
-        """DXFの`invisible`属性（グループコード60、1=非表示）が立っている
-        エンティティかを返す。CADソフト上で「非表示」に設定された図形
-        （紙面には一切表示されない）は、たとえDXFファイル中に座標・テキスト
-        として存在していても機器符号・図面枠・図面情報枠検出のいずれの
-        対象にもしてはならない（2026-09-11、ユーザー報告により追加:
-        `EE6892-612-01B.dxf` に旧版タイトルブロック一式〈設計者名
-        'Takahashi' を含む〉が invisible=1 のまま残存しており、紙面には
-        表示されないのに機器符号候補として抽出されていた。ULVAC標準の
-        改版運用では、旧版のタイトルブロックを削除せず invisible にして
-        履歴として保持する例があるため、他ファイルでも起こりうる）。"""
-        return bool(e.dxf.get('invisible', 0))
 
     def collect_from_layout(layout):
         frame_lines = []

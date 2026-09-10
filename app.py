@@ -3,6 +3,7 @@ import os
 import sys
 import contextlib
 import traceback
+from io import BytesIO
 import pandas as pd
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +48,16 @@ st.set_page_config(
 #   - RESTART: 「新しい抽出を開始」時。入力状態を含む全リセット
 #     （オプション設定ウィジェットの値は対象外＝保持される、ユーザー指定）。
 # ============================================================
+
+# `analyze_dxf_regions()` が図面枠を検出できなかった場合に設定するエラー文言の
+# 一部（`model/region_detector.py` 参照。frame_lineweight の値を跨いで安定する
+# 部分文字列のみを使う）。図面枠がPaper Spaceにのみ存在する等の既知の未対応
+# ケースで、現時点では対応予定が無いため「領域の確認」セクションに表示しない
+# （2026-09-11 ユーザー指示）。ラベル抽出（機器符号抽出）自体は既存のフォール
+# バックで正常動作するため、この抑制は「領域の確認」UIのみに限定する
+# （Excel出力・他セクションには影響しない）。
+_FRAME_NOT_FOUND_ERROR_MARKER = '領域探索を実施することができませんでした'
+
 _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'region_selection_confirmed',
@@ -55,14 +66,14 @@ _REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
-    'ref_results_summary', 'terminal_results',
+    'ref_results_summary', 'terminal_results', 'extract_preview_expanded',
 ]
 _EXTRACT_CLEAR_PREFIXES = ()
 
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
-    'terminal_results', 'region_selection_confirmed',
+    'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
 ]
 _RESTART_CLEAR_PREFIXES = ('rc_', 'grc_')
 
@@ -446,7 +457,7 @@ def _render_upload_section():
     if 'uploader_version' not in st.session_state:
         st.session_state['uploader_version'] = 0
     uploaded_files = st.file_uploader(
-        "DXFファイルを選択してください（複数可）",
+        "DXFファイルを選択してください（複数可，フォルダ可）",
         type="dxf",
         accept_multiple_files=True,
         key=f"dxf_uploader_{st.session_state['uploader_version']}",
@@ -719,6 +730,8 @@ def _render_region_confirmation_section(enable_region_detection, locked):
     rendered_any = False
     for fname, analysis in sorted(analyses.items()):
         err = analysis.get('error')
+        if err and _FRAME_NOT_FOUND_ERROR_MARKER in err:
+            continue  # 図面枠が見つからない既知の未対応ケースは表示しない
         regions = analysis.get('regions', [])
         pending_regions = [
             r for r in regions if is_region_pending_selection(r, checked_names)
@@ -920,42 +933,31 @@ def _render_results_section():
             summ = st.session_state.get('ref_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルから機器符号の抽出が完了しました")
 
-        with st.expander("📊 抽出結果統計", expanded=False):
-            if is_region_mode:
-                summ = st.session_state.get('region_results_summary', {})
-                if summ:
-                    rows = []
-                    for f, d in summ.items():
-                        rows.append({
-                            'ファイル名': f,
-                            '総抽出ラベル数': d.get('total_in_frame', 0),
-                            '機器符号候補ラベル数': d.get('ref_designator_count', 0),
-                            'ページ数': d.get('frames', 0),
-                            '検出領域数': d.get('regions_detected', 0),
-                            '確定領域数': d.get('regions_named', 0),
-                            '領域内ラベル数': d.get('in_region_count', 0),
-                        })
-                    st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-            else:
-                summ = st.session_state.get('ref_results_summary', {})
-                rows = []
-                for f, d in summ.items():
-                    rows.append({
-                        'ファイル名': f,
-                        '図面枠内ラベル数': d.get('total_in_frame', 0),
-                        '機器符号候補ラベル数': d.get('ref_designator_count', 0),
-                        '図番': d.get('main_drawing_number', '') or '',
-                        '流用元図番': d.get('source_drawing_number', '') or '',
-                        'タイトル': d.get('title', '') or '',
-                        'サブタイトル': d.get('subtitle', '') or '',
-                    })
-                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        # 「一度開いたら開いたままにする」は、シート選択(selectbox)の変更という
+        # 明示的なユーザー操作があった場合のみ反映する（on_change）。st.expander
+        # の中身は collapsed 表示中でも毎回実行されるため、ここで無条件に True を
+        # 立てると初回表示から常に展開済みになってしまう（DXF-diff-manager の
+        # 同型パターン〈diff_preview_expanded〉を踏襲）。
+        def _mark_extract_preview_expanded():
+            st.session_state['extract_preview_expanded'] = True
+
+        preview_expanded = st.session_state.get('extract_preview_expanded', False)
+        with st.expander("抽出結果プレビュー", expanded=preview_expanded):
+            preview_xl = pd.ExcelFile(BytesIO(st.session_state.excel_result))
+            preview_sheet = st.selectbox(
+                "シートを選択",
+                preview_xl.sheet_names,
+                key="extract_preview_sheet",
+                on_change=_mark_extract_preview_expanded,
+            )
+            st.dataframe(
+                preview_xl.parse(preview_sheet), width='stretch', hide_index=True)
 
         download_done = st.session_state.get('download_done', False)
 
         st.write(f"出力ファイル：**{st.session_state.output_filename}**")
         downloaded = st.download_button(
-            label="Excelをダウンロード",
+            label="抽出結果をダウンロード",
             data=st.session_state.excel_result,
             file_name=st.session_state.output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

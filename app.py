@@ -22,6 +22,7 @@ from model.excel_output import (
 from model.common_utils import save_uploadedfile
 from model import ref_designator
 from model import terminal_detector
+from model import assembly_compare
 from config import region_detection_config
 
 
@@ -58,23 +59,33 @@ st.set_page_config(
 # （Excel出力・他セクションには影響しない）。
 _FRAME_NOT_FOUND_ERROR_MARKER = '領域探索を実施することができませんでした'
 
+# 「結線図-組立図を比較」用のセッションキー（v3.6.0）。抽出結果本体
+# （`extract_results_full`/`extract_sort_value`）はB確定後のExcel再生成に、
+# `assembly_compare_candidates`/`assembly_compare_b`/`assembly_compare_warning`
+# は選択UI・警告表示の状態に使う。3つのクリア対象リストすべてに含める
+# （いずれも「前回の抽出結果が古くなるタイミング」で揃って無効化すべきため）。
+_ASSEMBLY_COMPARE_CLEAR_KEYS = [
+    'extract_results_full', 'extract_sort_value',
+    'assembly_compare_candidates', 'assembly_compare_b', 'assembly_compare_warning',
+]
+
 _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'region_selection_confirmed',
-]
+] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'ref_results_summary', 'terminal_results', 'extract_preview_expanded',
-]
+] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _EXTRACT_CLEAR_PREFIXES = ()
 
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
-]
+] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _RESTART_CLEAR_PREFIXES = ('rc_', 'grc_')
 
 
@@ -466,8 +477,8 @@ def _render_upload_section():
 
 
 def _render_options_section(locked):
-    """オプション欄（領域検出・端子一覧抽出・並び替え・出力ファイル名）を表示し、
-    選択値を dict で返す。
+    """オプション欄（領域検出・端子一覧抽出・結線図-組立図比較・並び替え・
+    出力ファイル名）を表示し、選択値を dict で返す。
 
     v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
     抽出」の2オプションを廃止した。図面枠内・図面情報枠外の全ラベルを常に抽出し
@@ -521,6 +532,19 @@ def _render_options_section(locked):
                  "は対象外です。"
         )
 
+        # c) 結線図-組立図を比較
+        compare_assembly_option = st.checkbox(
+            "結線図-組立図を比較",
+            value=False,
+            disabled=locked,
+            help="タイトルが「UNIT内結線図」の図面（複数可）を結線図（A）、"
+                 "タイトルに「組立図」を含む図面をB として、両者のラベル（機器符号）を"
+                 "比較し「結線図-組立図比較」シート（抽出ラベル一覧シート直前）に"
+                 "出力します。\n\n"
+                 "Bに該当する図面が0件または複数件見つかった場合は自動確定できないため、"
+                 "抽出後に表示される候補から選んで比較を実行してください。"
+        )
+
     with col_right:
         sort_option = st.selectbox(
             "並び替え",
@@ -547,6 +571,7 @@ def _render_options_section(locked):
     return {
         'enable_region_detection': enable_region_detection,
         'extract_terminal_option': extract_terminal_option,
+        'compare_assembly_option': compare_assembly_option,
         'sort_value': sort_value,
         'output_filename': output_filename,
     }
@@ -843,6 +868,43 @@ def _render_region_confirmation_section(enable_region_detection, locked):
                 )
 
 
+def _resolve_assembly_compare(results, compare_assembly_option):
+    """「結線図-組立図を比較」ON時、抽出結果からA（結線図）・B（組立図）を自動判定し、
+    Bが一意に決まればその場で比較結果を返す（`model/assembly_compare.py` 参照）。
+
+    - A（タイトルに「UNIT内結線図」を含む図面）が1件も無い場合:
+      `assembly_compare_warning` に警告文言を格納し None を返す（比較シートを
+      作らない。D4）。
+    - B（タイトルに「組立図」を含む図面）がちょうど1件なら、その場で
+      `compare_assembly()` を呼んで比較結果を返す（自動確定、D2）。
+    - Bが0件・複数件の場合は自動確定できないため、`assembly_compare_candidates`
+      に候補（0件時は全ファイル名）を格納して None を返す。呼び出し元
+      `_render_results_section()` がこのキーを見て選択UIを表示し、選択後に
+      `assembly_compare.compare_assembly()` を直接呼んでExcelを再生成する（D3）。
+
+    OFF時は常に None（前回の候補・警告は `_EXTRACT_CLEAR_KEYS` 等で
+    呼び出し元が既にクリア済み）。
+    """
+    if not compare_assembly_option:
+        return None
+
+    wiring_files = assembly_compare.select_wiring_files(results)
+    if not wiring_files:
+        st.session_state['assembly_compare_warning'] = (
+            'タイトルに「UNIT内結線図」を含む図面が見つからないため、'
+            '「結線図-組立図比較」シートは作成されません。')
+        return None
+
+    candidates = assembly_compare.select_assembly_candidates(results)
+    if len(candidates) == 1:
+        b_fname = candidates[0]
+        st.session_state['assembly_compare_b'] = b_fname
+        return assembly_compare.compare_assembly(results, wiring_files, b_fname)
+
+    st.session_state['assembly_compare_candidates'] = candidates if candidates else sorted(results.keys())
+    return None
+
+
 def _handle_extract_button(uploaded_files, region_cfg, opts):
     """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常）に
     応じた抽出処理を実行する。
@@ -859,6 +921,7 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
     `extract_drawing_numbers_option`/`extract_title_option` を必ずセットで渡す
     （`Tools/CLAUDE.md` の呼び出し側オプション整合性ルール）。"""
     extract_terminal_option = opts['extract_terminal_option']
+    compare_assembly_option = opts['compare_assembly_option']
     sort_value = opts['sort_value']
     output_filename = opts['output_filename']
 
@@ -898,14 +961,19 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                     }
                     region_results = ref_designator.build_ref_designator_region_results(
                         ref_data_by_file, analyses, name_selections_by_file, sort_value)
+                    assembly_result = _resolve_assembly_compare(
+                        region_results, compare_assembly_option)
                     st.session_state.excel_result = create_region_excel_output(
-                        region_results, terminal_results=terminal_results)
+                        region_results, terminal_results=terminal_results,
+                        assembly_compare=assembly_result)
                     st.session_state.output_filename = output_filename
                     st.session_state['is_region_mode'] = True
                     st.session_state['region_results_summary'] = {
                         f: {k: v for k, v in d.items() if k not in ('named', 'rows', 'region_rows')}
                         for f, d in region_results.items()
                     }
+                    st.session_state['extract_results_full'] = region_results
+                    st.session_state['extract_sort_value'] = sort_value
 
                 else:
                     # 通常モード: 抽出して直ちにExcelを生成する
@@ -928,17 +996,62 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                         ref_data_by_file[uploaded_file.name] = data
 
                     ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value)
+                    assembly_result = _resolve_assembly_compare(ref_final, compare_assembly_option)
                     st.session_state.excel_result = create_ref_designator_excel_output(
-                        ref_final, sort_value, terminal_results=terminal_results)
+                        ref_final, sort_value, terminal_results=terminal_results,
+                        assembly_compare=assembly_result)
                     st.session_state.output_filename = output_filename
                     st.session_state['is_region_mode'] = False
                     st.session_state['ref_results_summary'] = ref_final
+                    st.session_state['extract_results_full'] = ref_final
+                    st.session_state['extract_sort_value'] = sort_value
 
                 st.session_state['download_done'] = False
 
             st.rerun()
         except Exception as e:
             handle_error(e)
+
+
+def _handle_assembly_compare_selection():
+    """「結線図-組立図を比較」でBを自動確定できなかった場合（0件・複数件）に、
+    候補から選んで比較を実行するUIを表示する（D3）。
+
+    `assembly_compare_candidates` が session_state に無ければ何も表示しない
+    （B=1件で自動確定済み、または比較OFFの場合）。実行後は確定した組立図名を
+    `assembly_compare_b` に格納し、`assembly_compare_candidates` を消してから
+    Excelを再生成する（`extract_results_full`/`extract_sort_value` に保持した
+    抽出結果一式を使い、`terminal_results`・`output_filename` も前回と同じ値を
+    引き継ぐ。表4「呼び出し元×Excel出力関数」参照——初回抽出時と同じ引数一式を
+    渡すことを両ハンドラで確認済み）。"""
+    candidates = st.session_state.get('assembly_compare_candidates')
+    if not candidates:
+        return
+
+    st.warning(
+        "「結線図-組立図比較」の組立図（B）を自動判定できませんでした"
+        "（タイトルに「組立図」を含む図面が0件、または複数件見つかりました）。"
+        "比較する図面を選択してください。"
+    )
+    b_fname = st.selectbox("B：比較する組立図", candidates, key='assembly_compare_b_select')
+    if st.button("比較を実行", key='assembly_compare_run'):
+        results = st.session_state['extract_results_full']
+        wiring_files = assembly_compare.select_wiring_files(results)
+        compare_result = assembly_compare.compare_assembly(results, wiring_files, b_fname)
+
+        terminal_results = st.session_state.get('terminal_results')
+        if st.session_state.get('is_region_mode', False):
+            st.session_state.excel_result = create_region_excel_output(
+                results, terminal_results=terminal_results, assembly_compare=compare_result)
+        else:
+            st.session_state.excel_result = create_ref_designator_excel_output(
+                results, st.session_state['extract_sort_value'],
+                terminal_results=terminal_results, assembly_compare=compare_result)
+
+        st.session_state['assembly_compare_b'] = b_fname
+        del st.session_state['assembly_compare_candidates']
+        st.session_state['download_done'] = False
+        st.rerun()
 
 
 def _render_results_section():
@@ -962,6 +1075,11 @@ def _render_results_section():
         else:
             summ = st.session_state.get('ref_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルから機器符号の抽出が完了しました")
+
+        assembly_warning = st.session_state.get('assembly_compare_warning')
+        if assembly_warning:
+            st.warning(assembly_warning)
+        _handle_assembly_compare_selection()
 
         # 「一度開いたら開いたままにする」は、シート選択(selectbox)の変更という
         # 明示的なユーザー操作があった場合のみ反映する（on_change）。st.expander

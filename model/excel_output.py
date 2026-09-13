@@ -125,6 +125,13 @@ def _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_for
     行ごとに区分（両方/A のみ/B のみ）と個数一致で色分けするため（`row_style()`）、
     `_write_label_count_sheet()`（pandas経由の一括書き込み）は使わず、
     `領域別ラベル一覧` と同じ方式でワークシートを直接構築する。
+
+    セルの罫線は他の全シート（`抽出ラベル一覧`・各ファイルシート等）と同様に
+    デフォルトのまま（罫線なし）とする。ヘッダー行のみ `header_format`
+    （太字・背景色・罫線）を適用する点も他シートと共通。データ行には色分け
+    以外の書式を加えない（2026-09-13 ユーザー指摘: 移植元 `DXF-label-compare`
+    は全データセルに `border: 1` を付けていたが、本プロジェクトの他シートは
+    データ行に罫線を付けない方針のため、そちらには合わせない）。
     """
     if not assembly_compare or not assembly_compare.get('rows'):
         return None
@@ -135,7 +142,7 @@ def _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_for
         ws.write(0, col_idx, col_name, header_format)
 
     row_formats = {
-        style_key: workbook.add_format({**(color or {}), 'border': 1})
+        style_key: workbook.add_format(color) if color else None
         for style_key, color in ROW_STYLE_COLORS.items()
     }
 

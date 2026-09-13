@@ -23,6 +23,7 @@ from .common_utils import normalize_width
 from .ref_designator import is_ref_designator_label
 from .region_detector import build_region_label_summary
 from .terminal_detector import build_terminal_rows
+from .assembly_compare import COMPARE_COLUMNS, COMPARE_SHEET_NAME, ROW_STYLE_COLORS, row_style
 
 # Summary シートの列構成（v3.0.0、通常モード・領域モード共通）。
 # 通常モードでは「検出領域数」に常に 0 を入れる。
@@ -113,6 +114,46 @@ def _write_terminal_sheet(writer, terminal_results, header_format):
         columns=('端子台', '端子No.', '図番'), col_widths=(25, 40, 20))
 
 
+def _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_format):
+    """「結線図-組立図比較」シートを書き込む（「端子一覧を抽出」ON時のTB List
+    直後・各ファイルシートの直前に配置、v3.6.0）。
+
+    `assembly_compare` は `model/assembly_compare.compare_assembly()` の戻り値
+    （{'b_file','rows','summary'}）。None または `rows` が空の場合は何もしない
+    （シートを作らない）。
+
+    行ごとに区分（両方/A のみ/B のみ）と個数一致で色分けするため（`row_style()`）、
+    `_write_label_count_sheet()`（pandas経由の一括書き込み）は使わず、
+    `領域別ラベル一覧` と同じ方式でワークシートを直接構築する。
+    """
+    if not assembly_compare or not assembly_compare.get('rows'):
+        return None
+    rows = assembly_compare['rows']
+
+    ws = workbook.add_worksheet(COMPARE_SHEET_NAME)
+    for col_idx, col_name in enumerate(COMPARE_COLUMNS):
+        ws.write(0, col_idx, col_name, header_format)
+
+    row_formats = {
+        style_key: workbook.add_format({**(color or {}), 'border': 1})
+        for style_key, color in ROW_STYLE_COLORS.items()
+    }
+
+    for row_idx, r in enumerate(rows, start=1):
+        fmt = row_formats[row_style(r['比較結果'], r['A 合計出現数'], r['B 出現数'])]
+        for col_idx, col_name in enumerate(COMPARE_COLUMNS):
+            ws.write(row_idx, col_idx, r[col_name], fmt)
+
+    ws.set_column('A:A', 12)
+    ws.set_column('B:B', 25)
+    ws.set_column('C:E', 12)
+    ws.set_column('F:F', 30)
+    ws.set_column('G:G', 12)
+    ws.freeze_panes(1, 0)
+    ws.autofilter(0, 0, len(rows), len(COMPARE_COLUMNS) - 1)
+    return ws
+
+
 def _build_summary_row(fname, total_in_frame, ref_designator_count, frames,
                         regions_detected, drawing_number, title, subtitle):
     """Summary シート1行分（`SUMMARY_COLUMNS` の8列）を構築する（v3.0.0、
@@ -130,7 +171,8 @@ def _build_summary_row(fname, total_in_frame, ref_designator_count, frames,
     }
 
 
-def create_ref_designator_excel_output(results, sort_option, terminal_results=None):
+def create_ref_designator_excel_output(results, sort_option, terminal_results=None,
+                                        assembly_compare=None):
     """通常モードの Excel を生成する。
 
     `results`: {fname: {...}}（キーは各値の意味）
@@ -144,6 +186,11 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
 
     'rows' はラベルの正規化（NFKC・前後空白除去）済みで渡される想定
     （`model/ref_designator.py` 側で実施済み）。
+
+    `assembly_compare`: `model/assembly_compare.compare_assembly()` の戻り値、
+    または None（「結線図-組立図を比較」OFF時・比較対象が特定できない場合、
+    v3.6.0）。指定時は「TB List」直後・各ファイルシートの直前に
+    「結線図-組立図比較」シートを追加する。
 
     Summary シート・各ファイルシートともファイル名昇順で出力する。
     """
@@ -188,6 +235,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
                                  col_widths=(12, 25, 10, 30))
 
         _write_terminal_sheet(writer, terminal_results, header_format)
+        _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_format)
 
         for fname, data in sorted_items:
             sheet_name = os.path.splitext(fname)[0][:31]
@@ -204,8 +252,13 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
     return output.getvalue()
 
 
-def create_region_excel_output(region_results, terminal_results=None):
+def create_region_excel_output(region_results, terminal_results=None, assembly_compare=None):
     """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。
+
+    `assembly_compare`: `create_ref_designator_excel_output()` と同じ
+    （`model/assembly_compare.compare_assembly()` の戻り値、または None）。
+    指定時は「TB List」直後・各ファイルシートの直前に「結線図-組立図比較」
+    シートを追加する（v3.6.0）。
 
     Summary シート・各ファイルシートともファイル名昇順で出力する
     （region_results をソート済み dict に差し替えることで、領域別ラベル
@@ -334,6 +387,7 @@ def create_region_excel_output(region_results, terminal_results=None):
             lbl_ws.autofilter(0, 0, len(label_summary_rows), col - 1)
 
         _write_terminal_sheet(writer, terminal_results, header_format)
+        _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_format)
 
         for fname, data in region_results.items():
             sheet_name = os.path.splitext(fname)[0][:31]

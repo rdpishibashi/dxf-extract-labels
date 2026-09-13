@@ -431,6 +431,135 @@ def test_build_region_label_summary_aggregates_across_files():
     assert by_label['GND']['per_file'].get('b.dxf', 0) == 0   # file2 に無いラベルは0扱い
 
 
+# ---------------------------------------------------------------------------
+# 結線図-組立図比較シート（v3.6.0新設）
+#
+# 組み合わせ表（モード×端子一覧×比較のシート順への影響、DXF-extract-labels
+# 「結線図-組立図を比較」引き継ぎ書 §5 表1）:
+#   通常/端子OFF/比較OFF → 影響なし（既存テストでカバー済み）
+#   通常/端子OFF/比較ON  → 抽出ラベル一覧の直後に比較シート（下記でテスト）
+#   通常/端子ON /比較ON  → TB List の直後（下記でテスト）
+#   領域/端子OFF/比較ON  → 領域別ラベル一覧の直後（下記でテスト）
+#   領域/端子ON /比較ON  → TB List の直後（下記でテスト）
+# ---------------------------------------------------------------------------
+
+def _make_assembly_compare_result():
+    """A（a.dxf: R10×2）とB（b.dxf: R10×2・C1×1）の比較結果。
+    R10 は両方・個数一致（無色）、C1 は B のみ（緑）を含む最小データ。"""
+    from model.assembly_compare import compare_assembly
+    results = {
+        'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 2}],
+                  'main_drawing_number': 'EE001'},
+        'b.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 2},
+                            {'機器符号候補': 'Y', 'ラベル': 'C1', '個数': 1}],
+                  'main_drawing_number': 'EE900'},
+    }
+    return compare_assembly(results, ['a.dxf'], 'b.dxf')
+
+
+def _make_terminal_results():
+    """`_write_terminal_sheet` が「TB List」シートを作るための最小データ。"""
+    return {
+        'a.dxf': {
+            'is_target': True, 'drawing_number': 'EE001',
+            'entries': [{'label': 'TB1', 'numbers': [1, 2]}],
+            'unmatched_labels': [],
+        },
+    }
+
+
+def test_create_ref_designator_excel_output_assembly_compare_absent_by_default():
+    """assembly_compare を渡さない（既定 None）場合、従来どおりシートは増えない。"""
+    wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'asc'))
+    assert '結線図-組立図比較' not in wb.sheetnames
+
+
+def test_create_ref_designator_excel_output_assembly_compare_position_normal_mode():
+    """通常モード・端子OFF: 比較シートは『抽出ラベル一覧』の直後・各ファイル
+    シートの直前に入る。"""
+    results = _make_ref_designator_results()
+    wb = _load_wb(create_ref_designator_excel_output(
+        results, 'asc', assembly_compare=_make_assembly_compare_result()))
+    assert wb.sheetnames == ['Summary', '抽出ラベル一覧', '結線図-組立図比較', 'fileA']
+
+
+def test_create_ref_designator_excel_output_assembly_compare_position_with_terminal():
+    """通常モード・端子ON: 比較シートは『TB List』の直後に入る。"""
+    results = _make_ref_designator_results()
+    wb = _load_wb(create_ref_designator_excel_output(
+        results, 'asc', terminal_results=_make_terminal_results(),
+        assembly_compare=_make_assembly_compare_result()))
+    assert wb.sheetnames == ['Summary', '抽出ラベル一覧', 'TB List', '結線図-組立図比較', 'fileA']
+
+
+def test_create_ref_designator_excel_output_assembly_compare_columns_and_header_format():
+    results = _make_ref_designator_results()
+    wb = _load_wb(create_ref_designator_excel_output(
+        results, 'asc', assembly_compare=_make_assembly_compare_result()))
+    ws = wb['結線図-組立図比較']
+    header_cells = ws[1]
+    assert [c.value for c in header_cells] == [
+        '機器符号候補', 'ラベル', 'A 合計出現数', 'A 図番数', 'B 出現数', 'A 図番', '比較結果',
+    ]
+    # ヘッダー書式は本プロジェクトの標準（灰 #D3D3D3・太字）に揃える
+    # （移植元 DXF-label-compare の青ヘッダーは採用しない）。
+    for c in header_cells:
+        assert c.font.bold
+        assert c.fill.start_color.rgb == 'FFD3D3D3'
+
+
+def test_create_ref_designator_excel_output_assembly_compare_row_colors():
+    """区分ごとの行色を確認する（両方・個数一致=無色、B のみ=緑）。"""
+    results = _make_ref_designator_results()
+    wb = _load_wb(create_ref_designator_excel_output(
+        results, 'asc', assembly_compare=_make_assembly_compare_result()))
+    ws = wb['結線図-組立図比較']
+    rows = {row[1].value: row for row in ws.iter_rows(min_row=2)}
+
+    r10 = rows['R10']
+    assert r10[6].value == '両方'
+    assert r10[0].fill.start_color.rgb == '00000000'   # 無色（一致）
+
+    c1 = rows['C1']
+    assert c1[6].value == 'B のみ'
+    assert c1[0].fill.start_color.rgb == 'FFC6EFCE'   # 緑
+
+
+def test_create_region_excel_output_assembly_compare_position():
+    """領域モード・端子OFF: 比較シートは『領域別ラベル一覧』の直後・各ファイル
+    シートの直前に入る。"""
+    results = _make_multi_file_region_results()
+    wb = _load_wb(create_region_excel_output(
+        results, assembly_compare=_make_assembly_compare_result()))
+    idx_label_summary = wb.sheetnames.index('領域別ラベル一覧')
+    assert wb.sheetnames[idx_label_summary + 1] == '結線図-組立図比較'
+    assert wb.sheetnames[idx_label_summary + 2] in ('a', 'b')
+
+
+def test_create_region_excel_output_assembly_compare_position_with_terminal():
+    """領域モード・端子ON: 比較シートは『TB List』の直後に入る。"""
+    results = _make_multi_file_region_results()
+    wb = _load_wb(create_region_excel_output(
+        results, terminal_results=_make_terminal_results(),
+        assembly_compare=_make_assembly_compare_result()))
+    idx_tb = wb.sheetnames.index('TB List')
+    assert wb.sheetnames[idx_tb + 1] == '結線図-組立図比較'
+
+
+def test_create_region_excel_output_assembly_compare_absent_by_default():
+    wb = _load_wb(create_region_excel_output(_make_region_results()))
+    assert '結線図-組立図比較' not in wb.sheetnames
+
+
+def test_create_ref_designator_excel_output_assembly_compare_none_rows_skips_sheet():
+    """`assembly_compare` は指定されているが rows が空（A・B双方に対象ラベルが
+    無い等）の場合は、シート自体を作らない。"""
+    empty_compare = {'b_file': 'b.dxf', 'rows': [], 'summary': {}}
+    wb = _load_wb(create_ref_designator_excel_output(
+        _make_ref_designator_results(), 'asc', assembly_compare=empty_compare))
+    assert '結線図-組立図比較' not in wb.sheetnames
+
+
 def test_create_region_excel_output_label_summary_sheet():
     """「領域別ラベル一覧」シートが「領域一覧」の直後に作成され、指定のヘッダー・
     データ配置になっていること。「機器符号候補」列は「ラベル」列の直左に挿入される

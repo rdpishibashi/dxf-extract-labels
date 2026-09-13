@@ -278,3 +278,183 @@ def test_results_section_has_extraction_results_subheader():
     assert at.exception.len == 0
     subheader_values = [s.value for s in at.subheader]
     assert '抽出結果' in subheader_values
+
+
+# ---------------------------------------------------------------------------
+# 「結線図-組立図を比較」オプション（v3.6.0新設）
+# ---------------------------------------------------------------------------
+
+_OPTIONS_SCRIPT = '''
+import sys
+sys.path.insert(0, {project_root!r})
+from app import _render_options_section
+_render_options_section(locked=False)
+'''.format(project_root=PROJECT_ROOT)
+
+
+def test_options_section_has_compare_assembly_checkbox_after_terminal_option():
+    """「結線図-組立図を比較」チェックボックスが「端子一覧を抽出」の直後に
+    配置されていることを固定する（ユーザー指定の配置）。"""
+    at = AppTest.from_string(_OPTIONS_SCRIPT)
+    at.run()
+    assert at.exception.len == 0
+    labels = [c.label for c in at.checkbox]
+    assert '結線図-組立図を比較' in labels
+    assert labels.index('結線図-組立図を比較') == labels.index('端子一覧を抽出') + 1
+
+
+_RESULTS_SCRIPT_WITH_EXTRA_STATE_TEMPLATE = '''
+import sys
+sys.path.insert(0, {project_root!r})
+import base64
+import streamlit as st
+from app import _render_results_section
+st.session_state['excel_result'] = base64.b64decode({excel_b64!r})
+st.session_state['output_filename'] = 'extracted_labels.xlsx'
+st.session_state['is_region_mode'] = False
+st.session_state['ref_results_summary'] = {{'a.dxf': {{}}}}
+{extra_state}
+_render_results_section()
+'''
+
+
+def _run_results_section_with_extra_state(extra_state: str):
+    excel_b64 = base64.b64encode(_minimal_excel_bytes()).decode('ascii')
+    script = _RESULTS_SCRIPT_WITH_EXTRA_STATE_TEMPLATE.format(
+        project_root=PROJECT_ROOT, excel_b64=excel_b64, extra_state=extra_state)
+    at = AppTest.from_string(script)
+    at.run()
+    return at
+
+
+def test_results_section_shows_assembly_compare_warning_when_no_wiring_files():
+    """A（結線図）側が1件も見つからない場合、`assembly_compare_warning` の
+    文言が警告として表示される（D4）。"""
+    at = _run_results_section_with_extra_state(
+        "st.session_state['assembly_compare_warning'] = 'A側の警告テスト文言'")
+    assert at.exception.len == 0
+    warning_values = [w.value for w in at.warning]
+    assert 'A側の警告テスト文言' in warning_values
+
+
+def test_results_section_shows_b_candidate_selection_ui():
+    """Bを自動確定できない場合（0件・複数件）、候補一覧の selectbox と
+    「比較を実行」ボタンが表示される（D3）。"""
+    extra_state = (
+        "st.session_state['assembly_compare_candidates'] = ['b.dxf', 'c.dxf']\n"
+        "st.session_state['extract_results_full'] = {'a.dxf': {'rows': []}}\n"
+        "st.session_state['extract_sort_value'] = 'asc'"
+    )
+    at = _run_results_section_with_extra_state(extra_state)
+    assert at.exception.len == 0
+    selectboxes = [sb for sb in at.selectbox if sb.key == 'assembly_compare_b_select']
+    assert len(selectboxes) == 1
+    assert selectboxes[0].options == ['b.dxf', 'c.dxf']
+    button_labels = [b.label for b in at.button]
+    assert '比較を実行' in button_labels
+
+
+def test_results_section_no_assembly_compare_ui_when_not_applicable():
+    """比較OFF（`assembly_compare_candidates`/`assembly_compare_warning` が
+    いずれもセットされていない）場合、比較関連のUIは一切表示されない。"""
+    at = _run_results_section()
+    assert at.exception.len == 0
+    assert not any(sb.key == 'assembly_compare_b_select' for sb in at.selectbox)
+    assert not any(b.label == '比較を実行' for b in at.button)
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_assembly_compare()` — B自動判定の分岐（app.py 引き継ぎ書 §5 表2）
+#
+# `st.session_state` への書き込みを伴うため、`AppTest.from_string()` で実行
+# して結果を検証する（model層の純関数〈select_wiring_files 等〉は
+# tests/unit/test_assembly_compare.py で検証済み。ここでは分岐とセッション
+# キーへの反映のみを対象にする）。
+# ---------------------------------------------------------------------------
+
+_RESOLVE_SCRIPT_TEMPLATE = '''
+import sys
+sys.path.insert(0, {project_root!r})
+import streamlit as st
+from app import _resolve_assembly_compare
+results = {results!r}
+result = _resolve_assembly_compare(results, {option})
+st.session_state['_test_result'] = result
+'''
+
+
+def _run_resolve(results, compare_assembly_option=True):
+    script = _RESOLVE_SCRIPT_TEMPLATE.format(
+        project_root=PROJECT_ROOT, results=results, option=compare_assembly_option)
+    at = AppTest.from_string(script)
+    at.run()
+    return at
+
+
+def test_resolve_assembly_compare_off_returns_none():
+    """比較OFF（`compare_assembly_option=False`）の場合、A/B判定を行わず
+    常に None を返す。"""
+    results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図'}}
+    at = _run_resolve(results, compare_assembly_option=False)
+    assert at.exception.len == 0
+    assert at.session_state['_test_result'] is None
+
+
+def test_resolve_assembly_compare_auto_confirms_when_b_is_unique():
+    """A≥1件・B=1件（表2 左上セル）: 自動確定して比較結果を返し、
+    `assembly_compare_b` にBのファイル名を格納する。"""
+    results = {
+        'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1}],
+                  'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
+        'b.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1}],
+                  'title': '組立図', 'main_drawing_number': 'EE2'},
+    }
+    at = _run_resolve(results)
+    assert at.exception.len == 0
+    result = at.session_state['_test_result']
+    assert result['b_file'] == 'b.dxf'
+    assert at.session_state['assembly_compare_b'] == 'b.dxf'
+    assert 'assembly_compare_candidates' not in at.session_state
+    assert 'assembly_compare_warning' not in at.session_state
+
+
+def test_resolve_assembly_compare_warns_when_no_wiring_files():
+    """A=0件（表2 下段、D4）: 警告文言をセットし None を返す。
+    B側の判定は行わないため候補キーもセットされない。"""
+    results = {
+        'a.dxf': {'rows': [], 'title': 'ＳＹＳＴＥＭ＿機器銘板'},
+        'b.dxf': {'rows': [], 'title': '組立図'},
+    }
+    at = _run_resolve(results)
+    assert at.exception.len == 0
+    assert at.session_state['_test_result'] is None
+    assert 'UNIT内結線図' in at.session_state['assembly_compare_warning']
+    assert 'assembly_compare_candidates' not in at.session_state
+
+
+def test_resolve_assembly_compare_sets_candidates_when_b_has_multiple_matches():
+    """A≥1件・B=複数件（表2 右上セル）: 自動確定せず、候補一覧を
+    `assembly_compare_candidates` に格納して None を返す。"""
+    results = {
+        'a.dxf': {'rows': [], 'title': 'UNIT内結線図'},
+        'b1.dxf': {'rows': [], 'title': '組立図（上部）'},
+        'b2.dxf': {'rows': [], 'title': '組立図（下部）'},
+    }
+    at = _run_resolve(results)
+    assert at.exception.len == 0
+    assert at.session_state['_test_result'] is None
+    assert at.session_state['assembly_compare_candidates'] == ['b1.dxf', 'b2.dxf']
+    assert 'assembly_compare_b' not in at.session_state
+
+
+def test_resolve_assembly_compare_falls_back_to_all_files_when_b_has_no_matches():
+    """A≥1件・B=0件（表2 中央上セル）: 自動確定せず、全ファイル名を候補に
+    格納して None を返す（ユーザーが手動でBを選べるようにするため）。"""
+    results = {
+        'a.dxf': {'rows': [], 'title': 'UNIT内結線図'},
+        'other.dxf': {'rows': [], 'title': 'ＳＹＳＴＥＭ＿機器銘板'},
+    }
+    at = _run_resolve(results)
+    assert at.exception.len == 0
+    assert at.session_state['_test_result'] is None
+    assert at.session_state['assembly_compare_candidates'] == ['a.dxf', 'other.dxf']

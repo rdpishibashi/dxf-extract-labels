@@ -10,6 +10,8 @@
     両方(個数一致)/両方(個数不一致)/A のみ/B のみ の区分、機器符号候補列、
     summaryの各カウント
   - row_style: 区分×個数一致/不一致の4ケース（表3）
+  - _compare_key: 括弧なし/半角括弧/全角括弧/直前スペースあり(半角/全角)/
+    括弧を含まない場合（2026-09-14 ユーザー指示）
 
 実データ検証（2026-09-13、sample-dxf/組立図・内結線図_ME25-7103-0_ZMR1_339）で
 A側のタイトルが全角「ＵＮＩＴ内結線図」（16件中13件）と半角「UNIT内結線図」
@@ -208,3 +210,46 @@ def test_row_style_both_matching_counts():
 
 def test_row_style_both_mismatched_counts():
     assert ac.row_style(ac.KUBUN_BOTH, 5, 3) == ac.ROW_STYLE_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# _compare_key（2026-09-14 ユーザー指示: "(" 以降を無視して比較する）
+# ---------------------------------------------------------------------------
+
+def test_compare_key_no_parenthesis_returns_unchanged():
+    assert ac._compare_key('R10') == 'R10'
+
+
+def test_compare_key_halfwidth_parenthesis():
+    assert ac._compare_key('R10(2.2K)') == 'R10'
+
+
+def test_compare_key_fullwidth_parenthesis():
+    assert ac._compare_key('FBWH（白）') == 'FBWH'
+
+
+def test_compare_key_halfwidth_parenthesis_with_preceding_space():
+    assert ac._compare_key('R10 (2.2K)') == 'R10'
+
+
+def test_compare_key_fullwidth_parenthesis_with_preceding_fullwidth_space():
+    assert ac._compare_key('R10　（2.2K）') == 'R10'
+
+
+def test_compare_assembly_ignores_parenthesis_suffix_when_aggregating():
+    """括弧内の補足（抵抗値等）だけが異なるラベルは、比較上は同一ラベルとして
+    合算される（例: A側 'R10(2.2K)' とB側 'R10(5.1K)' は『両方』として一致）。
+    比較シートの『ラベル』列も切り詰め後の 'R10' で表示される。"""
+    results = {
+        'a.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'R10(2.2K)', '個数': 2}],
+                          main_drawing_number='EE001'),
+        'b.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'R10(5.1K)', '個数': 2}],
+                          main_drawing_number='EE900'),
+    }
+    result = ac.compare_assembly(results, ['a.dxf'], 'b.dxf')
+    assert len(result['rows']) == 1
+    row = result['rows'][0]
+    assert row['ラベル'] == 'R10'
+    assert row['比較結果'] == ac.KUBUN_BOTH
+    assert row['A 合計出現数'] == 2
+    assert row['B 出現数'] == 2

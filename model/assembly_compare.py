@@ -1,4 +1,4 @@
-"""「結線図-組立図を比較」オプション（v3.6.0予定）のドメインロジック。
+"""「結線図-組立図を比較」オプション（v3.6.0）のドメインロジック。
 
 DXF-label-compare プロジェクトの「結線図-組立図比較」機能（Excel入力）を、
 DXFから抽出したラベルデータ（メモリ上の抽出結果）を直接比較する形に移植したもの。
@@ -15,6 +15,11 @@ Excel読み込みを経由しない点、機器符号候補列を追加した点
 （{ファイル名: {...}}）をそのまま受け取る。両モードで図番のキー名が異なる
 （通常モード='main_drawing_number'、領域モード='drawing_number'）ため、
 `drawing_ident()` で吸収する。
+
+比較キーは「"("・"（"（半角/全角とも）以降を除去した文字列」を使う
+（2026-09-14 ユーザー指示、`_compare_key()`）。括弧内の補足（抵抗値・
+ワイヤ色コード等）だけが違う同一部品を、比較上は別ラベル扱いにしないため。
+比較シートに表示する「ラベル」列もこの切り詰め後の文字列を使う。
 """
 import os
 
@@ -83,6 +88,21 @@ def _title_contains(title, text) -> bool:
     return text in normalize_width(title).upper()
 
 
+def _compare_key(label: str) -> str:
+    """比較用のラベル文字列を返す（"("・"（"〈半角/全角とも〉以降を除去し、
+    直前の空白があれば `rstrip()` で併せて除去する）。
+
+    `ref_designator_patterns._judgment_text()` の括弧処理と同じ規約に
+    倣うが、あちらは半角の `(` のみを対象にするのに対し、こちらは
+    全角の `（` も対象にする（2026-09-14 ユーザー指示）。括弧内の補足
+    （抵抗値・ワイヤ色コード等、例 `R10(2.2K)`・`FBWH（白）`）だけが
+    異なる同一部品を、A・B比較上は同一ラベルとして扱うため。
+    括弧を含まない場合は元の文字列をそのまま返す。
+    """
+    idx = min((i for i in (label.find('('), label.find('（')) if i >= 0), default=-1)
+    return label[:idx].rstrip() if idx >= 0 else label
+
+
 def drawing_ident(fname: str, data: dict) -> str:
     """ファイルの図番識別子を返す（通常モード/領域モードのキー名差を吸収）。
 
@@ -121,6 +141,8 @@ def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:
 
     `results[*]['rows']` は `[{'機器符号候補': 'Y'|None, 'ラベル': str, '個数': int, ...}]`
     （通常モード・領域モードとも共通のキーを持つ。領域モードの '領域' キーは無視する）。
+    集計・比較・表示のいずれも `row['ラベル']` を `_compare_key()` で切り詰めた
+    文字列をキーとして使う（括弧以降の補足違いを同一部品として合算するため）。
 
     戻り値: {'b_file': str, 'rows': [...], 'summary': {...}}
       rows は `COMPARE_COLUMNS` の7列をラベル昇順で持つ。
@@ -131,7 +153,7 @@ def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:
         data = results[fname]
         ident = drawing_ident(fname, data)
         for row in data.get('rows', []):
-            label = row['ラベル']
+            label = _compare_key(row['ラベル'])
             entry = a_labels.setdefault(label, {'count': 0, 'idents': set()})
             entry['count'] += int(row['個数'])
             entry['idents'].add(ident)
@@ -139,7 +161,7 @@ def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:
     b_data = results[b_fname]
     b_labels: dict = {}
     for row in b_data.get('rows', []):
-        label = row['ラベル']
+        label = _compare_key(row['ラベル'])
         b_labels[label] = b_labels.get(label, 0) + int(row['個数'])
 
     labels = sorted(set(a_labels) | set(b_labels))

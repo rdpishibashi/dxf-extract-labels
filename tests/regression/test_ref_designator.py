@@ -155,6 +155,45 @@ def test_is_ref_designator_label_ohm_symbol_fix(label):
     assert ref_designator.is_ref_designator_label(label) is True
 
 
+@pytest.mark.parametrize('label', [
+    'H', 'L', 'S', 'V', 'A', 'B', 'C', 'X', 'R', 'Z',
+    'H(5A)',  # 括弧を除いた判定用文字列が単一英字になるケースも対象
+])
+def test_is_ref_designator_label_excludes_single_uppercase_letter(label):
+    """英大文字1字だけの文字列（図形枠外の位置記号）は機器符号候補ではない
+    （2026-09-14ユーザー指摘で発覚した回帰の修正）。
+
+    `ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES` の
+    `single_letter_position`（`^[A-Z]$`）は元々この除外を担っていたが、
+    v2.0.0で`is_ref_designator_label()`が除外パターンを一切使わない方式に
+    簡素化された際、この1件だけ意図せず失われていた
+    （`letters_only`パターン`^[A-Z]+$`が単一英字も候補として拾ってしまう
+    ため）。`region_detector.py`の領域名候補フィルタ
+    （`classify_judgment_detailed()`経由、こちらは除外パターンを使う旧方式
+    のまま）は元々正しく除外していたため無関係——今回追加したのは
+    `is_ref_designator_label()`専用の例外（`_SINGLE_LETTER_PATTERN`）。"""
+    assert ref_designator.is_ref_designator_label(label) is False
+
+
+@pytest.mark.parametrize('label', ['AB', 'FB', 'CNCNT', 'R1', 'C1'])
+def test_is_ref_designator_label_still_accepts_multi_char_labels(label):
+    """単一英字の除外追加が、2文字以上の英字繰返し（`AB`等）・英字+数字
+    （`R1`等）を誤って除外していないことを確認する（回帰防止）。"""
+    assert ref_designator.is_ref_designator_label(label) is True
+
+
+def test_region_name_candidate_filter_unaffected_by_single_letter_fix():
+    """`is_ref_designator_label()`への単一英字除外の追加が、
+    `region_detector.py`の領域名候補フィルタが使う
+    `classify_judgment_detailed()`（`PATTERN_CATEGORIES`を直接参照する別経路）
+    には影響しないことを固定する（`_SINGLE_LETTER_PATTERN`は
+    `is_ref_designator_label()`内のみのローカルな例外であり、
+    `ref_designator_patterns.PATTERN_CATEGORIES`自体は変更していないため）。"""
+    from model.ref_designator_patterns import classify_judgment_detailed
+    status, cat = classify_judgment_detailed('H', 'H')
+    assert (status, cat) == ('excluded', 'single_letter_position')
+
+
 # ---------------------------------------------------------------------------
 # normalize_labels
 # ---------------------------------------------------------------------------

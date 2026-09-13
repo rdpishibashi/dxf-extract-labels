@@ -25,6 +25,7 @@ DXF-extract-labels 固有の新機能であり、他プロジェクトとの共�
 （機器符号らしいラベルを領域名候補から除外する判定）が引き続き利用するため
 `ref_designator_patterns.py` 側には残している。
 """
+import re
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Tuple
 
@@ -380,22 +381,40 @@ def normalize_labels(
     return out
 
 
+# 英大文字1字だけの文字列は、図形枠外の位置記号（座標系ラベル等）であって
+# 機器符号ではない（`ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES` の
+# `single_letter_position` と同じ規約）。v2.0.0で除外パターン一式を判定条件
+# から外した際にこの1件だけ意図せず失われていた回帰（2026-09-14ユーザー
+# 指摘で発覚。`letters_only`〈`^[A-Z]+$`〉が単一英字も候補として拾ってしまう
+# ため、'H'・'V'等が機器符号候補='Y'になっていた）。`PATTERN_CATEGORIES`
+# 自体は変更しない——`region_detector.py`の領域名候補フィルタ
+# （`classify_judgment_detailed()`経由）が同じカテゴリ定義を使っており、
+# そちらは元々`single_letter_position`除外が有効なまま残っているため、
+# ここで個別に例外を設ける方が安全（`PATTERN_CATEGORIES`を直接変更すると
+# 領域名候補フィルタの挙動まで変わってしまう）。
+_SINGLE_LETTER_PATTERN = re.compile(r'^[A-Z]$')
+
+
 def is_ref_designator_label(text: str) -> bool:
     """textが機器符号（Reference Designator）候補パターンに一致するかを返す。
 
     判定はラベル末尾の括弧より前の部分（`_judgment_text()`）に対して行う
-    （`R10(2.2K)` → `R10` で判定）。3つの候補パターン
-    （`ref_designator_patterns.PATTERN_CATEGORIES`）のいずれかに一致すれば
-    True（除外パターン等は使わない——v2.0.0で廃止した判定条件の簡素化方針を
-    踏襲する。`ref_designator_patterns.is_ref_designator_candidate()` とは
-    別物: あちらは除外パターンも併用する旧方式の判定で、`region_detector.py`
-    の領域名候補フィルタ専用）。
+    （`R10(2.2K)` → `R10` で判定）。候補パターン
+    （`ref_designator_patterns.PATTERN_CATEGORIES`、計7カテゴリ）のいずれかに
+    一致すれば True（除外パターン等は使わない——v2.0.0で廃止した判定条件の
+    簡素化方針を踏襲する。`ref_designator_patterns.is_ref_designator_candidate()`
+    とは別物: あちらは除外パターンも併用する旧方式の判定で、`region_detector.py`
+    の領域名候補フィルタ専用）。ただし英大文字1字だけは例外的に除外する
+    （`_SINGLE_LETTER_PATTERN`、上記コメント参照）。
 
     v3.0.0で「機器符号候補」列（各シートのラベルごとの判定表示）に使うため
     独立関数化した（旧 `classify_labels()` の判定条件と同一、そちらは
     リストへの絞り込み版としてこの関数を使う形に変更）。
     """
-    return bool(CANDIDATE_PATTERN.match(_judgment_text(text)))
+    judgment = _judgment_text(text)
+    if _SINGLE_LETTER_PATTERN.match(judgment):
+        return False
+    return bool(CANDIDATE_PATTERN.match(judgment))
 
 
 def classify_labels(

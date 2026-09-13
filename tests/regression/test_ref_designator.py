@@ -194,6 +194,39 @@ def test_region_name_candidate_filter_unaffected_by_single_letter_fix():
     assert (status, cat) == ('excluded', 'single_letter_position')
 
 
+@pytest.mark.parametrize('label', ['N24-', 'CN1-', 'R10-', 'L1+', 'V+', 'V-'])
+def test_is_ref_designator_label_excludes_trailing_sign(label):
+    """末尾が "+"/"-" で終わる文字列（電源端子表記、例 `N24-`・`L1+`）は
+    機器符号候補ではない（2026-09-14ユーザー指摘で発覚した回帰の修正）。
+
+    `ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES` の
+    `trailing_sign`（`.*[+-]$`）は元々この除外を担っていたが、
+    v2.0.0で`is_ref_designator_label()`が除外パターンを一切使わない方式に
+    簡素化された際、この1件だけ意図せず失われていた（`letters_digits_any`
+    〈`^[A-Z]+[0-9]+[A-Z0-9-]*$`〉の末尾`[A-Z0-9-]*`が末尾ハイフンを許容
+    してしまうため、`N24-`・`CN1-`等が誤って機器符号候補='Y'になっていた。
+    末尾"+"は元々どの候補パターンにも"+"という文字自体が含まれないため
+    既に候補にならないが、`_TRAILING_SIGN_PATTERN`は`trailing_sign`と同じ
+    `[+-]`両対応で実装し、将来パターンに"+"が追加されても安全にしてある）。
+
+    単一英字の除外（`_SINGLE_LETTER_PATTERN`）とは異なり
+    `EXCLUSION_EXACT_CATEGORIES`（普通名詞・回路説明語・ケーブル色・
+    図面情報枠用語・ユニット名。GND・SYSTEM・MOTOR等）は**復元していない**
+    （2026-09-14ユーザー確認。v2.0.0でこれらを候補に含めるよう明示的に
+    方針変更した記録がVERSION_HISTORY.mdにあるため、単一英字・末尾+/-とは
+    扱いが異なる）。"""
+    assert ref_designator.is_ref_designator_label(label) is False
+
+
+@pytest.mark.parametrize('label', ['GND', 'SYSTEM', 'MOTOR', 'OVERHEAT', 'WHITE', 'RED'])
+def test_is_ref_designator_label_still_accepts_common_nouns(label):
+    """普通名詞・回路説明語・ケーブル色（`GND`・`SYSTEM`・`MOTOR`・`WHITE`等）は
+    引き続き機器符号候補として扱われることを固定する（v2.0.0の明示的な方針
+    〈EXCLUSION_EXACT_CATEGORIESを判定に使わない〉を維持している回帰防止、
+    2026-09-14ユーザー確認）。"""
+    assert ref_designator.is_ref_designator_label(label) is True
+
+
 # ---------------------------------------------------------------------------
 # normalize_labels
 # ---------------------------------------------------------------------------

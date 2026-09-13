@@ -394,6 +394,29 @@ def normalize_labels(
 # 領域名候補フィルタの挙動まで変わってしまう）。
 _SINGLE_LETTER_PATTERN = re.compile(r'^[A-Z]$')
 
+# 末尾が "+"/"-" で終わる文字列は電源端子表記（例 `N24-`・`L1+`）であって
+# 単体の機器符号ではない（`ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES`
+# の `trailing_sign`〈`.*[+-]$`〉と同じ規約）。単一英字の場合と異なり
+# VERSION_HISTORY.md に明示的な方針変更の記録はなく、v2.0.0で除外パターン
+# 一式を外した際にこちらも一緒に失われていた（2026-09-14ユーザー指摘で
+# 発覚。実データで`letters_digits_any`〈`^[A-Z]+[0-9]+[A-Z0-9-]*$`〉の
+# 末尾`[A-Z0-9-]*`が末尾ハイフンを許容してしまうため、`N24-`・`CN1-`等が
+# 誤って機器符号候補='Y'になっていた。ただし末尾"+"は元々どの候補パターンにも
+# "+"という文字自体が含まれないため既に候補にならず、実害があるのは末尾"-"
+# の場合のみ——ここでは`trailing_sign`と同じ`[+-]`両対応のまま実装し、
+# 将来パターンに"+"が追加されても安全なようにする）。
+# `PATTERN_CATEGORIES`自体は変更しない（理由は上記`_SINGLE_LETTER_PATTERN`
+# と同じ——`region_detector.py`の領域名候補フィルタへの影響を避けるため）。
+#
+# 一方、普通名詞・回路説明語・ケーブル色・図面情報枠用語・ユニット名
+# （`EXCLUSION_EXACT_CATEGORIES`、GND・SYSTEM・MOTOR等）は**復元しない**
+# （2026-09-14ユーザー確認）。v2.0.0でこれらを候補に含めるよう明示的に
+# 方針変更した記録がVERSION_HISTORY.mdにあり（「GND・SYSTEM等の英字のみ
+# ラベルも3パターンに一致すれば出力に含まれるようになる仕様変更」）、
+# 単一英字・末尾+/-（いずれも方針変更の記録がなく、意図せず失われた回帰と
+# 判断したもの）とは扱いが異なる。
+_TRAILING_SIGN_PATTERN = re.compile(r'.*[+-]$')
+
 
 def is_ref_designator_label(text: str) -> bool:
     """textが機器符号（Reference Designator）候補パターンに一致するかを返す。
@@ -404,15 +427,17 @@ def is_ref_designator_label(text: str) -> bool:
     一致すれば True（除外パターン等は使わない——v2.0.0で廃止した判定条件の
     簡素化方針を踏襲する。`ref_designator_patterns.is_ref_designator_candidate()`
     とは別物: あちらは除外パターンも併用する旧方式の判定で、`region_detector.py`
-    の領域名候補フィルタ専用）。ただし英大文字1字だけは例外的に除外する
-    （`_SINGLE_LETTER_PATTERN`、上記コメント参照）。
+    の領域名候補フィルタ専用）。ただし英大文字1字だけ（`_SINGLE_LETTER_PATTERN`）・
+    末尾が"+"/"-"で終わるもの（`_TRAILING_SIGN_PATTERN`）は例外的に除外する
+    （上記コメント参照。普通名詞等の`EXCLUSION_EXACT_CATEGORIES`は復元して
+    いない——GND・SYSTEM等は引き続き候補として扱う、2026-09-14ユーザー確認）。
 
     v3.0.0で「機器符号候補」列（各シートのラベルごとの判定表示）に使うため
     独立関数化した（旧 `classify_labels()` の判定条件と同一、そちらは
     リストへの絞り込み版としてこの関数を使う形に変更）。
     """
     judgment = _judgment_text(text)
-    if _SINGLE_LETTER_PATTERN.match(judgment):
+    if _SINGLE_LETTER_PATTERN.match(judgment) or _TRAILING_SIGN_PATTERN.match(judgment):
         return False
     return bool(CANDIDATE_PATTERN.match(judgment))
 

@@ -46,8 +46,9 @@ def select_layout_result(doc, collect_from_layout, is_empty):
 
 def is_invisible(e):
     """DXFの`invisible`属性（グループコード60、1=非表示）が立っている
-    エンティティかを返す。CADソフト上で「非表示」に設定された図形
-    （紙面には一切表示されない）は、たとえDXFファイル中に座標・テキスト
+    エンティティ、または**エンティティが所属するレイヤーがオフ/フリーズ
+    されている**エンティティかを返す。CADソフト上で「非表示」に設定された
+    図形（紙面には一切表示されない）は、たとえDXFファイル中に座標・テキスト
     として存在していても、図面枠検出・ラベル収集・領域検出・端子検出の
     いずれの対象にもしてはならない（2026-09-10、ユーザー報告により
     `ref_designator.py`に追加。ULVAC標準の改版運用では、旧版のタイトル
@@ -64,8 +65,39 @@ def is_invisible(e):
       2. INSERT自身（invisibleなINSERTは中身ごと丸ごと除外する）
       3. `virtual_entities()`で展開した仮想エンティティ（親が可視でも
          個々の子エンティティにinvisibleが立っている場合があるため）
+
+    レイヤー単位の非表示状態（2026-09-16、ユーザー報告により追加）:
+    エンティティ自身の`invisible`属性が立っていなくても、そのエンティティが
+    置かれたレイヤー自体が「オフ」または「フリーズ」されていれば、画面上
+    ・印刷時ともに一切表示されない。ULVAC標準の改版運用では、旧版の
+    タイトルブロックをエンティティ単位のinvisible属性ではなく、専用レイヤー
+    ごとオフ/フリーズして非表示にする例があり、この場合は上記の`invisible`
+    属性チェックだけでは検出できない（実データ`EE3273-039-90B.dxf`で確認:
+    旧タイトルブロック一式が`off=True, frozen=True`のレイヤーに置かれており、
+    現在は存在しない図番「EE3273-039-90A」が誤って抽出されていた）。
+    `virtual_entities()`で展開した仮想エンティティも`.doc`経由で元のレイヤー
+    テーブルを参照できるため、同じチェックで対応できる（`.layer`属性は
+    展開後も元のレイヤー名を保持し、親INSERTのレイヤー状態を継承しない
+    `invisible`属性とは異なる——仮想エンティティ自身のレイヤー参照だけで
+    正しく判定できる）。レイヤーテーブルに存在しない・`.doc`が取得できない
+    等の異常系は「非表示ではない」側にフォールバックする（誤って全除外に
+    ならないよう保守的に扱う）。
     """
-    return bool(e.dxf.get('invisible', 0))
+    if bool(e.dxf.get('invisible', 0)):
+        return True
+
+    layer_name = e.dxf.get('layer', None)
+    doc = getattr(e, 'doc', None)
+    if layer_name and doc is not None:
+        try:
+            if layer_name in doc.layers:
+                layer = doc.layers.get(layer_name)
+                if layer.is_off() or layer.is_frozen():
+                    return True
+        except Exception:
+            pass
+
+    return False
 
 
 def save_uploadedfile(uploadedfile):

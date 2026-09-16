@@ -20,6 +20,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from model.region_detector import (  # noqa: E402
     assign_region_labels,
     _point_in_polygon, _polygon_area, regions_overlap,
+    detect_drawing_frames,
 )
 from model import ref_designator  # noqa: E402
 from tests.dxf_cache import analyze_dxf_regions  # noqa: E402
@@ -1110,30 +1111,67 @@ def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1(
 # 図面枠検出（detect_drawing_frames、2026-07-26 バグ修正）
 # ---------------------------------------------------------------------------
 
-EE6868_ROTATED = _find_sample('EE6868-516-01A.dxf')  # 高さの異なる2枠が左辺を共有
-
-
-@pytest.mark.skipif(not os.path.exists(EE6868_ROTATED), reason='サンプル DXF が無い')
-def test_detect_frames_with_shared_left_edge_different_heights():
-    """`EE6868-516-01A.dxf`: 高さの異なる2つの図面枠（枠A x:[25,584] y:[10,410]・
-    枠B x:[25,821] y:[20,574]）が左辺を共有するケース（2026-07-26 ユーザー報告）。
+def test_detect_frames_with_shared_left_edge_different_heights_synthetic():
+    """`detect_drawing_frames()`: 高さの異なる2つの図面枠（枠A x:[25,584] y:[10,410]・
+    枠B x:[25,821] y:[20,574]）が左辺を共有するケース（2026-07-26 ユーザー報告）を
+    合成データで固定する（2026-09-16、実データ版
+    `test_detect_frames_with_shared_left_edge_different_heights_real_sample` から
+    分離。理由は同テストのdocstring参照——再現条件が純粋な幾何条件のため、
+    合成データに置き換えて実データの構造変化に左右されないようにした）。
 
     旧実装は縦辺のみを使い「全枠が同じy範囲を共有する」ことを前提にx座標を
     左右ペアへクラスタ化していたが、`_merge_collinear` が同一x（レベル）上で
     y範囲が重なる線分を無条件で1本に結合するため、枠A・枠Bの左辺
     （y:[10,410]とy:[20,574]、x=25で重複）が実在しないy:[10,574]の1本の
     縦辺へ誤結合され、xクラスタが奇数個になってペアリングが崩れ、枠Bの
-    右辺が捨てられて枠Bが丸ごと検出漏れになっていた（「面積条件を満たす
-    領域が検出されませんでした」というエラーになり、枠B内の大面積領域
-    `EFEM UPPER`〈73.8%〉が失われる）。横辺（xスパン一致）を起点に矩形を
-    再構築する方式に変更して解消した。"""
+    右辺が捨てられて枠Bが丸ごと検出漏れになっていた。横辺（xスパン一致）を
+    起点に矩形を再構築する方式に変更して解消した。"""
+    frame_lines = [
+        ((25, 410), (584, 410)),   # 枠A 上辺
+        ((25, 10), (584, 10)),     # 枠A 下辺
+        ((25, 10), (25, 410)),     # 枠A 左辺
+        ((584, 10), (584, 410)),   # 枠A 右辺
+        ((25, 574), (821, 574)),   # 枠B 上辺
+        ((25, 20), (821, 20)),     # 枠B 下辺
+        ((25, 20), (25, 574)),     # 枠B 左辺（枠Aの左辺とx=25で重複、y範囲も重なる）
+        ((821, 20), (821, 574)),   # 枠B 右辺
+    ]
+    frames = detect_drawing_frames(frame_lines, eps=2.0)
+    assert len(frames) == 2
+    assert (25, 584, 10.0, 410.0) in frames
+    assert (25, 821, 20.0, 574.0) in frames
+
+
+EE6868_ROTATED = _find_sample('EE6868-516-01A.dxf')  # 旧タイトルブロック（非表示レイヤー）の枠が除外される
+
+
+@pytest.mark.skipif(not os.path.exists(EE6868_ROTATED), reason='サンプル DXF が無い')
+def test_detect_frames_with_shared_left_edge_different_heights_real_sample():
+    """`EE6868-516-01A.dxf`（2026-09-16 更新）: このファイルはかつて「高さの異なる
+    2つの図面枠が左辺を共有するケース」（2026-07-26 ユーザー報告、`_merge_collinear`
+    の誤結合バグ）の実データ回帰テストとして使われていたが、その「枠A」
+    （x:[25,584] y:[10,410]）の正体は、**off+frozenレイヤー`NoLayerName_015`上の
+    INSERT（ブロック`JZB_0275`）内にある旧タイトルブロックの枠線**であることが
+    判明した（2026-09-16、`is_invisible()`へのレイヤー可視性チェック追加に伴う
+    調査で発覚）。このファイルは現在1枠（枠B）のみを持つため、`_merge_collinear`
+    の再現条件（2枠が左辺を共有）はもう満たさない——その回帰防護は
+    `test_detect_frames_with_shared_left_edge_different_heights_synthetic`
+    （合成データ）が担う。
+
+    `EFEM UPPER`の面積比が73.8%→37.4%に変わったのは、`frame_area`が
+    `frames[0]`由来の単一スカラー（`region_detector.py`の`analyze_dxf_regions()`
+    参照）であるため。枠Aが非表示レイヤー由来と判明して除外された結果、
+    `frames[0]`が枠A（非表示の旧枠、面積223,600）から枠B（実在する枠、面積
+    440,984）に変わり、分母が正された（`EFEM UPPER`自体の面積165,110は不変）。
+    ここでは「枠が1つ検出され、かつ`EFEM UPPER`（2026-07-26不具合のユーザー
+    可視症状そのもの）が引き続き検出される」ことを固定する。"""
     a = analyze_dxf_regions(EE6868_ROTATED)
     assert a['error'] is None
-    assert len(a['frames']) == 2
+    assert len(a['frames']) == 1
     assert len(a['regions']) >= 1
     efem = next((r for r in a['regions'] if r['default_name'] == 'EFEM UPPER'), None)
-    assert efem is not None, '枠B内の大面積領域 EFEM UPPER が検出されていない'
-    assert round(efem['area_pct'], 0) == 74.0
+    assert efem is not None, '枠内の大面積領域 EFEM UPPER が検出されていない'
+    assert round(efem['area_pct'], 0) == 37.0
 
 
 EE6868_ROTATED_NESTED = _find_sample('EE6868-516-01A.dxf')  # EFEM UPPER内部の入れ子矩形

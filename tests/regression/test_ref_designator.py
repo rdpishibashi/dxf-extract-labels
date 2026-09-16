@@ -840,6 +840,203 @@ def test_invisible_excluded_from_extract_labels_direct_call():
     assert 'HIDDEN_FROM_INSERT' not in labels
 
 
+def _build_doc_with_hidden_layer_entities():
+    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'R10'（レイヤー'0'）と、
+    off+frozenの専用レイヤーに置かれたラベル'OldDesigner'を配置する
+    （2026-09-16、ユーザー報告: entity自身のinvisible属性ではなく、旧
+    タイトルブロックを専用レイヤーごとoff/frozenにして非表示にする運用が
+    あり、実データ`EE3273-039-90B.dxf`で誤って抽出されていた）。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    for p1, p2 in [((0, 0), (200, 0)), ((200, 0), (200, 100)),
+                   ((200, 100), (0, 100)), ((0, 100), (0, 0))]:
+        msp.add_line(p1, p2, dxfattribs={'lineweight': 100, 'color': 7})
+    msp.add_text('R10', dxfattribs={'insert': (10, 10)})
+
+    hidden_layer_name = 'OLD_TITLEBLOCK_LAYER'
+    doc.layers.add(hidden_layer_name)
+    hidden_layer = doc.layers.get(hidden_layer_name)
+    hidden_layer.off()
+    hidden_layer.freeze()
+    msp.add_text('OldDesigner', dxfattribs={'insert': (50, 50), 'layer': hidden_layer_name})
+    return doc
+
+
+def test_layer_off_frozen_label_excluded_from_collected_labels():
+    """entity自身のinvisible属性は立っていなくても、置かれたレイヤーが
+    off+frozenであるTEXTは機器符号抽出結果に一切現れない（2026-09-16、
+    is_invisible()へのレイヤー可視性チェック追加の直接の検証）。"""
+    result = _save_and_collect(_build_doc_with_hidden_layer_entities())
+    assert result['error'] is None
+    texts = {t for (t, _x, _y) in result['labels']}
+    assert 'R10' in texts
+    assert 'OldDesigner' not in texts
+
+
+@pytest.mark.parametrize('off,frozen', [(True, False), (False, True), (True, True)])
+def test_layer_off_or_frozen_alone_excludes_entity(off, frozen):
+    """off単独・frozen単独・両方のいずれでも除外される（is_invisible()の
+    `layer.is_off() or layer.is_frozen()`のOR条件を分岐ごとに固定する）。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    msp.add_text('VISIBLE', dxfattribs={'insert': (0, 0)})
+    layer_name = 'HIDDEN_LAYER'
+    doc.layers.add(layer_name)
+    layer = doc.layers.get(layer_name)
+    if off:
+        layer.off()
+    if frozen:
+        layer.freeze()
+    msp.add_text('HIDDEN', dxfattribs={'insert': (10, 10), 'layer': layer_name})
+
+    with tempfile.NamedTemporaryFile(suffix='.dxf', delete=False) as f:
+        path = f.name
+    doc.saveas(path)
+    try:
+        labels, info = extract_labels(path)
+    finally:
+        os.remove(path)
+    assert 'VISIBLE' in labels
+    assert 'HIDDEN' not in labels
+
+
+def test_layer_off_frozen_excluded_from_region_geometry():
+    """off+frozenレイヤーのエンティティは region_detector._collect_region_geometry()
+    の収集対象にもならない（2026-09-16、レイヤー可視性チェックの横展開）。
+    直接配置の境界LINE・TEXT・INSERT自身（CIRCLE内包ブロックの接続点カウント）・
+    INSERT展開後のTEXTの4パターンを確認する（test_invisible_excluded_from_
+    region_geometryのレイヤー版）。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    cfg = DEFAULT_REGION_CONFIG
+
+    hidden_layer_name = 'HIDDEN_LAYER'
+    doc.layers.add(hidden_layer_name)
+    hidden_layer = doc.layers.get(hidden_layer_name)
+    hidden_layer.off()
+    hidden_layer.freeze()
+
+    # 可視の領域境界LINE
+    msp.add_line((0, 0), (10, 0), dxfattribs={'lineweight': 25, 'color': 2})
+    # 非表示レイヤー上の領域境界LINE（同じ識別キーだがレイヤーがoff+frozen）
+    msp.add_line((0, 20), (10, 20), dxfattribs={'lineweight': 25, 'color': 2, 'layer': hidden_layer_name})
+
+    # 可視ラベルと非表示レイヤー上のラベル
+    msp.add_text('VISIBLE', dxfattribs={'insert': (0, 5)})
+    msp.add_text('HIDDEN', dxfattribs={'insert': (0, 25), 'layer': hidden_layer_name})
+
+    # CIRCLE を含むブロック（接続点候補）
+    circle_block = doc.blocks.new(name='CONN_PT')
+    circle_block.add_circle((0, 0), radius=1)
+
+    # 可視INSERT（接続点として数えられるべき）
+    msp.add_blockref('CONN_PT', (50, 50))
+    # 非表示レイヤー上のINSERT（中身ごと除外され、接続点として数えられてはならない）
+    msp.add_blockref('CONN_PT', (60, 60), dxfattribs={'layer': hidden_layer_name})
+
+    # テキストを含むブロック（INSERT展開後のTEXT収集経路の確認用）
+    text_block = doc.blocks.new(name='TEXT_BLK')
+    text_block.add_text('FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('TEXT_BLK', (100, 100))
+
+    frame_lines, region_lines, region_lines_lp, label_entities, connection_points = (
+        _collect_region_geometry(doc, cfg))
+
+    label_texts = {e.dxf.text for e in label_entities if e.dxftype() == 'TEXT'}
+    assert 'VISIBLE' in label_texts
+    assert 'HIDDEN' not in label_texts
+    assert 'FROM_INSERT' in label_texts
+    assert len(region_lines) == 1  # 可視LINEのみ
+    assert len(connection_points) == 1  # 可視INSERTのみ
+
+
+def test_layer_off_frozen_excluded_from_terminal_geometry():
+    """off+frozenレイヤーのエンティティは terminal_detector._collect_geometry()
+    の収集対象にもならない（2026-09-16、横展開）。TEXT・端子台矩形辺LINE・
+    橋渡しCIRCLEの3種、および直接配置・INSERT展開後のいずれの経路でも
+    除外されることを確認する（test_invisible_excluded_from_terminal_geometryの
+    レイヤー版）。"""
+    from model.terminal_detector import TB_LINE_WEIGHT, TB_LINE_COLOR, TB_CIRCLE_WEIGHT, TB_CIRCLE_COLOR
+
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+
+    hidden_layer_name = 'HIDDEN_LAYER'
+    doc.layers.add(hidden_layer_name)
+    hidden_layer = doc.layers.get(hidden_layer_name)
+    hidden_layer.off()
+    hidden_layer.freeze()
+
+    # 可視の端子台矩形辺LINE
+    msp.add_line((0, 0), (10, 0), dxfattribs={'lineweight': TB_LINE_WEIGHT, 'color': TB_LINE_COLOR})
+    # 非表示レイヤー上の端子台矩形辺LINE
+    msp.add_line((0, 20), (10, 20), dxfattribs={
+        'lineweight': TB_LINE_WEIGHT, 'color': TB_LINE_COLOR, 'layer': hidden_layer_name})
+
+    # 可視の橋渡しCIRCLE
+    msp.add_circle((5, 5), radius=1, dxfattribs={'lineweight': TB_CIRCLE_WEIGHT, 'color': TB_CIRCLE_COLOR})
+    # 非表示レイヤー上の橋渡しCIRCLE
+    msp.add_circle((5, 25), radius=1, dxfattribs={
+        'lineweight': TB_CIRCLE_WEIGHT, 'color': TB_CIRCLE_COLOR, 'layer': hidden_layer_name})
+
+    # 可視テキストと非表示レイヤー上のテキスト
+    msp.add_text('VISIBLE', dxfattribs={'insert': (0, 5)})
+    msp.add_text('HIDDEN', dxfattribs={'insert': (0, 25), 'layer': hidden_layer_name})
+
+    # 非表示レイヤー上のINSERT（中身ごと除外されるべき）
+    text_block = doc.blocks.new(name='TB_TEXT_BLK')
+    text_block.add_text('FROM_INSERT_HIDDEN', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('TB_TEXT_BLK', (100, 100), dxfattribs={'layer': hidden_layer_name})
+
+    texts, lines, circles = _collect_terminal_geometry(doc)
+
+    text_values = {t for t, _x, _y, _rot in texts}
+    assert 'VISIBLE' in text_values
+    assert 'HIDDEN' not in text_values
+    assert 'FROM_INSERT_HIDDEN' not in text_values
+    assert len(lines) == 1  # 可視LINEのみ
+    assert len(circles) == 1  # 可視CIRCLEのみ
+
+
+def test_layer_off_frozen_excluded_from_extract_labels_direct_call():
+    """off+frozenレイヤーのエンティティは extract_labels()（機器符号抽出とは
+    独立したラベル抽出APIの本体）でも収集されない（2026-09-16、横展開）。
+    MODEL_SPACE直接配置・INSERT展開の2経路を確認する
+    （test_invisible_excluded_from_extract_labels_direct_callのレイヤー版）。"""
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+
+    hidden_layer_name = 'HIDDEN_LAYER'
+    doc.layers.add(hidden_layer_name)
+    hidden_layer = doc.layers.get(hidden_layer_name)
+    hidden_layer.off()
+    hidden_layer.freeze()
+
+    msp.add_text('VISIBLE_DIRECT', dxfattribs={'insert': (0, 0)})
+    msp.add_text('HIDDEN_DIRECT', dxfattribs={'insert': (10, 10), 'layer': hidden_layer_name})
+
+    text_block = doc.blocks.new(name='LBL_BLK')
+    text_block.add_text('VISIBLE_FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('LBL_BLK', (50, 50))
+
+    hidden_block = doc.blocks.new(name='HIDDEN_LBL_BLK')
+    hidden_block.add_text('HIDDEN_FROM_INSERT', dxfattribs={'insert': (0, 0)})
+    msp.add_blockref('HIDDEN_LBL_BLK', (60, 60), dxfattribs={'layer': hidden_layer_name})
+
+    with tempfile.NamedTemporaryFile(suffix='.dxf', delete=False) as f:
+        path = f.name
+    doc.saveas(path)
+    try:
+        labels, info = extract_labels(path)
+    finally:
+        os.remove(path)
+
+    assert 'VISIBLE_DIRECT' in labels
+    assert 'HIDDEN_DIRECT' not in labels
+    assert 'VISIBLE_FROM_INSERT' in labels
+    assert 'HIDDEN_FROM_INSERT' not in labels
+
+
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
     """EE6868-500-01C.dxf は13図面から構成される（スキル文書で確認済みの既知事実）。
     lineweight+color=7 併用で正しく13枠を検出できることを回帰検証する

@@ -71,12 +71,18 @@ def _format_block_names(doc, frame_lineweight: int, frame_color: int = _FRAME_CO
     return names
 
 
-def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FRAME_COLOR):
+def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FRAME_COLOR,
+                               check_layer: bool = True):
     """図面枠線・テンプレートブロック内の全線分・全ラベルエンティティを収集する。
 
     レイアウトの選び方は `common_utils.select_layout_result()` を参照
     （Model Space に何かあれば常にそちらを使い、完全に空の場合のみ他
     レイアウトを順に試す。レイアウトをまたいで混在させない）。
+
+    `check_layer=False`（2026-09-23追加）: `is_invisible()` のレイヤー単位
+    off/frozen判定をスキップする。唯一のタイトルブロック（図面枠を含む）が
+    off/frozenレイヤーに置かれている図面のフォールバック探索
+    （`collect_in_frame_labels()` 参照）でのみ `False` を渡す。
 
     戻り値: (frame_lines, block_lines, label_entities)
       frame_lines: [(start, end), ...]（図面枠検出用。lineweight=frame_lineweight
@@ -100,7 +106,7 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
         block_lines = []
         label_entities = []
         for e in layout:
-            if is_invisible(e):
+            if is_invisible(e, check_layer=check_layer):
                 continue
             t = e.dxftype()
             if t == 'LINE':
@@ -113,7 +119,7 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
                 if name in fmt_blocks:
                     try:
                         for v in e.virtual_entities():
-                            if is_invisible(v):
+                            if is_invisible(v, check_layer=check_layer):
                                 continue
                             vt = v.dxftype()
                             if vt == 'LINE':
@@ -129,7 +135,7 @@ def _collect_frame_and_labels(doc, frame_lineweight: int, frame_color: int = _FR
                         continue
                     try:
                         for v in e.virtual_entities():
-                            if is_invisible(v):
+                            if is_invisible(v, check_layer=check_layer):
                                 continue
                             if v.dxftype() in ('TEXT', 'MTEXT'):
                                 label_entities.append(v)
@@ -276,8 +282,34 @@ def collect_in_frame_labels(
         return result
 
     frame_lines, block_lines, label_entities = _collect_frame_and_labels(
-        doc, frame_lineweight, frame_color)
+        doc, frame_lineweight, frame_color, check_layer=True)
     frames = detect_drawing_frames(frame_lines, snap)
+
+    # フォールバック（2026-09-23）: 表示中の図面枠が1件も見つからない場合に
+    # 限り、レイヤーoff/frozenを無視して図面枠・図面情報枠の検出をやり直す。
+    # 唯一のタイトルブロック（図面枠を含む）がoff/frozenレイヤーに置かれている
+    # 図面（EE5322-455-02A.dxf/-18A.dxf）で、2026-09-16のレイヤー単位
+    # invisible判定追加により図面枠自体が検出できなくなっていた回帰への対応。
+    # フォールバックは図面枠・図面情報枠（タイトルブロック）の「手がかり」を
+    # 見つけるためだけに使う——**出力するラベル（下記の label_points・
+    # 最終的な labels）は常に表示中のエンティティ（label_entities、上で
+    # 取得済み）のみを対象にする**（common_utils.is_invisibleのdocstring、
+    # Tools/CLAUDE.md参照）。
+    block_lines_for_info_frame = block_lines
+    fallback_label_points = None
+    if not frames:
+        fb_frame_lines, fb_block_lines, fb_label_entities = _collect_frame_and_labels(
+            doc, frame_lineweight, frame_color, check_layer=False)
+        fb_frames = detect_drawing_frames(fb_frame_lines, snap)
+        if fb_frames:
+            frames = fb_frames
+            block_lines_for_info_frame = fb_block_lines
+            fallback_label_points = []
+            for it in fb_label_entities:
+                _, clean_text, (x, y) = extract_text_from_entity(it)
+                if clean_text:
+                    fallback_label_points.append((clean_text, x, y))
+
     result['frames'] = frames
 
     if not frames:
@@ -292,10 +324,19 @@ def collect_in_frame_labels(
         if clean_text:
             label_points.append((clean_text, x, y))
 
+    # 図面情報枠（タイトルブロック）の検出には、フォールバックが発動した場合
+    # フォールバック側のラベル（非表示のタイトル項目名を含む）を使う——非表示の
+    # タイトルブロックそのものを情報枠として認識できないと、次段の「情報枠外」
+    # フィルタが働かず、タイトルブロックの文字が出力ラベルに混入してしまう。
+    label_points_for_info_frame = (
+        fallback_label_points if fallback_label_points is not None else label_points
+    )
+
     info_frame_bboxes = []
     frames_without_info = 0
     for (xl, xr, y0, y1) in frames:
-        bbox = _detect_info_frame_bbox(block_lines, label_points, xl, xr, y0, y1)
+        bbox = _detect_info_frame_bbox(
+            block_lines_for_info_frame, label_points_for_info_frame, xl, xr, y0, y1)
         if bbox is not None:
             info_frame_bboxes.append(bbox)
         else:
@@ -333,7 +374,14 @@ def _collect_all_labels_fallback(dxf_file: str) -> List[Tuple[str, float, float]
 
     レイアウトの選び方は `common_utils.select_layout_result()` を参照
     （Model Space に何かあれば常にそちらを使い、完全に空の場合のみ他
-    レイアウトを順に試す）。"""
+    レイアウトを順に試す）。
+
+    非表示エンティティ（invisible属性・レイヤーoff/frozen）は除外する
+    （2026-09-23追加。従来この経路にはis_invisible()チェックが無く、図面枠が
+    検出できずこのフォールバックに落ちた図面〈唯一のタイトルブロックが
+    off/frozenレイヤーにある等〉で、非表示のタイトルブロックの文字が
+    出力ラベルに混入していた。`_collect_frame_and_labels()`と同様、
+    直接配置・INSERT自身・virtual_entities展開後の3箇所すべてでチェックする）。"""
     try:
         doc = ezdxf.readfile(dxf_file)
     except Exception:
@@ -343,6 +391,8 @@ def _collect_all_labels_fallback(dxf_file: str) -> List[Tuple[str, float, float]
     def collect_from_layout(layout):
         out = []
         for e in layout:
+            if is_invisible(e):
+                continue
             t = e.dxftype()
             if t in ('TEXT', 'MTEXT'):
                 _, clean_text, (x, y) = extract_text_from_entity(e)
@@ -353,6 +403,8 @@ def _collect_all_labels_fallback(dxf_file: str) -> List[Tuple[str, float, float]
                     continue
                 try:
                     for v in e.virtual_entities():
+                        if is_invisible(v):
+                            continue
                         if v.dxftype() in ('TEXT', 'MTEXT'):
                             _, clean_text, (x, y) = extract_text_from_entity(v)
                             if clean_text:

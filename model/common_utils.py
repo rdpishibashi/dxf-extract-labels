@@ -44,7 +44,7 @@ def select_layout_result(doc, collect_from_layout, is_empty):
 
     return result
 
-def is_invisible(e):
+def is_invisible(e, check_layer=True):
     """DXFの`invisible`属性（グループコード60、1=非表示）が立っている
     エンティティ、または**エンティティが所属するレイヤーがオフ/フリーズ
     されている**エンティティかを返す。CADソフト上で「非表示」に設定された
@@ -82,9 +82,21 @@ def is_invisible(e):
     正しく判定できる）。レイヤーテーブルに存在しない・`.doc`が取得できない
     等の異常系は「非表示ではない」側にフォールバックする（誤って全除外に
     ならないよう保守的に扱う）。
+
+    `check_layer=False`（2026-09-23追加）: レイヤー単位の判定をスキップし、
+    エンティティ自身の`invisible`属性のみを見る。表示中のエンティティだけで
+    図番・図面枠等の手がかりが1件も見つからない場合の**フォールバック探索**
+    でのみ使う（唯一のタイトルブロックがoff/frozenレイヤーに置かれている
+    図面では、レイヤー単位の判定を常時適用すると図番・タイトル・図面枠が
+    一切検出できなくなるため。実データ`EE5322-455-02A.dxf`/`-18A.dxf`で
+    確認、2026-09-16のレイヤー単位判定追加が原因の回帰）。既定の`True`では
+    従来通りの判定を行う。
     """
     if bool(e.dxf.get('invisible', 0)):
         return True
+
+    if not check_layer:
+        return False
 
     layer_name = e.dxf.get('layer', None)
     doc = getattr(e, 'doc', None)

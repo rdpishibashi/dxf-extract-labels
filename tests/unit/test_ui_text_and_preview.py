@@ -22,6 +22,8 @@ import base64
 import os
 import sys
 
+import pytest
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -327,6 +329,11 @@ def _run_results_section_with_extra_state(extra_state: str):
     return at
 
 
+@pytest.mark.skip(reason=
+    "2026-09-23 仕様変更: 組立図（B）候補selectbox方式を「図面種別判定結果」"
+    "セクション（data_editorのチェックボックス表）に置換（U7）。代替: "
+    "test_type_judgment_section_renders_editor_when_compare_option_on / "
+    "test_type_judgment_section_shows_errors_when_selection_invalid")
 def test_results_section_shows_assembly_compare_warning_when_no_wiring_files():
     """A（結線図）側が1件も見つからない場合、`assembly_compare_warning` の
     文言が警告として表示される（D4）。"""
@@ -337,6 +344,10 @@ def test_results_section_shows_assembly_compare_warning_when_no_wiring_files():
     assert 'A側の警告テスト文言' in warning_values
 
 
+@pytest.mark.skip(reason=
+    "2026-09-23 仕様変更: 組立図（B）候補selectbox方式を「図面種別判定結果」"
+    "セクション（data_editorのチェックボックス表）に置換（U7）。代替: "
+    "test_type_judgment_section_renders_editor_when_compare_option_on")
 def test_results_section_shows_b_candidate_selection_ui():
     """Bを自動確定できない場合（0件・複数件）、候補一覧の selectbox と
     「比較を実行」ボタンが表示される（D3）。"""
@@ -356,20 +367,21 @@ def test_results_section_shows_b_candidate_selection_ui():
 
 def test_results_section_no_assembly_compare_ui_when_not_applicable():
     """比較OFF（`assembly_compare_candidates`/`assembly_compare_warning` が
-    いずれもセットされていない）場合、比較関連のUIは一切表示されない。"""
+    いずれもセットされていない）場合、比較関連のUIは一切表示されない
+    （新方式でも同じ趣旨を維持する。selectbox方式自体が無くなったので、
+    残っているのは「判定を実行」ボタンが無いことの確認のみ）。"""
     at = _run_results_section()
     assert at.exception.len == 0
-    assert not any(sb.key == 'assembly_compare_b_select' for sb in at.selectbox)
-    assert not any(b.label == '比較を実行' for b in at.button)
+    assert not any(b.label == '判定を実行' for b in at.button)
 
 
 # ---------------------------------------------------------------------------
-# `_resolve_assembly_compare()` — B自動判定の分岐（app.py 引き継ぎ書 §5 表2）
+# `_resolve_assembly_compare()` — 自動判定の分岐（v3.7.0、表2の4セル）
 #
 # `st.session_state` への書き込みを伴うため、`AppTest.from_string()` で実行
-# して結果を検証する（model層の純関数〈select_wiring_files 等〉は
-# tests/unit/test_assembly_compare.py で検証済み。ここでは分岐とセッション
-# キーへの反映のみを対象にする）。
+# して結果を検証する（model層の純関数〈judge_drawing_types/
+# validate_type_selection 等〉は tests/unit/test_assembly_compare.py で
+# 検証済み。ここでは分岐とセッションキーへの反映のみを対象にする）。
 # ---------------------------------------------------------------------------
 
 _RESOLVE_SCRIPT_TEMPLATE = '''
@@ -393,16 +405,17 @@ def _run_resolve(results, compare_assembly_option=True):
 
 def test_resolve_assembly_compare_off_returns_none():
     """比較OFF（`compare_assembly_option=False`）の場合、A/B判定を行わず
-    常に None を返す。"""
+    常に None を返し、`type_judgment` 系のキーも一切設定しない。"""
     results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図'}}
     at = _run_resolve(results, compare_assembly_option=False)
     assert at.exception.len == 0
     assert at.session_state['_test_result'] is None
+    assert 'type_judgment' not in at.session_state
 
 
 def test_resolve_assembly_compare_auto_confirms_when_b_is_unique():
-    """A≥1件・B=1件（表2 左上セル）: 自動確定して比較結果を返し、
-    `assembly_compare_b` にBのファイル名を格納する。"""
+    """A≥1件・B=1件（表2 左上セル）: 自動判定がそのまま成立し比較結果を
+    返す。`type_judgment_applied` に判定内容が記録される。"""
     results = {
         'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1}],
                   'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
@@ -413,14 +426,16 @@ def test_resolve_assembly_compare_auto_confirms_when_b_is_unique():
     assert at.exception.len == 0
     result = at.session_state['_test_result']
     assert result['b_file'] == 'b.dxf'
-    assert at.session_state['assembly_compare_b'] == 'b.dxf'
-    assert 'assembly_compare_candidates' not in at.session_state
-    assert 'assembly_compare_warning' not in at.session_state
+    applied = at.session_state['type_judgment_applied']
+    assert applied == {'a.dxf': {'wiring': True, 'assembly': False},
+                        'b.dxf': {'wiring': False, 'assembly': True}}
+    assert at.session_state['type_judgment'] == applied
 
 
-def test_resolve_assembly_compare_warns_when_no_wiring_files():
-    """A=0件（表2 下段、D4）: 警告文言をセットし None を返す。
-    B側の判定は行わないため候補キーもセットされない。"""
+def test_resolve_assembly_compare_no_result_when_no_wiring_files():
+    """A=0件（表2 下段）: 比較不成立のため None を返す。`type_judgment` は
+    設定される（セクション表示・手動修正のため）が `type_judgment_applied`
+    は None のまま。"""
     results = {
         'a.dxf': {'rows': [], 'title': 'ＳＹＳＴＥＭ＿機器銘板'},
         'b.dxf': {'rows': [], 'title': '組立図'},
@@ -428,13 +443,15 @@ def test_resolve_assembly_compare_warns_when_no_wiring_files():
     at = _run_resolve(results)
     assert at.exception.len == 0
     assert at.session_state['_test_result'] is None
-    assert 'UNIT内結線図' in at.session_state['assembly_compare_warning']
-    assert 'assembly_compare_candidates' not in at.session_state
+    assert at.session_state['type_judgment'] == {
+        'a.dxf': {'wiring': False, 'assembly': False},
+        'b.dxf': {'wiring': False, 'assembly': True},
+    }
+    assert at.session_state['type_judgment_applied'] is None
 
 
-def test_resolve_assembly_compare_sets_candidates_when_b_has_multiple_matches():
-    """A≥1件・B=複数件（表2 右上セル）: 自動確定せず、候補一覧を
-    `assembly_compare_candidates` に格納して None を返す。"""
+def test_resolve_assembly_compare_no_result_when_multiple_assembly_matches():
+    """A≥1件・B=複数件（表2 右上セル）: 自動判定は不成立、None を返す。"""
     results = {
         'a.dxf': {'rows': [], 'title': 'UNIT内結線図'},
         'b1.dxf': {'rows': [], 'title': '組立図（上部）'},
@@ -443,13 +460,14 @@ def test_resolve_assembly_compare_sets_candidates_when_b_has_multiple_matches():
     at = _run_resolve(results)
     assert at.exception.len == 0
     assert at.session_state['_test_result'] is None
-    assert at.session_state['assembly_compare_candidates'] == ['b1.dxf', 'b2.dxf']
-    assert 'assembly_compare_b' not in at.session_state
+    assert at.session_state['type_judgment']['b1.dxf']['assembly'] is True
+    assert at.session_state['type_judgment']['b2.dxf']['assembly'] is True
+    assert at.session_state['type_judgment_applied'] is None
 
 
-def test_resolve_assembly_compare_falls_back_to_all_files_when_b_has_no_matches():
-    """A≥1件・B=0件（表2 中央上セル）: 自動確定せず、全ファイル名を候補に
-    格納して None を返す（ユーザーが手動でBを選べるようにするため）。"""
+def test_resolve_assembly_compare_no_result_when_no_assembly_matches():
+    """A≥1件・B=0件（表2 中央上セル）: 自動判定は不成立、None を返す
+    （ユーザーが「図面種別判定結果」セクションで手動修正する）。"""
     results = {
         'a.dxf': {'rows': [], 'title': 'UNIT内結線図'},
         'other.dxf': {'rows': [], 'title': 'ＳＹＳＴＥＭ＿機器銘板'},
@@ -457,4 +475,104 @@ def test_resolve_assembly_compare_falls_back_to_all_files_when_b_has_no_matches(
     at = _run_resolve(results)
     assert at.exception.len == 0
     assert at.session_state['_test_result'] is None
-    assert at.session_state['assembly_compare_candidates'] == ['a.dxf', 'other.dxf']
+    assert at.session_state['type_judgment'] == {
+        'a.dxf': {'wiring': True, 'assembly': False},
+        'other.dxf': {'wiring': False, 'assembly': False},
+    }
+    assert at.session_state['type_judgment_applied'] is None
+
+
+# ---------------------------------------------------------------------------
+# 「図面種別判定結果」セクション（`_render_type_judgment_section()`、v3.7.0）
+# ---------------------------------------------------------------------------
+
+_TYPE_JUDGMENT_SCRIPT_TEMPLATE = '''
+import sys
+sys.path.insert(0, {project_root!r})
+import streamlit as st
+from app import _render_type_judgment_section
+st.session_state['extract_results_full'] = {results!r}
+st.session_state['type_judgment'] = {selection!r}
+st.session_state['type_judgment_ver'] = 0
+{extra_state}
+_render_type_judgment_section()
+'''
+
+
+def _run_type_judgment_section(results, selection, extra_state=''):
+    script = _TYPE_JUDGMENT_SCRIPT_TEMPLATE.format(
+        project_root=PROJECT_ROOT, results=results, selection=selection,
+        extra_state=extra_state)
+    at = AppTest.from_string(script)
+    at.run()
+    return at
+
+
+def test_type_judgment_section_not_rendered_when_compare_option_off():
+    """`type_judgment` が session_state に無い（比較OFF、または抽出前）場合、
+    セクション自体が一切描画されない。"""
+    script = f'''
+import sys
+sys.path.insert(0, {PROJECT_ROOT!r})
+from app import _render_type_judgment_section
+_render_type_judgment_section()
+'''
+    at = AppTest.from_string(script)
+    at.run()
+    assert at.exception.len == 0
+    assert not any(s.value == '図面種別判定結果' for s in at.subheader)
+
+
+def test_type_judgment_section_renders_editor_when_compare_option_on():
+    """比較ON時、「図面種別判定結果」見出しが表示され、例外なく描画される
+    （`st.data_editor` はこのAppTestバージョンでは要素として直接検証
+    できないため、例外の有無で描画成功を確認する）。"""
+    results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
+               'b.dxf': {'rows': [], 'title': '組立図', 'main_drawing_number': 'EE2'}}
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    at = _run_type_judgment_section(results, selection)
+    assert at.exception.len == 0
+    assert any(s.value == '図面種別判定結果' for s in at.subheader)
+
+
+def test_type_judgment_section_shows_errors_and_disables_button_when_selection_invalid():
+    """成立しない判定（組立図0件）では警告が表示され、「判定を実行」ボタンが
+    disabledになる。"""
+    results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'}}
+    selection = {'a.dxf': {'wiring': True, 'assembly': False}}
+    at = _run_type_judgment_section(results, selection)
+    assert at.exception.len == 0
+    assert any('組立図が選択されていません' in w.value for w in at.warning)
+    apply_buttons = [b for b in at.button if b.key == 'type_judgment_apply']
+    assert len(apply_buttons) == 1
+    assert apply_buttons[0].disabled is True
+
+
+def test_type_judgment_section_button_is_primary_when_not_yet_applied():
+    """成立する判定で、まだ一度も「判定を実行」していない（
+    `type_judgment_applied` が未設定）場合、ボタンは青（primary）。"""
+    results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
+               'b.dxf': {'rows': [], 'title': '組立図', 'main_drawing_number': 'EE2'}}
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    at = _run_type_judgment_section(results, selection)
+    assert at.exception.len == 0
+    apply_buttons = [b for b in at.button if b.key == 'type_judgment_apply']
+    assert apply_buttons[0].disabled is False
+    assert apply_buttons[0].proto.type == 'primary'
+
+
+def test_type_judgment_section_button_is_secondary_when_already_applied():
+    """成立する判定が既に `type_judgment_applied` と一致する（直前に反映
+    済み）場合、ボタンは白（secondary）になる。"""
+    results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
+               'b.dxf': {'rows': [], 'title': '組立図', 'main_drawing_number': 'EE2'}}
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    extra_state = "st.session_state['type_judgment_applied'] = " + repr(selection)
+    at = _run_type_judgment_section(results, selection, extra_state=extra_state)
+    assert at.exception.len == 0
+    apply_buttons = [b for b in at.button if b.key == 'type_judgment_apply']
+    assert apply_buttons[0].disabled is False
+    assert apply_buttons[0].proto.type == 'secondary'

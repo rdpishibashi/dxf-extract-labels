@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import contextlib
+import time
 import traceback
 from io import BytesIO
 import pandas as pd
@@ -59,14 +60,18 @@ st.set_page_config(
 # （Excel出力・他セクションには影響しない）。
 _FRAME_NOT_FOUND_ERROR_MARKER = '領域探索を実施することができませんでした'
 
-# 「結線図-組立図を比較」用のセッションキー（v3.6.0）。抽出結果本体
-# （`extract_results_full`/`extract_sort_value`）はB確定後のExcel再生成に、
-# `assembly_compare_candidates`/`assembly_compare_b`/`assembly_compare_warning`
-# は選択UI・警告表示の状態に使う。3つのクリア対象リストすべてに含める
+# 「結線図-組立図を比較」用のセッションキー（v3.7.0、「図面種別判定結果」
+# セクション）。抽出結果本体（`extract_results_full`/`extract_sort_value`）は
+# 「判定を実行」時のExcel再生成に、`type_judgment`（現在のチェック状態＝正本）
+# /`type_judgment_applied`（最後にExcelへ反映した判定。Noneは未反映）は
+# セクションの表示・ボタン色に使う。3つのクリア対象リストすべてに含める
 # （いずれも「前回の抽出結果が古くなるタイミング」で揃って無効化すべきため）。
+# `type_judgment_ver`（data_editorのkeyバージョン）は含めない——ここで
+# クリアして0に戻すと、ブラウザ側に残っている古いバージョンのwidgetと
+# keyが衝突しうるため、セッションを通じて増え続けるだけにする。
 _ASSEMBLY_COMPARE_CLEAR_KEYS = [
     'extract_results_full', 'extract_sort_value',
-    'assembly_compare_candidates', 'assembly_compare_b', 'assembly_compare_warning',
+    'type_judgment', 'type_judgment_applied',
 ]
 
 _REGION_DETECT_CLEAR_KEYS = [
@@ -115,13 +120,22 @@ def _clear_session_keys(keys=(), prefixes=()):
                 del st.session_state[k]
 
 
-def _compute_terminal_results(uploaded_files):
+def _compute_terminal_results(uploaded_files, status_placeholder=None, start_time=None):
     """「端子一覧を抽出」オプション用に、アップロード済み全ファイルの
     端子台(TB)矩形解析を実行する（`terminal_detector.analyze_dxf_terminals`）。
     対象外ファイル（タイトルが「UNIT内結線図」でない等）は
-    `is_target=False` のまま結果に含まれる（Excel出力側で除外される）。"""
+    `is_target=False` のまま結果に含まれる（Excel出力側で除外される）。
+
+    `status_placeholder`/`start_time` を渡すと、DXF-diff-managerと同じ
+    書式（ファイル名＋件数＋経過秒数）で処理中のファイル名を表示する
+    （2026-09-23 ユーザー指示。省略時は表示しない）。"""
     results = {}
-    for uf in uploaded_files:
+    total = len(uploaded_files)
+    for idx, uf in enumerate(uploaded_files, start=1):
+        if status_placeholder is not None:
+            elapsed = time.time() - start_time
+            status_placeholder.text(
+                f"端子台を解析中: {uf.name}（{idx}/{total}件、経過 {elapsed:.1f} 秒）")
         with _temp_dxf_file(uf) as tmp:
             results[uf.name] = terminal_detector.analyze_dxf_terminals(
                 tmp, original_filename=uf.name)
@@ -542,12 +556,14 @@ def _render_options_section(locked):
             "結線図-組立図を比較",
             value=False,
             disabled=locked,
-            help="タイトルが「UNIT内結線図」の図面（複数可）を結線図（A）、"
-                 "タイトルに「組立図」を含む図面をB として、両者のラベル（機器符号）を"
-                 "比較し「結線図-組立図比較」シート（抽出ラベル一覧シート直前）に"
-                 "出力します。\n\n"
-                 "Bに該当する図面が0件または複数件見つかった場合は自動確定できないため、"
-                 "抽出後に表示される候補から選んで比較を実行してください。"
+            help="タイトルが「UNIT内結線図」の図面（複数可）を結線図、"
+                 "タイトルに「組立図」を含む図面（1件）を組立図として、両者の"
+                 "ラベル（機器符号）を比較し「結線図-組立図比較」シート"
+                 "（抽出ラベル一覧シート直前）に出力します。\n\n"
+                 "抽出後に表示される「図面種別判定結果」セクションで、どの"
+                 "図面を結線図・組立図としたかを確認・修正できます。自動判定"
+                 "が確定できない場合（組立図が0件・複数件、結線図が0件等）は、"
+                 "比較シート無しでラベル抽出自体は完了します。"
         )
 
     with col_right:
@@ -633,9 +649,18 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
     # ============================================================
     if st.button("領域を検出", key="detect_regions_btn", type="primary"):
         try:
-            with st.spinner('図面枠と矩形領域を検出中...'):
+            with st.spinner('領域を検出中...'):
+                # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
+                # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示、
+                # DXF-diff-managerと同じ書式。`_handle_extract_button()` 参照）。
+                status_placeholder = st.empty()
+                start_time = time.time()
                 analyses = {}
-                for uf in uploaded_files:
+                total_files = len(uploaded_files)
+                for idx, uf in enumerate(uploaded_files, start=1):
+                    elapsed = time.time() - start_time
+                    status_placeholder.text(
+                        f"領域を検出中: {uf.name}（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                     with _temp_dxf_file(uf) as tmp:
                         analysis = analyze_dxf_regions(tmp, region_cfg)
                         _, dn_info = extract_labels(
@@ -648,6 +673,7 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
                         analysis['title'] = dn_info.get('title')
                         analysis['subtitle'] = dn_info.get('subtitle')
                         analyses[uf.name] = analysis
+                status_placeholder.empty()
                 st.session_state['region_analyses'] = analyses
                 _clear_session_keys(
                     keys=_REGION_DETECT_CLEAR_KEYS,
@@ -874,40 +900,37 @@ def _render_region_confirmation_section(enable_region_detection, locked):
 
 
 def _resolve_assembly_compare(results, compare_assembly_option):
-    """「結線図-組立図を比較」ON時、抽出結果からA（結線図）・B（組立図）を自動判定し、
-    Bが一意に決まればその場で比較結果を返す（`model/assembly_compare.py` 参照）。
+    """「結線図-組立図を比較」ON時、抽出結果からA（結線図）・B（組立図）を
+    タイトルで自動判定する（`assembly_compare.judge_drawing_types()`）。
 
-    - A（タイトルに「UNIT内結線図」を含む図面）が1件も無い場合:
-      `assembly_compare_warning` に警告文言を格納し None を返す（比較シートを
-      作らない。D4）。
-    - B（タイトルに「組立図」を含む図面）がちょうど1件なら、その場で
-      `compare_assembly()` を呼んで比較結果を返す（自動確定、D2）。
-    - Bが0件・複数件の場合は自動確定できないため、`assembly_compare_candidates`
-      に候補（0件時は全ファイル名）を格納して None を返す。呼び出し元
-      `_render_results_section()` がこのキーを見て選択UIを表示し、選択後に
-      `assembly_compare.compare_assembly()` を直接呼んでExcelを再生成する（D3）。
+    自動判定がそのまま成立する場合（結線図1件以上・組立図ちょうど1件・
+    重複なし、`assembly_compare.validate_type_selection()` 参照）はその場で
+    比較結果を返し、`type_judgment_applied` に判定内容を記録する。成立
+    しない場合は比較結果 None を返す（比較シート無しでExcelを生成する。
+    ラベル抽出自体は成立可否に関わらず常に実行される）——「図面種別判定結果」
+    セクション（`_render_type_judgment_section()`）でユーザーが確認・修正
+    したうえで「判定を実行」する（v3.7.0。旧・自動確定/候補selectbox方式
+    〈D2/D3〉を置き換えた）。
 
-    OFF時は常に None（前回の候補・警告は `_EXTRACT_CLEAR_KEYS` 等で
-    呼び出し元が既にクリア済み）。
+    OFF時は `type_judgment` 系のキーを一切設定しない（前回分は呼び出し元の
+    `_EXTRACT_CLEAR_KEYS` 等で既にクリア済みのため、セクション自体が
+    非表示になる）。
     """
     if not compare_assembly_option:
         return None
 
-    wiring_files = assembly_compare.select_wiring_files(results)
-    if not wiring_files:
-        st.session_state['assembly_compare_warning'] = (
-            'タイトルに「UNIT内結線図」を含む図面が見つからないため、'
-            '「結線図-組立図比較」シートは作成されません。')
+    selection = assembly_compare.judge_drawing_types(results)
+    st.session_state['type_judgment'] = selection
+    st.session_state['type_judgment_ver'] = st.session_state.get('type_judgment_ver', 0) + 1
+
+    validation = assembly_compare.validate_type_selection(selection)
+    if validation['errors']:
+        st.session_state['type_judgment_applied'] = None
         return None
 
-    candidates = assembly_compare.select_assembly_candidates(results)
-    if len(candidates) == 1:
-        b_fname = candidates[0]
-        st.session_state['assembly_compare_b'] = b_fname
-        return assembly_compare.compare_assembly(results, wiring_files, b_fname)
-
-    st.session_state['assembly_compare_candidates'] = candidates if candidates else sorted(results.keys())
-    return None
+    st.session_state['type_judgment_applied'] = dict(selection)
+    return assembly_compare.compare_assembly(
+        results, validation['wiring_files'], validation['b_fname'])
 
 
 def _handle_extract_button(uploaded_files, region_cfg, opts):
@@ -937,20 +960,30 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
         try:
             frame_lineweight = int(region_cfg['frame_lineweight'])
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
+                # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
+                # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示）。
+                status_placeholder = st.empty()
+                start_time = time.time()
+
                 # 前回の結果をクリアする
                 _clear_session_keys(
                     keys=_EXTRACT_CLEAR_KEYS,
                     prefixes=_EXTRACT_CLEAR_PREFIXES)
 
                 if extract_terminal_option:
-                    st.session_state['terminal_results'] = _compute_terminal_results(uploaded_files)
+                    st.session_state['terminal_results'] = _compute_terminal_results(
+                        uploaded_files, status_placeholder, start_time)
                 terminal_results = st.session_state.get('terminal_results')
 
                 if 'region_analyses' in st.session_state:
                     # 領域付きモード: 抽出して直ちにExcelを生成する
                     analyses = st.session_state['region_analyses']
                     ref_data_by_file = {}
-                    for fname, analysis in analyses.items():
+                    total_files = len(analyses)
+                    for idx, (fname, analysis) in enumerate(analyses.items(), start=1):
+                        elapsed = time.time() - start_time
+                        status_placeholder.text(
+                            f"ラベルを抽出中: {fname}（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                         uf = next(f for f in uploaded_files if f.name == fname)
                         with _temp_dxf_file(uf) as tmp:
                             data = ref_designator.extract_ref_designator_data(
@@ -983,7 +1016,12 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                 else:
                     # 通常モード: 抽出して直ちにExcelを生成する
                     ref_data_by_file = {}
-                    for uploaded_file in uploaded_files:
+                    total_files = len(uploaded_files)
+                    for idx, uploaded_file in enumerate(uploaded_files, start=1):
+                        elapsed = time.time() - start_time
+                        status_placeholder.text(
+                            f"ラベルを抽出中: {uploaded_file.name}"
+                            f"（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                         with _temp_dxf_file(uploaded_file) as tmp:
                             data = ref_designator.extract_ref_designator_data(
                                 tmp, frame_lineweight=frame_lineweight,
@@ -1012,51 +1050,104 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                     st.session_state['extract_sort_value'] = sort_value
 
                 st.session_state['download_done'] = False
+                status_placeholder.empty()
 
             st.rerun()
         except Exception as e:
             handle_error(e)
 
 
-def _handle_assembly_compare_selection():
-    """「結線図-組立図を比較」でBを自動確定できなかった場合（0件・複数件）に、
-    候補から選んで比較を実行するUIを表示する（D3）。
+def _apply_type_judgment(selection, validation):
+    """「判定を実行」ボタンの処理本体: 確定した判定（`validation`）で比較を
+    実行し、Excelを再生成する（`extract_results_full`/`extract_sort_value` に
+    保持した抽出結果一式を使い、`terminal_results`・`output_filename` も前回と
+    同じ値を引き継ぐ。表4「呼び出し元×Excel出力関数」参照——初回抽出時と
+    同じ引数一式を渡すことを確認済み）。呼び出し前に `validation['errors']`
+    が空であることを呼び出し元が確認していること。"""
+    results = st.session_state['extract_results_full']
+    compare_result = assembly_compare.compare_assembly(
+        results, validation['wiring_files'], validation['b_fname'])
 
-    `assembly_compare_candidates` が session_state に無ければ何も表示しない
-    （B=1件で自動確定済み、または比較OFFの場合）。実行後は確定した組立図名を
-    `assembly_compare_b` に格納し、`assembly_compare_candidates` を消してから
-    Excelを再生成する（`extract_results_full`/`extract_sort_value` に保持した
-    抽出結果一式を使い、`terminal_results`・`output_filename` も前回と同じ値を
-    引き継ぐ。表4「呼び出し元×Excel出力関数」参照——初回抽出時と同じ引数一式を
-    渡すことを両ハンドラで確認済み）。"""
-    candidates = st.session_state.get('assembly_compare_candidates')
-    if not candidates:
+    terminal_results = st.session_state.get('terminal_results')
+    if st.session_state.get('is_region_mode', False):
+        st.session_state.excel_result = create_region_excel_output(
+            results, terminal_results=terminal_results, assembly_compare=compare_result)
+    else:
+        st.session_state.excel_result = create_ref_designator_excel_output(
+            results, st.session_state['extract_sort_value'],
+            terminal_results=terminal_results, assembly_compare=compare_result)
+
+    st.session_state['type_judgment_applied'] = dict(selection)
+    st.session_state['download_done'] = False
+    st.rerun()
+
+
+def _render_type_judgment_section():
+    """「図面種別判定結果」セクション（v3.7.0）: 「結線図-組立図を比較」
+    ON時に抽出したファイルについて、結線図・組立図の判定結果
+    （図番・タイトル・サブタイトルとともに）一覧表示し、チェックボックスで
+    手動修正できるようにする。「抽出結果」セクションの直前に独立した
+    セクションとして表示し、抽出結果表示中（locked）でもこのセクションだけは
+    操作できる。
+
+    `type_judgment`（session_state、現在のチェック状態の正本）が無ければ
+    何も表示しない（比較OFF、または抽出前）。チェック変更のたびに
+    Excelを再生成するのではなく、「判定を実行」ボタンを押したときにのみ
+    再生成する（変更後・未反映の間はボタンを青、反映済みなら白にする）。
+
+    data_editorとの連動は「正本dict + キー再生成」方式を使う（streamlitスキル
+    §6参照）——表示中のdata_editorのsession_stateを直接書き換えると無限同期
+    ループで画面が固まるため、差分検出時は正本（`type_judgment`）を更新して
+    キーのバージョンを上げ、別ウィジェットとして再生成する。
+    """
+    selection = st.session_state.get('type_judgment')
+    results = st.session_state.get('extract_results_full')
+    if selection is None or not results:
         return
 
-    st.warning(
-        "「結線図-組立図比較」の組立図（B）を自動判定できませんでした"
-        "（タイトルに「組立図」を含む図面が0件、または複数件見つかりました）。"
-        "比較する図面を選択してください。"
+    st.subheader("図面種別判定結果")
+
+    rows = assembly_compare.type_judgment_rows(results, selection)
+    df = pd.DataFrame(rows).set_index('ファイル名')
+
+    ver = st.session_state.get('type_judgment_ver', 0)
+    edited = st.data_editor(
+        df,
+        key=f"type_judgment_editor_{ver}",
+        column_config={
+            '結線図': st.column_config.CheckboxColumn('結線図'),
+            '組立図': st.column_config.CheckboxColumn('組立図'),
+            '図番': st.column_config.TextColumn('図番', disabled=True),
+            'タイトル': st.column_config.TextColumn('タイトル', disabled=True),
+            'サブタイトル': st.column_config.TextColumn('サブタイトル', disabled=True),
+        },
+        hide_index=True,
     )
-    b_fname = st.selectbox("B：比較する組立図", candidates, key='assembly_compare_b_select')
-    if st.button("比較を実行", key='assembly_compare_run'):
-        results = st.session_state['extract_results_full']
-        wiring_files = assembly_compare.select_wiring_files(results)
-        compare_result = assembly_compare.compare_assembly(results, wiring_files, b_fname)
 
-        terminal_results = st.session_state.get('terminal_results')
-        if st.session_state.get('is_region_mode', False):
-            st.session_state.excel_result = create_region_excel_output(
-                results, terminal_results=terminal_results, assembly_compare=compare_result)
-        else:
-            st.session_state.excel_result = create_ref_designator_excel_output(
-                results, st.session_state['extract_sort_value'],
-                terminal_results=terminal_results, assembly_compare=compare_result)
-
-        st.session_state['assembly_compare_b'] = b_fname
-        del st.session_state['assembly_compare_candidates']
-        st.session_state['download_done'] = False
+    # 差分検出 → 正本更新 → キーのバージョンを上げて再生成（無条件に反映すると
+    # 無限同期ループになるため、差分が無ければ何もしない）。
+    deltas = {}
+    for fname in edited.index:
+        wiring = bool(edited.loc[fname, '結線図'])
+        assembly = bool(edited.loc[fname, '組立図'])
+        current = selection.get(fname, {})
+        if wiring != bool(current.get('wiring')) or assembly != bool(current.get('assembly')):
+            deltas[fname] = {'wiring': wiring, 'assembly': assembly}
+    if deltas:
+        selection.update(deltas)
+        st.session_state['type_judgment_ver'] = ver + 1
         st.rerun()
+
+    validation = assembly_compare.validate_type_selection(selection)
+    if validation['errors']:
+        reasons = '\n'.join(f'- {e}' for e in validation['errors'])
+        st.warning(f"結線図-組立図比較を実行できませんでした。\n{reasons}")
+
+    already_applied = st.session_state.get('type_judgment_applied') == selection
+    run_disabled = bool(validation['errors'])
+    run_type = "secondary" if (not run_disabled and already_applied) else "primary"
+    if st.button("判定を実行", type=run_type, disabled=run_disabled, key='type_judgment_apply'):
+        _apply_type_judgment(selection, validation)
 
 
 def _render_results_section():
@@ -1066,7 +1157,11 @@ def _render_results_section():
     抽出」の2オプションを廃止したため、モードは領域付き/通常の2つのみ
     （旧3分岐から単純化）。「領域の確認」セクションを空のときは表示しなく
     したこと（2026-09-10）に伴い、「抽出結果プレビュー」等の置き場として
-    「抽出結果」という見出しのセクションをここに新設した。"""
+    「抽出結果」という見出しのセクションをここに新設した。
+
+    「結線図-組立図を比較」関連の判定表示・操作（v3.7.0で「図面種別判定結果」
+    セクションへ分離）はこの関数の対象外——呼び出し元 `app()` が
+    `_render_type_judgment_section()` をこの関数の直前に呼ぶ。"""
     # ============================================================
     # 抽出結果
     # ============================================================
@@ -1080,11 +1175,6 @@ def _render_results_section():
         else:
             summ = st.session_state.get('ref_results_summary', {})
             st.success(f"{len(summ)}個のDXFファイルから機器符号の抽出が完了しました")
-
-        assembly_warning = st.session_state.get('assembly_compare_warning')
-        if assembly_warning:
-            st.warning(assembly_warning)
-        _handle_assembly_compare_selection()
 
         # 「一度開いたら開いたままにする」は、シート選択(selectbox)の変更という
         # 明示的なユーザー操作があった場合のみ反映する（on_change）。st.expander
@@ -1181,6 +1271,7 @@ def app():
     ):
         _handle_extract_button(uploaded_files, region_cfg, opts)
 
+    _render_type_judgment_section()
     _render_results_section()
 
 

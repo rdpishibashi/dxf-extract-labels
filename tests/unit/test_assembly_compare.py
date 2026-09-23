@@ -253,3 +253,135 @@ def test_compare_assembly_ignores_parenthesis_suffix_when_aggregating():
     assert row['比較結果'] == ac.KUBUN_BOTH
     assert row['A 合計出現数'] == 2
     assert row['B 出現数'] == 2
+
+
+# ---------------------------------------------------------------------------
+# judge_drawing_types — 図面種別判定結果セクションの初期判定
+# ---------------------------------------------------------------------------
+
+def test_judge_drawing_types_marks_wiring_and_assembly_independently():
+    results = {
+        'a.dxf': _result([], title='UNIT内結線図'),
+        'b.dxf': _result([], title='組立図'),
+        'c.dxf': _result([], title='ＳＹＳＴＥＭ＿機器銘板'),
+    }
+    judged = ac.judge_drawing_types(results)
+    assert judged == {
+        'a.dxf': {'wiring': True, 'assembly': False},
+        'b.dxf': {'wiring': False, 'assembly': True},
+        'c.dxf': {'wiring': False, 'assembly': False},
+    }
+
+
+def test_judge_drawing_types_includes_all_files_even_when_unmatched():
+    """判定に引っかからないファイルも辞書には含める（一覧に全ファイルを
+    載せるため）。"""
+    results = {'x.dxf': _result([], title=None)}
+    assert ac.judge_drawing_types(results) == {'x.dxf': {'wiring': False, 'assembly': False}}
+
+
+def test_judge_drawing_types_both_true_when_title_contains_both_texts():
+    """1ファイルのタイトルが「UNIT内結線図」「組立図」を両方含む場合、初期
+    判定は両方Trueになりうる（`validate_type_selection()`側の重複チェックで
+    不成立として扱われる）。"""
+    results = {'a.dxf': _result([], title='UNIT内結線図の組立図')}
+    assert ac.judge_drawing_types(results) == {'a.dxf': {'wiring': True, 'assembly': True}}
+
+
+# ---------------------------------------------------------------------------
+# validate_type_selection — 直積表（結線図0/1+件 × 組立図0/1/2+件 × 重複あり/なし）
+# ---------------------------------------------------------------------------
+
+def test_validate_type_selection_succeeds_with_one_wiring_one_assembly():
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    result = ac.validate_type_selection(selection)
+    assert result == {'wiring_files': ['a.dxf'], 'b_fname': 'b.dxf', 'errors': []}
+
+
+def test_validate_type_selection_succeeds_with_multiple_wiring_one_assembly():
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'a2.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    result = ac.validate_type_selection(selection)
+    assert result['errors'] == []
+    assert result['wiring_files'] == ['a.dxf', 'a2.dxf']
+    assert result['b_fname'] == 'b.dxf'
+
+
+def test_validate_type_selection_fails_when_no_wiring_selected():
+    selection = {'b.dxf': {'wiring': False, 'assembly': True}}
+    result = ac.validate_type_selection(selection)
+    assert result['b_fname'] is None
+    assert ac.ERROR_NO_WIRING in result['errors']
+
+
+def test_validate_type_selection_fails_when_no_assembly_selected():
+    selection = {'a.dxf': {'wiring': True, 'assembly': False}}
+    result = ac.validate_type_selection(selection)
+    assert result['b_fname'] is None
+    assert ac.ERROR_NO_ASSEMBLY in result['errors']
+
+
+def test_validate_type_selection_fails_when_multiple_assembly_selected():
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b1.dxf': {'wiring': False, 'assembly': True},
+                 'b2.dxf': {'wiring': False, 'assembly': True}}
+    result = ac.validate_type_selection(selection)
+    assert result['b_fname'] is None
+    assert ac.ERROR_MULTIPLE_ASSEMBLY_TEMPLATE.format(n=2) in result['errors']
+
+
+def test_validate_type_selection_fails_when_same_file_checked_as_both():
+    """同一ファイルに結線図・組立図の両方がチェックされている場合は不成立
+    （Q5）。"""
+    selection = {'a.dxf': {'wiring': True, 'assembly': True}}
+    result = ac.validate_type_selection(selection)
+    assert result['b_fname'] is None
+    assert any('a.dxf' in e for e in result['errors'])
+
+
+def test_validate_type_selection_reports_both_no_wiring_and_no_assembly():
+    """結線図0件・組立図0件が同時に起きた場合、両方の理由を列挙する。"""
+    selection = {'x.dxf': {'wiring': False, 'assembly': False}}
+    result = ac.validate_type_selection(selection)
+    assert ac.ERROR_NO_WIRING in result['errors']
+    assert ac.ERROR_NO_ASSEMBLY in result['errors']
+    assert len(result['errors']) == 2
+
+
+def test_validate_type_selection_empty_selection_fails_gracefully():
+    result = ac.validate_type_selection({})
+    assert result == {'wiring_files': [], 'b_fname': None,
+                       'errors': [ac.ERROR_NO_WIRING, ac.ERROR_NO_ASSEMBLY]}
+
+
+# ---------------------------------------------------------------------------
+# type_judgment_rows
+# ---------------------------------------------------------------------------
+
+def test_type_judgment_rows_includes_all_files_sorted_by_filename():
+    results = {
+        'b.dxf': _result([], main_drawing_number='EE002', title='組立図', ),
+        'a.dxf': _result([], main_drawing_number='EE001', title='UNIT内結線図',
+                          ),
+    }
+    results['a.dxf']['subtitle'] = 'SUB-A'
+    results['b.dxf']['subtitle'] = None
+    selection = {'a.dxf': {'wiring': True, 'assembly': False},
+                 'b.dxf': {'wiring': False, 'assembly': True}}
+    rows = ac.type_judgment_rows(results, selection)
+    assert [r['ファイル名'] for r in rows] == ['a.dxf', 'b.dxf']
+    assert rows[0] == {'ファイル名': 'a.dxf', '結線図': True, '組立図': False,
+                        '図番': 'EE001', 'タイトル': 'UNIT内結線図', 'サブタイトル': 'SUB-A'}
+    assert rows[1]['図番'] == 'EE002'
+    assert rows[1]['サブタイトル'] == ''
+
+
+def test_type_judgment_rows_falls_back_to_filename_stem_when_no_drawing_number():
+    results = {'noext.dxf': _result([], title=None)}
+    selection = {}
+    rows = ac.type_judgment_rows(results, selection)
+    assert rows[0]['図番'] == 'noext'
+    assert rows[0]['結線図'] is False
+    assert rows[0]['組立図'] is False

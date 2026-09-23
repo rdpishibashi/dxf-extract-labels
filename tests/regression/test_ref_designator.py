@@ -1079,7 +1079,14 @@ def test_frame_absent_in_model_space_falls_back_without_losing_labels(sample_nam
     assert data['warning'] is not None
     # 図面枠フィルタなしのフォールバックで、Model Space の実ラベルが
     # ちゃんと収集されている（座標系不一致でほぼ全滅していない）こと。
-    assert data['total_in_frame'] > 20
+    # 閾値は20→15に緩和（2026-09-23）: `EE5322-455-07A.dxf`（本サンプルの
+    # 内容）では、このフォールバック経路
+    # （`_collect_all_labels_fallback()`）に非表示エンティティの除外
+    # （`is_invisible()`）が無く、entity自身のinvisible属性が立った
+    # 6件（`I`×2・`J`×2・`I-I(1:1)`・`J-J(1:1)`、いずれも図面上に表示
+    # されない）が出力に混入していた（25件）。除外を追加した結果19件に
+    # 減っており、これは正しい修正の結果（ほぼ全滅の兆候ではない）。
+    assert data['total_in_frame'] > 15
 
 
 def test_cb001_not_dropped_by_paper_space_frame_coordinate_mismatch():

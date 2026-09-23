@@ -650,8 +650,17 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
     if st.button("領域を検出", key="detect_regions_btn", type="primary"):
         try:
             with st.spinner('図面枠と矩形領域を検出中...'):
+                # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
+                # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示、
+                # DXF-diff-managerと同じ書式。`_handle_extract_button()` 参照）。
+                status_placeholder = st.empty()
+                start_time = time.time()
                 analyses = {}
-                for uf in uploaded_files:
+                total_files = len(uploaded_files)
+                for idx, uf in enumerate(uploaded_files, start=1):
+                    elapsed = time.time() - start_time
+                    status_placeholder.text(
+                        f"領域を検出中: {uf.name}（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                     with _temp_dxf_file(uf) as tmp:
                         analysis = analyze_dxf_regions(tmp, region_cfg)
                         _, dn_info = extract_labels(
@@ -664,6 +673,7 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
                         analysis['title'] = dn_info.get('title')
                         analysis['subtitle'] = dn_info.get('subtitle')
                         analyses[uf.name] = analysis
+                status_placeholder.empty()
                 st.session_state['region_analyses'] = analyses
                 _clear_session_keys(
                     keys=_REGION_DETECT_CLEAR_KEYS,
@@ -949,9 +959,12 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
     if st.button("ラベルを抽出", type="primary"):
         try:
             frame_lineweight = int(region_cfg['frame_lineweight'])
-            status_placeholder = st.empty()
-            start_time = time.time()
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
+                # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
+                # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示）。
+                status_placeholder = st.empty()
+                start_time = time.time()
+
                 # 前回の結果をクリアする
                 _clear_session_keys(
                     keys=_EXTRACT_CLEAR_KEYS,

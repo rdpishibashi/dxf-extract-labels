@@ -127,13 +127,102 @@ def select_wiring_files(results: dict) -> list:
 def select_assembly_candidates(results: dict) -> list:
     """`results` からタイトルに「組立図」を含む全ファイル名を返す（B側候補）。
 
-    0件・1件・複数件のいずれもありうる。呼び出し側（app.py）は
-    ちょうど1件のときだけ自動確定し、それ以外は候補としてユーザーに選ばせる。
+    0件・1件・複数件のいずれもありうる。`judge_drawing_types()` の初期判定
+    （組立図欄のチェック初期値）に使う。最終的にどのファイルをB（組立図）と
+    するかは「図面種別判定結果」セクション（app.py）でユーザーが確認・
+    修正した選択（`validate_type_selection()` の入力）で決まる。
     """
     return sorted(
         fname for fname, data in results.items()
         if _title_contains(data.get('title'), ASSEMBLY_TITLE_TEXT)
     )
+
+
+# ============================================================
+# 図面種別判定結果（「結線図-組立図を比較」オプション、v3.7.0）
+# ============================================================
+#
+# 抽出結果からA（結線図）・B（組立図）をタイトルで自動判定し、「図面種別判定
+# 結果」セクション（app.py）でユーザーが一覧・修正できるようにする。以下の
+# 3関数はいずれもstreamlitに依存しない純関数——app.py側はチェックボックスの
+# 状態（selection）をこれらの関数に渡すだけで、判定・比較可否・表示行の
+# いずれも計算できる。
+
+ERROR_NO_WIRING = '結線図（タイトルに「UNIT内結線図」を含む図面）が選択されていません。'
+ERROR_NO_ASSEMBLY = '組立図が選択されていません。'
+ERROR_MULTIPLE_ASSEMBLY_TEMPLATE = '組立図が{n}件選択されています。1件だけ選択してください。'
+ERROR_OVERLAP_TEMPLATE = '同じ図面が結線図・組立図の両方に選択されています: {files}'
+
+
+def judge_drawing_types(results: dict) -> dict:
+    """`results` の全ファイルについて、タイトルから結線図・組立図の初期判定
+    （チェックボックスの初期値）を行う。
+
+    戻り値: `{fname: {'wiring': bool, 'assembly': bool}}`（`results` の
+    全ファイルを含む。両方Trueの初期判定は起こらないが——同一ファイルの
+    タイトルが「UNIT内結線図」「組立図」を両方含む場合は起こりうるため、
+    その場合は`validate_type_selection()`側で不成立として扱う）。
+    """
+    wiring = set(select_wiring_files(results))
+    assembly = set(select_assembly_candidates(results))
+    return {
+        fname: {'wiring': fname in wiring, 'assembly': fname in assembly}
+        for fname in results
+    }
+
+
+def validate_type_selection(selection: dict) -> dict:
+    """判定結果（`{fname: {'wiring': bool, 'assembly': bool}}`）から、
+    「結線図-組立図比較」を実行できるかどうかを判定する。
+
+    成立条件: 結線図が1件以上・組立図がちょうど1件・同一ファイルへの
+    重複チェックなし。いずれかを満たさない場合は `errors` に該当理由を
+    すべて列挙する（複数該当しうる。例: 結線図0件かつ組立図0件）。
+
+    戻り値: `{'wiring_files': [...], 'b_fname': str|None, 'errors': [...]}`
+      `errors` が空なら比較可能（`b_fname` は確定した組立図ファイル名）。
+      1件以上あれば比較不可（`b_fname` は常に None）。
+    """
+    wiring_files = sorted(f for f, v in selection.items() if v.get('wiring'))
+    assembly_files = sorted(f for f, v in selection.items() if v.get('assembly'))
+    overlap = sorted(set(wiring_files) & set(assembly_files))
+
+    errors = []
+    if not wiring_files:
+        errors.append(ERROR_NO_WIRING)
+    if not assembly_files:
+        errors.append(ERROR_NO_ASSEMBLY)
+    elif len(assembly_files) > 1:
+        errors.append(ERROR_MULTIPLE_ASSEMBLY_TEMPLATE.format(n=len(assembly_files)))
+    if overlap:
+        errors.append(ERROR_OVERLAP_TEMPLATE.format(files='、'.join(overlap)))
+
+    b_fname = assembly_files[0] if (not errors and len(assembly_files) == 1) else None
+    return {'wiring_files': wiring_files, 'b_fname': b_fname, 'errors': errors}
+
+
+def type_judgment_rows(results: dict, selection: dict) -> list:
+    """「図面種別判定結果」表示用の行データをファイル名昇順で返す。
+
+    各行: `{'ファイル名': str, '結線図': bool, '組立図': bool, '図番': str,
+    'タイトル': str, 'サブタイトル': str}`。`ファイル名` は表の列としては
+    表示しない（呼び出し側でDataFrameのindexに使う）想定だが、行とファイル名
+    の対応付けに必要なためここでは含める。図番は `drawing_ident()`
+    （未抽出時はファイル名〈拡張子なし〉にフォールバック）。
+    """
+    rows = []
+    for fname in sorted(results.keys()):
+        data = results[fname]
+        sel = selection.get(fname, {})
+        rows.append({
+            'ファイル名': fname,
+            '結線図': bool(sel.get('wiring')),
+            '組立図': bool(sel.get('assembly')),
+            '図番': drawing_ident(fname, data),
+            'タイトル': data.get('title') or '',
+            'サブタイトル': data.get('subtitle') or '',
+        })
+    return rows
 
 
 def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:

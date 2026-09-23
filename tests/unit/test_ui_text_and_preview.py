@@ -369,10 +369,10 @@ def test_results_section_no_assembly_compare_ui_when_not_applicable():
     """比較OFF（`assembly_compare_candidates`/`assembly_compare_warning` が
     いずれもセットされていない）場合、比較関連のUIは一切表示されない
     （新方式でも同じ趣旨を維持する。selectbox方式自体が無くなったので、
-    残っているのは「比較を実行」ボタンが無いことの確認のみ）。"""
+    残っているのは「判定を実行」ボタンが無いことの確認のみ）。"""
     at = _run_results_section()
     assert at.exception.len == 0
-    assert not any(b.label == '比較を実行' for b in at.button)
+    assert not any(b.label == '判定を実行' for b in at.button)
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +537,7 @@ def test_type_judgment_section_renders_editor_when_compare_option_on():
 
 
 def test_type_judgment_section_shows_errors_and_disables_button_when_selection_invalid():
-    """成立しない判定（組立図0件）では警告が表示され、「比較を実行」ボタンが
+    """成立しない判定（組立図0件）では警告が表示され、「判定を実行」ボタンが
     disabledになる。"""
     results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'}}
     selection = {'a.dxf': {'wiring': True, 'assembly': False}}
@@ -550,7 +550,7 @@ def test_type_judgment_section_shows_errors_and_disables_button_when_selection_i
 
 
 def test_type_judgment_section_button_is_primary_when_not_yet_applied():
-    """成立する判定で、まだ一度も「比較を実行」していない（
+    """成立する判定で、まだ一度も「判定を実行」していない（
     `type_judgment_applied` が未設定）場合、ボタンは青（primary）。"""
     results = {'a.dxf': {'rows': [], 'title': 'UNIT内結線図', 'main_drawing_number': 'EE1'},
                'b.dxf': {'rows': [], 'title': '組立図', 'main_drawing_number': 'EE2'}}

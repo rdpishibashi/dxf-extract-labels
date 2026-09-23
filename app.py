@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import contextlib
+import time
 import traceback
 from io import BytesIO
 import pandas as pd
@@ -61,7 +62,7 @@ _FRAME_NOT_FOUND_ERROR_MARKER = '領域探索を実施することができま�
 
 # 「結線図-組立図を比較」用のセッションキー（v3.7.0、「図面種別判定結果」
 # セクション）。抽出結果本体（`extract_results_full`/`extract_sort_value`）は
-# 「比較を実行」時のExcel再生成に、`type_judgment`（現在のチェック状態＝正本）
+# 「判定を実行」時のExcel再生成に、`type_judgment`（現在のチェック状態＝正本）
 # /`type_judgment_applied`（最後にExcelへ反映した判定。Noneは未反映）は
 # セクションの表示・ボタン色に使う。3つのクリア対象リストすべてに含める
 # （いずれも「前回の抽出結果が古くなるタイミング」で揃って無効化すべきため）。
@@ -119,13 +120,22 @@ def _clear_session_keys(keys=(), prefixes=()):
                 del st.session_state[k]
 
 
-def _compute_terminal_results(uploaded_files):
+def _compute_terminal_results(uploaded_files, status_placeholder=None, start_time=None):
     """「端子一覧を抽出」オプション用に、アップロード済み全ファイルの
     端子台(TB)矩形解析を実行する（`terminal_detector.analyze_dxf_terminals`）。
     対象外ファイル（タイトルが「UNIT内結線図」でない等）は
-    `is_target=False` のまま結果に含まれる（Excel出力側で除外される）。"""
+    `is_target=False` のまま結果に含まれる（Excel出力側で除外される）。
+
+    `status_placeholder`/`start_time` を渡すと、DXF-diff-managerと同じ
+    書式（ファイル名＋件数＋経過秒数）で処理中のファイル名を表示する
+    （2026-09-23 ユーザー指示。省略時は表示しない）。"""
     results = {}
-    for uf in uploaded_files:
+    total = len(uploaded_files)
+    for idx, uf in enumerate(uploaded_files, start=1):
+        if status_placeholder is not None:
+            elapsed = time.time() - start_time
+            status_placeholder.text(
+                f"端子台を解析中: {uf.name}（{idx}/{total}件、経過 {elapsed:.1f} 秒）")
         with _temp_dxf_file(uf) as tmp:
             results[uf.name] = terminal_detector.analyze_dxf_terminals(
                 tmp, original_filename=uf.name)
@@ -889,7 +899,7 @@ def _resolve_assembly_compare(results, compare_assembly_option):
     しない場合は比較結果 None を返す（比較シート無しでExcelを生成する。
     ラベル抽出自体は成立可否に関わらず常に実行される）——「図面種別判定結果」
     セクション（`_render_type_judgment_section()`）でユーザーが確認・修正
-    したうえで「比較を実行」する（v3.7.0。旧・自動確定/候補selectbox方式
+    したうえで「判定を実行」する（v3.7.0。旧・自動確定/候補selectbox方式
     〈D2/D3〉を置き換えた）。
 
     OFF時は `type_judgment` 系のキーを一切設定しない（前回分は呼び出し元の
@@ -939,6 +949,8 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
     if st.button("ラベルを抽出", type="primary"):
         try:
             frame_lineweight = int(region_cfg['frame_lineweight'])
+            status_placeholder = st.empty()
+            start_time = time.time()
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 # 前回の結果をクリアする
                 _clear_session_keys(
@@ -946,14 +958,19 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                     prefixes=_EXTRACT_CLEAR_PREFIXES)
 
                 if extract_terminal_option:
-                    st.session_state['terminal_results'] = _compute_terminal_results(uploaded_files)
+                    st.session_state['terminal_results'] = _compute_terminal_results(
+                        uploaded_files, status_placeholder, start_time)
                 terminal_results = st.session_state.get('terminal_results')
 
                 if 'region_analyses' in st.session_state:
                     # 領域付きモード: 抽出して直ちにExcelを生成する
                     analyses = st.session_state['region_analyses']
                     ref_data_by_file = {}
-                    for fname, analysis in analyses.items():
+                    total_files = len(analyses)
+                    for idx, (fname, analysis) in enumerate(analyses.items(), start=1):
+                        elapsed = time.time() - start_time
+                        status_placeholder.text(
+                            f"ラベルを抽出中: {fname}（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                         uf = next(f for f in uploaded_files if f.name == fname)
                         with _temp_dxf_file(uf) as tmp:
                             data = ref_designator.extract_ref_designator_data(
@@ -986,7 +1003,12 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                 else:
                     # 通常モード: 抽出して直ちにExcelを生成する
                     ref_data_by_file = {}
-                    for uploaded_file in uploaded_files:
+                    total_files = len(uploaded_files)
+                    for idx, uploaded_file in enumerate(uploaded_files, start=1):
+                        elapsed = time.time() - start_time
+                        status_placeholder.text(
+                            f"ラベルを抽出中: {uploaded_file.name}"
+                            f"（{idx}/{total_files}件、経過 {elapsed:.1f} 秒）")
                         with _temp_dxf_file(uploaded_file) as tmp:
                             data = ref_designator.extract_ref_designator_data(
                                 tmp, frame_lineweight=frame_lineweight,
@@ -1015,6 +1037,7 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                     st.session_state['extract_sort_value'] = sort_value
 
                 st.session_state['download_done'] = False
+                status_placeholder.empty()
 
             st.rerun()
         except Exception as e:
@@ -1022,7 +1045,7 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
 
 
 def _apply_type_judgment(selection, validation):
-    """「比較を実行」ボタンの処理本体: 確定した判定（`validation`）で比較を
+    """「判定を実行」ボタンの処理本体: 確定した判定（`validation`）で比較を
     実行し、Excelを再生成する（`extract_results_full`/`extract_sort_value` に
     保持した抽出結果一式を使い、`terminal_results`・`output_filename` も前回と
     同じ値を引き継ぐ。表4「呼び出し元×Excel出力関数」参照——初回抽出時と
@@ -1056,7 +1079,7 @@ def _render_type_judgment_section():
 
     `type_judgment`（session_state、現在のチェック状態の正本）が無ければ
     何も表示しない（比較OFF、または抽出前）。チェック変更のたびに
-    Excelを再生成するのではなく、「比較を実行」ボタンを押したときにのみ
+    Excelを再生成するのではなく、「判定を実行」ボタンを押したときにのみ
     再生成する（変更後・未反映の間はボタンを青、反映済みなら白にする）。
 
     data_editorとの連動は「正本dict + キー再生成」方式を使う（streamlitスキル
@@ -1110,7 +1133,7 @@ def _render_type_judgment_section():
     already_applied = st.session_state.get('type_judgment_applied') == selection
     run_disabled = bool(validation['errors'])
     run_type = "secondary" if (not run_disabled and already_applied) else "primary"
-    if st.button("比較を実行", type=run_type, disabled=run_disabled, key='type_judgment_apply'):
+    if st.button("判定を実行", type=run_type, disabled=run_disabled, key='type_judgment_apply'):
         _apply_type_judgment(selection, validation)
 
 

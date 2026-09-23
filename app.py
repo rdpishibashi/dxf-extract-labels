@@ -649,7 +649,7 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
     # ============================================================
     if st.button("領域を検出", key="detect_regions_btn", type="primary"):
         try:
-            with st.spinner('図面枠と矩形領域を検出中...'):
+            with st.spinner('領域を検出中...'):
                 # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
                 # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示、
                 # DXF-diff-managerと同じ書式。`_handle_extract_button()` 参照）。

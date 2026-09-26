@@ -98,9 +98,15 @@ def _compare_key(label: str) -> str:
     （抵抗値・ワイヤ色コード等、例 `R10(2.2K)`・`FBWH（白）`）だけが
     異なる同一部品を、A・B比較上は同一ラベルとして扱うため。
     括弧を含まない場合は元の文字列をそのまま返す。
+
+    除去すると空になるラベル（括弧で始まる `(BU)`・`(BK)` 等、電線色などの
+    補足）は元の文字列のまま返す（2026-09-26 ユーザー指示。空キーに合算されて
+    無関係なラベル群が1行の空欄ラベルにまとまってしまう不具合の修正）。
     """
     idx = min((i for i in (label.find('('), label.find('（')) if i >= 0), default=-1)
-    return label[:idx].rstrip() if idx >= 0 else label
+    if idx < 0:
+        return label
+    return label[:idx].rstrip() or label
 
 
 def drawing_ident(fname: str, data: dict) -> str:

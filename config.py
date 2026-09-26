@@ -1,11 +1,16 @@
 """
-DXF Extract Labels - 設定ファイル
+領域検出（矩形領域抽出）の設定ファイル
 
-領域検出（矩形領域抽出）のパラメータを定義する。2026-09-10、「領域検出の
-詳細設定」UI（st.form によるフォーム。フィールド11個 + 「設定完了」ボタン）を
-撤去し、DXF-diff-manager の config.py 方式（UIウィジェットではなくこのファイルの
-編集で設定を変える）に統一した（ユーザー指示）。app.py はこのファイルの
-`region_detection_config` から `region_cfg` を組み立てる（`_build_region_cfg()`）。
+複数プロジェクトで共有するファイル（primary: DXF-extract-labels。
+DXF-label-comparison にバイト一致のコピーがあり、同プロジェクトの
+`tests/regression/spec/test_shared_files_identical_to_extract_labels.py`
+が一致を検証する）。設定値の変更は primary で行い、コピーへそのまま伝播すること。
+
+2026-09-10、「領域検出の詳細設定」UI（st.form によるフォーム）を撤去し、
+DXF-diff-manager の config.py 方式（UIウィジェットではなくこのファイルの
+編集で設定を変える）に統一した（ユーザー指示）。各アプリはこのファイルの
+`region_detection_config` から `view/region_selection.build_region_cfg()` で
+`region_cfg` を組み立てる。
 
 **意図的に `extraction_config` は定義しない**: `model/extract_labels.py` は
 `from config import extraction_config` を試み、失敗（ImportError）した場合のみ
@@ -14,7 +19,7 @@ DXF Extract Labels - 設定ファイル
 `extract_labels.py` 自体は変更しない）。このファイルに `extraction_config` を
 書き足すと、図番抽出パターン等の挙動が意図せず変わってしまう。ここでは
 領域検出の設定のみを扱い、`extraction_config` には触れない
-（`tests/regression/test_config_extraction_fallback.py` で固定）。
+（DXF-extract-labels `tests/unit/test_config_region_cfg.py` で固定）。
 """
 
 

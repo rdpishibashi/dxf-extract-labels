@@ -21,6 +21,7 @@
 import base64
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -264,12 +265,18 @@ def test_results_section_preview_lists_actual_excel_sheets():
 
 def test_download_button_label_changed():
     """ダウンロードボタンの文言が「抽出結果をダウンロード」であり、
-    旧文言「Excelをダウンロード」ではないことを固定する。"""
-    at = _run_results_section()
-    assert at.exception.len == 0
-    button_labels = [b.label for b in at.download_button]
-    assert '抽出結果をダウンロード' in button_labels
-    assert 'Excelをダウンロード' not in button_labels
+    旧文言「Excelをダウンロード」ではないことを固定する。
+
+    `st.download_button` は AppTest（インストール済み Streamlit 1.54.0 時点）が
+    要素として公開しておらず（`AppTest` に `download_button` 属性が無い。
+    `button`/`button_group` のみ）、ライブウィジェットとして検証できない。
+    そのため app.py のソース文字列を直接検査する（2026-09-26、
+    `AttributeError: 'AppTest' object has no attribute 'download_button'` で
+    失敗していたのを修正。ライブ描画の検証ではなくなるが、文言の回帰は
+    引き続き検出できる）。"""
+    app_source = (Path(__file__).parent.parent.parent / 'app.py').read_text(encoding='utf-8')
+    assert '抽出結果をダウンロード' in app_source
+    assert 'Excelをダウンロード' not in app_source
 
 
 def test_results_section_has_extraction_results_subheader():

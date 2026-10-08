@@ -20,7 +20,7 @@ from io import BytesIO
 from collections import Counter
 
 from .common_utils import normalize_width
-from .ref_designator import is_ref_designator_label
+from .ref_designator import designator_mark
 from .region_detector import build_region_label_summary
 from .terminal_detector import build_terminal_rows
 from .assembly_compare import COMPARE_COLUMNS, COMPARE_SHEET_NAME, ROW_STYLE_COLORS, row_style
@@ -88,12 +88,15 @@ def _accumulate_total_counts(total_counter, label_drawing_numbers, label_counts,
         label_drawing_numbers.setdefault(lbl, set()).add(ident)
 
 
-def _build_total_rows(total_counter, label_drawing_numbers):
+def _build_total_rows(total_counter, label_drawing_numbers, master_index=None):
     """抽出ラベル一覧（旧 Total）シート用の行データ（ラベル昇順、図番はABC順で
-    カンマ結合）を返す。「機器符号候補」列は `is_ref_designator_label()` による
-    判定（v3.0.0で追加、「ラベル」列の直左に配置）。"""
+    カンマ結合）を返す。「機器符号候補」列は `designator_mark()` による判定
+    （v3.0.0で追加、「ラベル」列の直左に配置。v3.10.0で'DEF'/'CAN'/Noneの
+    3値に変更）。このシートはファイル横断でラベルを再集計するため、各ファイルの
+    `rows` に既にある「機器符号候補」値は使わず、ラベル文字列から改めて
+    判定し直す（`master_index` は呼び出し元から明示的に渡す必要がある）。"""
     return [
-        {'機器符号候補': 'Y' if is_ref_designator_label(lbl) else None,
+        {'機器符号候補': designator_mark(lbl, master_index),
          'ラベル': lbl, '個数': total_counter[lbl],
          '図番': ', '.join(sorted(label_drawing_numbers.get(lbl, ())))}
         for lbl in sorted(total_counter.keys())
@@ -179,20 +182,28 @@ def _build_summary_row(fname, total_in_frame, ref_designator_count, frames,
 
 
 def create_ref_designator_excel_output(results, sort_option, terminal_results=None,
-                                        assembly_compare=None):
+                                        assembly_compare=None, master_index=None):
     """通常モードの Excel を生成する。
 
     `results`: {fname: {...}}（キーは各値の意味）
       'rows': [{'機器符号候補':str|None,'ラベル':str,'個数':int}]  枠内・情報枠外の全ラベル
       'total_in_frame': int  図面枠内の総ラベル数
-      'ref_designator_count': int  機器符号候補ラベル数（rowsのうち機器符号候補='Y'の個数合計）
+      'ref_designator_count': int  機器符号候補ラベル数（rowsのうち機器符号候補が
+          'DEF'/'CAN'〈v3.10.0で3値化。旧'Y'に相当〉の個数合計）
       'frames': int  ページ数
       'warning': str | None
       'main_drawing_number' / 'source_drawing_number' / 'title' / 'subtitle':
           図番・タイトル・サブタイトル（v3.0.0で常に抽出・常に値が入る）
 
     'rows' はラベルの正規化（NFKC・前後空白除去）済みで渡される想定
-    （`model/ref_designator.py` 側で実施済み）。
+    （`model/ref_designator.py` 側で実施済み。'機器符号候補'値も
+    `build_ref_designator_final()` 等が `master_index` 込みで計算済みの
+    ものをそのまま使う——各ファイルシートはこの値を再計算しない）。
+
+    `master_index`（`model/designator_master.DesignatorMasterIndex` または
+    None、v3.10.0新設）: `抽出ラベル一覧` シートはファイル横断でラベルを
+    再集計するため、`_build_total_rows()` にこの引数を明示的に渡す必要がある
+    （渡し漏れるとこのシートだけDEFが出ない）。
 
     `assembly_compare`: `model/assembly_compare.compare_assembly()` の戻り値、
     または None（「結線図-組立図を比較」OFF時・比較対象が特定できない場合、
@@ -236,7 +247,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
         _write_summary_hyperlinks(summary_ws, [fname for fname, _data in sorted_items], link_format)
         summary_ws.set_column('A:A', 28)
 
-        total_data = _build_total_rows(total_counter, label_drawing_numbers)
+        total_data = _build_total_rows(total_counter, label_drawing_numbers, master_index=master_index)
         _write_label_count_sheet(writer, '抽出ラベル一覧', total_data, header_format,
                                  columns=('機器符号候補', 'ラベル', '個数', '図番'),
                                  col_widths=(12, 25, 10, 30))
@@ -259,8 +270,16 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
     return output.getvalue()
 
 
-def create_region_excel_output(region_results, terminal_results=None, assembly_compare=None):
+def create_region_excel_output(region_results, terminal_results=None, assembly_compare=None,
+                                master_index=None):
     """矩形領域抽出結果の Excel を生成する。各ファイルシートに『領域』列を付与する。
+
+    `master_index`（`model/designator_master.DesignatorMasterIndex` または
+    None、v3.10.0新設）: `抽出ラベル一覧`・`領域別ラベル一覧` の2シートは
+    ファイル横断でラベルを再集計するため、この引数を明示的に渡す必要がある
+    （渡し漏れるとこの2シートだけDEFが出ない。各ファイルシート・`領域一覧`
+    シートの値は呼び出し元で `master_index` 込みで計算済みの `region_results`
+    をそのまま使うため、ここでの引数とは別に正しく反映される）。
 
     `assembly_compare`: `create_ref_designator_excel_output()` と同じ
     （`model/assembly_compare.compare_assembly()` の戻り値、または None）。
@@ -318,7 +337,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
             _accumulate_total_counts(
                 total_counter, label_drawing_numbers,
                 ((r['ラベル'], r['個数']) for r in data.get('rows', [])), ident)
-        total_data = _build_total_rows(total_counter, label_drawing_numbers)
+        total_data = _build_total_rows(total_counter, label_drawing_numbers, master_index=master_index)
         _write_label_count_sheet(writer, '抽出ラベル一覧', total_data, header_format,
                                  columns=('機器符号候補', 'ラベル', '個数', '図番'),
                                  col_widths=(12, 25, 10, 30))
@@ -376,7 +395,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
 
             for row_num, r in enumerate(label_summary_rows, start=1):
                 lbl_ws.write(row_num, 0, r['領域名'])
-                lbl_ws.write(row_num, 1, 'Y' if is_ref_designator_label(r['ラベル']) else None)
+                lbl_ws.write(row_num, 1, designator_mark(r['ラベル'], master_index))
                 lbl_ws.write(row_num, 2, r['ラベル'])
                 lbl_ws.write(row_num, 3, r['合計個数'])
                 col = 4

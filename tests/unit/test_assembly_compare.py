@@ -148,7 +148,9 @@ def test_compare_assembly_aggregates_across_multiple_wiring_files():
     assert r10['A 図番'] == 'EE001, EE002'
     assert r10['B 出現数'] == 5
     assert r10['比較結果'] == ac.KUBUN_BOTH
-    assert r10['機器符号候補'] == 'Y'
+    # R10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
+    # （候補パターン一致のみ。master_index=None時の既定動作）
+    assert r10['機器符号候補'] == 'CAN'
 
     title_row = rows_by_label['タイトル']
     assert title_row['比較結果'] == ac.KUBUN_A_ONLY

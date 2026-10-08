@@ -24,7 +24,7 @@ Excel読み込みを経由しない点、機器符号候補列を追加した点
 import os
 
 from .common_utils import normalize_width
-from .ref_designator import is_ref_designator_label
+from .ref_designator import designator_mark
 
 WIRING_TITLE_TEXT = 'UNIT内結線図'
 ASSEMBLY_TITLE_TEXT = '組立図'
@@ -231,13 +231,20 @@ def type_judgment_rows(results: dict, selection: dict) -> list:
     return rows
 
 
-def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:
+def compare_assembly(results: dict, wiring_files: list, b_fname: str, master_index=None) -> dict:
     """A（`wiring_files` の合算）とB（`b_fname` 単体）のラベルを比較する。
 
-    `results[*]['rows']` は `[{'機器符号候補': 'Y'|None, 'ラベル': str, '個数': int, ...}]`
-    （通常モード・領域モードとも共通のキーを持つ。領域モードの '領域' キーは無視する）。
-    集計・比較・表示のいずれも `row['ラベル']` を `_compare_key()` で切り詰めた
-    文字列をキーとして使う（括弧以降の補足違いを同一部品として合算するため）。
+    `results[*]['rows']` は `[{'機器符号候補': str|None, 'ラベル': str, '個数': int, ...}]`
+    （通常モード・領域モードとも共通のキーを持つ。領域モードの '領域' キーは無視する。
+    各行の既存の '機器符号候補' 値はここでは使わない——下記のとおり比較後の
+    ラベルから改めて判定し直すため）。集計・比較・表示のいずれも `row['ラベル']`
+    を `_compare_key()` で切り詰めた文字列をキーとして使う（括弧以降の補足違いを
+    同一部品として合算するため）。
+
+    `master_index`（`model/designator_master.DesignatorMasterIndex` または
+    None、v3.10.0新設）: 出力行の '機器符号候補' は `_compare_key()` 切り詰め後の
+    ラベルから `designator_mark()` で判定し直す（'DEF'/'CAN'/None、3値化。
+    旧'Y'/Noneから変更）。
 
     戻り値: {'b_file': str, 'rows': [...], 'summary': {...}}
       rows は `COMPARE_COLUMNS` の7列をラベル昇順で持つ。
@@ -268,7 +275,7 @@ def compare_assembly(results: dict, wiring_files: list, b_fname: str) -> dict:
         a_count = a_entry['count'] if a_entry else 0
         b_count = b_labels.get(label, 0)
         rows.append({
-            '機器符号候補': 'Y' if is_ref_designator_label(label) else None,
+            '機器符号候補': designator_mark(label, master_index),
             'ラベル': label,
             'A 合計出現数': a_count,
             'A 図番数': len(a_entry['idents']) if a_entry else 0,

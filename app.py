@@ -114,7 +114,7 @@ _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'region_selection_confirmed',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_')
+_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
@@ -127,7 +127,7 @@ _RESTART_CLEAR_KEYS = [
     'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_')
+_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_')
 
 
 _temp_dxf_file = region_selection.temp_dxf_file
@@ -429,7 +429,7 @@ def _render_global_region_names_section(locked):
         return
     analyses = st.session_state['region_analyses']
     region_selection.render_global_region_names_section(
-        collect_unique_region_candidate_names(analyses), locked)
+        collect_unique_region_candidate_names(analyses), locked, allow_exclude=True)
 
 
 def _render_region_confirmation_section(enable_region_detection, locked):
@@ -535,7 +535,8 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                     }
                     region_results = ref_designator.build_ref_designator_region_results(
                         ref_data_by_file, analyses, name_selections_by_file, sort_value,
-                        master_index=master_index)
+                        master_index=master_index,
+                        excluded_names=region_selection.global_excluded_region_names())
                     assembly_result = _resolve_assembly_compare(
                         region_results, compare_assembly_option, master_index=master_index)
                     st.session_state.excel_result = create_region_excel_output(

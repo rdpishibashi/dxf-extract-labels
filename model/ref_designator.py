@@ -728,6 +728,59 @@ def build_named_regions(
     return named, no_name_idx
 
 
+def excluded_region_ids(analysis: dict, excluded_names) -> set:
+    """名称候補のいずれかが「除外」指定された領域の id 集合を返す（v3.11.0新設）。
+
+    `excluded_names` は `view.region_selection.global_excluded_region_names()`
+    が返す、NFKC正規化（`normalize_width()`）済みの名称集合。この関数側でも
+    候補テキストを `normalize_width()` してから比較する（全角/半角表記の
+    揺れを吸収する既存の規約、`region_detector._matched_checked_candidates()`
+    と同じ）。
+
+    候補が1件も無い領域（無名領域）は、指定する名称自体が存在しないため
+    **常に除外されない**（2026-10-08 ユーザー承認）。候補のうち1件でも
+    一致すれば、どの名前を採用するかに関わらずその領域全体を除外する
+    （「領域の確認」での個別選択は不要、2026-10-08 ユーザー決定）。
+    """
+    if not excluded_names:
+        return set()
+    ids = set()
+    for reg in analysis.get('regions', []):
+        for (_dist, text) in reg.get('name_candidates', []):
+            if normalize_width(text) in excluded_names:
+                ids.add(reg['id'])
+                break
+    return ids
+
+
+def filter_labels_outside_excluded(
+    labels: List[Tuple[str, float, float]],
+    excluded_polygons: List[list],
+) -> List[Tuple[str, float, float]]:
+    """除外領域（境界線上を含む）の内側にあるラベルを取り除いたリストを返す
+    （v3.11.0新設）。
+
+    `build_all_regions_summary()` と同じ手法（領域を一時的な疑似名付きの
+    named リストにして `assign_region_labels()` を呼ぶ）を使う。
+    `assign_region_labels()` 内部の `_point_in_polygon(boundary_eps=1e-4)` が
+    境界線上の点を内側として扱うため、「領域線上も含めて除外」はこの既存判定
+    のままで満たされる。入れ子（除外領域の内側に別の特定領域がある）の場合も、
+    外側の除外領域に内包される時点でラベルは除去される（2026-10-08
+    ユーザー承認）。
+
+    判定はラベルのアンカー点 (x, y) のみで行う（テキストのbboxは見ない）。
+    既存の `領域` 列の割り当て（`assign_region_labels()` 自体）と同じ規約に
+    意図的に合わせているため、ここだけ別の判定基準を導入しないこと。
+    """
+    if not excluded_polygons:
+        return list(labels)
+    pseudo_named = [
+        {'polygon': poly, 'name': f'excl-{i}'} for i, poly in enumerate(excluded_polygons)
+    ]
+    assigned = assign_region_labels(labels, pseudo_named)
+    return [(t, x, y) for (t, x, y, names) in assigned if not names]
+
+
 def build_region_output(
     labels: List[Tuple[str, float, float]],
     named: List[dict],

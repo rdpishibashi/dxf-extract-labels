@@ -208,3 +208,8 @@ log*.txt
 # 機器符号一覧（designator master）の生成物 — ULVAC の設計情報（ENTRON-EX2の
 # NFB構成）を含むため、public リポジトリには含めない（2026-10-08）
 /data/
+
+# 機器符号一覧のHMACダイジェスト鍵（DESIGNATOR_MASTER_KEY）。鍵自体は
+# 絶対にcommitしない（assets/designator_digests.txt のダイジェストのみ
+# commit対象、平文・鍵は対象外）
+/.streamlit/secrets.toml

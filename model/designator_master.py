@@ -6,7 +6,7 @@
 HMACダイジェスト索引を提供する（v3.10.0）。
 
 **公開リポジトリへは平文を置かない**: 符号・用途・分類はリポジトリ外
-（`data/designator_master.csv`、`.gitignore`対象）にのみ存在する。パイプラインが
+（`data/designator_master.xlsx`、`.gitignore`対象）にのみ存在する。パイプラインが
 参照する `assets/designator_digests.txt`（git管理対象）には HMAC-SHA256
 ダイジェストのみを記録し、鍵（`DESIGNATOR_MASTER_KEY`）を持たない限り
 符号文字列を復元できない（符号空間が約91,000通りと小さいため、鍵無しの
@@ -410,22 +410,8 @@ def build_designator_master(xls_path):
 
 
 # ---------------------------------------------------------------------------
-# 出力（CSV / Excel）
+# 出力（Excel）— CSVはExcelで内容を確認できるため生成しない（2026-10-08）
 # ---------------------------------------------------------------------------
-
-def write_csv(result, path):
-    """機器符号一覧（最終行のみ）を CSV に出力する（分類,機器符号,用途）。
-
-    Excel で開いたときに文字化けしないよう utf-8-sig（BOM付き）で書く。
-    """
-    import csv
-
-    with open(path, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f)
-        writer.writerow(['分類', '機器符号', '用途'])
-        for row in result.rows:
-            writer.writerow([row.category, row.code, row.use])
-
 
 def write_excel(result, path):
     """機器符号一覧を Excel に出力する（Summary / 機器符号一覧 / 除外 / 未処理 の4シート）。

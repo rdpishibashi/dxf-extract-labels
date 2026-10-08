@@ -7,16 +7,23 @@
 原本ファイルのパスは引数で必ず指定する（ハードコードしない。原本は
 ULVAC の設計情報であり、このリポジトリ外のパスを指す想定のため）。
 
-実行結果として `<out-dir>/designator_master.csv` と
-`<out-dir>/designator_master.xlsx`（いずれも `.gitignore` 対象、平文）を
-生成し、実測の不変条件（件数）を標準出力に表示する
-（`docs/REF_DESIGNATOR.md`「機器符号一覧」節の実測値と一致するかどうかの確認用）。
+実行結果として `<out-dir>/designator_master.xlsx`（`.gitignore` 対象、平文。
+確認用に `Summary`/`機器符号一覧`/`除外`/`未処理` の4シート構成。CSVは
+Excelで内容を確認できるため生成しない、2026-10-08）を生成し、実測の
+不変条件（件数）を標準出力に表示する（`docs/REF_DESIGNATOR.md`
+「機器符号一覧」節の実測値と一致するかどうかの確認用）。
 
 **鍵（`DESIGNATOR_MASTER_KEY`）が解決できた場合のみ**、HMACダイジェストファイル
 （既定 `assets/designator_digests.txt`、git管理対象）も生成する。鍵は
 環境変数 → `.streamlit/secrets.toml` の順に解決する（`model.designator_master.
 resolve_secret()`）。鍵が解決できない場合はダイジェスト生成をスキップし、
-その旨を表示する（平文CSV/Excelの生成は従来どおり行う）。
+その旨を表示する（平文Excelの生成は従来どおり行う）。
+
+**`--out-dir`（平文の出力先）と `--digest-out`（ダイジェストの出力先）を
+取り違えないこと**: 平文Excelには符号・用途・分類がそのまま入るため
+`.gitignore` 対象の `data/` 以外（特に `assets/` 等のgit追跡対象）に
+出力してはならない。ダイジェストは不可逆なHMAC値のみなので git追跡対象
+（`assets/`）に置ける。両者を同じ場所にまとめてはいけない。
 
 **鍵の値そのものは標準出力に一切表示しない**（表示するのは鍵フィンガープリント
 ——鍵自体ではない検査用の短い値のみ）。鍵はこのツールが生成することもない
@@ -31,8 +38,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from model.designator_master import (  # noqa: E402
-    build_designator_master, key_fingerprint, resolve_secret, write_csv, write_digest_file,
-    write_excel,
+    build_designator_master, key_fingerprint, resolve_secret, write_digest_file, write_excel,
 )
 
 
@@ -40,7 +46,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('xls_path', help='原本 Excel ファイル（.xls）のパス')
     parser.add_argument('--out-dir', default=os.path.join(PROJECT_ROOT, 'data'),
-                         help='平文CSV/Excelの出力先ディレクトリ（既定: data/、.gitignore対象）')
+                         help='平文Excelの出力先ディレクトリ（既定: data/、.gitignore対象。'
+                              'git追跡対象のディレクトリを指定しないこと）')
     parser.add_argument('--digest-out',
                          default=os.path.join(PROJECT_ROOT, 'assets', 'designator_digests.txt'),
                          help='HMACダイジェストファイルの出力先（既定: assets/designator_digests.txt、'
@@ -55,9 +62,7 @@ def main():
 
     result = build_designator_master(args.xls_path)
 
-    csv_path = os.path.join(args.out_dir, 'designator_master.csv')
     xlsx_path = os.path.join(args.out_dir, 'designator_master.xlsx')
-    write_csv(result, csv_path)
     write_excel(result, xlsx_path)
 
     stats = result.stats
@@ -73,7 +78,6 @@ def main():
         print('--- 警告の内容 ---')
         for w in result.warnings:
             print(f'  [{w.category}] 行{w.sheet_row}: {w.message}')
-    print(f'出力: {csv_path}')
     print(f'出力: {xlsx_path}')
 
     secret = resolve_secret()

@@ -99,6 +99,7 @@ def test_frame_in_different_layout_than_content_is_not_cross_applied():
 NO_FRAME_LABELS = _find_sample('EE6892-455B.dxf')  # 図面枠が見つからない（同上）が実ラベルは持つ
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not os.path.exists(NO_FRAME_LABELS), reason='サンプル DXF が無い')
 def test_no_frame_found_still_populates_labels_for_non_region_pipeline():
     """`EE6892-455B.dxf` は図面枠が見つからずエラーになる（上のテストと同じ
@@ -133,6 +134,7 @@ def test_no_frame_found_still_populates_labels_for_non_region_pipeline():
     assert cb001 and cb001[0]['領域'] == ''  # 領域は割り当てられない（検出領域が無いため）
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not os.path.exists(MULTI), reason='サンプル DXF が無い')
 def test_multi_drawing_frames():
     a = analyze_dxf_regions(MULTI)
@@ -254,6 +256,7 @@ def test_regions_overlap_basic_shapes():
     assert regions_overlap(sq, far) is False
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
 def test_rotated_drawing_name_candidates_via_vertical_edge():
     """図面全体が90°回転しているファイルでも名称候補が見つかる（縦エッジフォールバック）。
@@ -285,6 +288,7 @@ def test_rotated_drawing_horizontal_gap_bridging_closes_large_box():
     assert 'CONTROL BOX CORE FX' in all_candidate_texts
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(not os.path.exists(ROTATED), reason='サンプル DXF が無い')
 def test_rotated_drawing_fallback_gate_is_per_frame_not_whole_file():
     """`DE5434-553-10B.dxf`（5図面枠）は、90°回転コンテンツを持つ図面2/3

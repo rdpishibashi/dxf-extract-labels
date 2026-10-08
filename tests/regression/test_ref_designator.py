@@ -1056,6 +1056,7 @@ def test_layer_off_frozen_excluded_from_extract_labels_direct_call():
     assert 'HIDDEN_FROM_INSERT' not in labels
 
 
+@pytest.mark.slow
 def test_collect_in_frame_labels_frame_count_matches_known_drawing_count():
     """EE6868-500-01C.dxf は13図面から構成される（スキル文書で確認済みの既知事実）。
     lineweight+color=7 併用で正しく13枠を検出できることを回帰検証する
@@ -1108,6 +1109,7 @@ def test_frame_absent_in_model_space_falls_back_without_losing_labels(sample_nam
     assert data['total_in_frame'] > 15
 
 
+@pytest.mark.slow
 def test_cb001_not_dropped_by_paper_space_frame_coordinate_mismatch():
     """ユーザー報告の具体的な再現ケース: `EE6892-455B.dxf` は図面枠が
     Paper Space（`ICADSX Layout`）のみに存在し、実際の機器符号ラベル
@@ -1141,6 +1143,7 @@ def test_extract_ref_designator_rows_end_to_end():
         assert set(sample.keys()) == {'機器符号候補', 'ラベル', '個数'}
 
 
+@pytest.mark.slow
 def test_formerly_excluded_words_now_appear_when_outside_info_frame():
     """旧仕様では除外パターンにより弾かれていた語（GND 等の回路説明語）が、
     図面情報枠の外にある限り新仕様では出力に含まれること

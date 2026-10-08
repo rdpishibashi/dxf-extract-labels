@@ -96,6 +96,7 @@ def browser():
         b.close()
 
 
+@pytest.mark.slow
 def test_excel_result_persists_after_extract(streamlit_server, browser):
     """通常モード（既定）+「端子一覧を抽出」ON、「領域を検出」OFF（既定）で
     「ラベルを抽出」を押した直後もExcelダウンロードボタンが表示され続けること

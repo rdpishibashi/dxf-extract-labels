@@ -169,3 +169,191 @@ def test_filter_preserves_label_order_and_duplicates():
     labels = [('A', 50.0, 50.0), ('A', 60.0, 60.0), ('B', 5.0, 5.0)]
     kept = ref_designator.filter_labels_outside_excluded(labels, [_SQUARE])
     assert kept == [('A', 50.0, 50.0), ('A', 60.0, 60.0)]
+
+
+# ---------------------------------------------------------------------------
+# build_all_regions_summary — 'mark' の付与（除外 > 特定 > 空欄）
+# ---------------------------------------------------------------------------
+
+_SQUARE_100 = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+
+
+def test_build_all_regions_summary_mark_excluded():
+    """excluded_ids に含まれる領域は mark='除外'。"""
+    analysis = {'regions': [
+        {'id': 0, 'frame': 0, 'polygon': _SQUARE_100, 'area_pct': 50.0,
+         'name_candidates': [(1.0, 'AWG20')]},
+    ]}
+    rows = ref_designator.build_all_regions_summary(
+        analysis, {}, 'a.dxf', [], excluded_ids={0}, named_ids=set())
+    assert rows[0]['mark'] == '除外'
+
+
+def test_build_all_regions_summary_mark_named():
+    """named_ids に含まれる（除外ではない）領域は mark='特定'。"""
+    analysis = {'regions': [
+        {'id': 0, 'frame': 0, 'polygon': _SQUARE_100, 'area_pct': 50.0,
+         'name_candidates': [(1.0, 'RACK1')]},
+    ]}
+    rows = ref_designator.build_all_regions_summary(
+        analysis, {('a.dxf', 0): ['RACK1']}, 'a.dxf', [],
+        excluded_ids=set(), named_ids={0})
+    assert rows[0]['mark'] == '特定'
+
+
+def test_build_all_regions_summary_mark_empty_when_neither():
+    """除外でも特定でもない領域（候補はあるが未指定）は mark=''。"""
+    analysis = {'regions': [
+        {'id': 0, 'frame': 0, 'polygon': _SQUARE_100, 'area_pct': 50.0,
+         'name_candidates': [(1.0, 'RACK1')]},
+    ]}
+    rows = ref_designator.build_all_regions_summary(
+        analysis, {}, 'a.dxf', [], excluded_ids=set(), named_ids=set())
+    assert rows[0]['mark'] == ''
+
+
+def test_build_all_regions_summary_mark_excluded_takes_priority_over_named():
+    """同じ領域idが excluded_ids と named_ids の両方に含まれる場合、
+    '除外' が優先される（除外優先、2026-10-08ユーザー決定）。"""
+    analysis = {'regions': [
+        {'id': 0, 'frame': 0, 'polygon': _SQUARE_100, 'area_pct': 50.0,
+         'name_candidates': [(1.0, 'RACK1')]},
+    ]}
+    rows = ref_designator.build_all_regions_summary(
+        analysis, {('a.dxf', 0): ['RACK1']}, 'a.dxf', [],
+        excluded_ids={0}, named_ids={0})
+    assert rows[0]['mark'] == '除外'
+
+
+def test_build_all_regions_summary_label_count_uses_pre_exclusion_labels():
+    """領域内ラベル数は除外前の件数（呼び出し元が除外前のlabelsを渡す前提、
+    2026-10-08ユーザー決定）。この関数自体はexcluded_idsをラベル絞り込みには
+    使わない——集計対象のlabels次第であることを確認する。"""
+    analysis = {'regions': [
+        {'id': 0, 'frame': 0, 'polygon': _SQUARE_100, 'area_pct': 50.0,
+         'name_candidates': [(1.0, 'AWG20')]},
+    ]}
+    labels = [('L1', 10.0, 10.0), ('L2', 20.0, 20.0)]
+    rows = ref_designator.build_all_regions_summary(
+        analysis, {}, 'a.dxf', labels, excluded_ids={0}, named_ids=set())
+    assert rows[0]['label_count'] == 2   # 除外前の件数のまま
+
+
+# ---------------------------------------------------------------------------
+# build_ref_designator_region_results(..., excluded_names=...) — 統合検証
+# ---------------------------------------------------------------------------
+
+def _region_results_fixture(excluded_names=frozenset()):
+    """AWG20(BL)領域(ラベルCB001)とRACK1領域(ラベルR10)を持つ合成データ。
+    2領域は重ならない。"""
+    square_a = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    square_b = [(50.0, 50.0), (60.0, 50.0), (60.0, 60.0), (50.0, 60.0)]
+    ref_data_by_file = {
+        'a.dxf': {
+            'labels': [('CB001', 5.0, 5.0), ('R10', 55.0, 55.0)],
+            'total_in_frame': 2,
+        },
+    }
+    region_analyses = {
+        'a.dxf': {
+            'frames': [(0, 0, 0, 0)],
+            'regions': [
+                {'id': 0, 'frame': 0, 'polygon': square_a, 'area_pct': 10.0,
+                 'name_candidates': [(1.0, 'AWG20(BL)')]},
+                {'id': 1, 'frame': 0, 'polygon': square_b, 'area_pct': 10.0,
+                 'name_candidates': [(1.0, 'RACK1')]},
+            ],
+            'main_drawing_number': 'EE0001',
+            'title': None, 'subtitle': None,
+        },
+    }
+    name_selections_by_file = {'a.dxf': {('a.dxf', 1): ['RACK1']}}
+    return ref_designator.build_ref_designator_region_results(
+        ref_data_by_file, region_analyses, name_selections_by_file,
+        sort_value='asc', excluded_names=excluded_names)
+
+
+def test_region_results_no_exclusion_matches_legacy_output():
+    """excluded_names が空のとき、従来と完全に同一の出力になる（回帰防護）。"""
+    r = _region_results_fixture()['a.dxf']
+    assert r['total_in_frame'] == 2
+    labels_in_rows = {row['ラベル'] for row in r['rows']}
+    assert labels_in_rows == {'CB001', 'R10'}
+    assert r['ref_designator_count'] == 2  # 両方CAN
+
+
+def test_region_results_excluded_region_removes_its_labels():
+    """AWG20(BL)を除外指定すると、その領域内のCB001が rows から消え、
+    total_in_frame・ref_designator_countも減る。"""
+    r = _region_results_fixture(excluded_names={'AWG20(BL)'})['a.dxf']
+    labels_in_rows = {row['ラベル'] for row in r['rows']}
+    assert labels_in_rows == {'R10'}
+    assert r['total_in_frame'] == 1          # 2 -> 1（CB001除外）
+    assert r['ref_designator_count'] == 1    # 2 -> 1
+
+
+def test_region_results_excluded_region_rows_keep_pre_exclusion_count():
+    """region_rows（領域一覧用）には除外領域の行が残り、mark='除外'、
+    label_countは除外前の件数（1件）のまま。"""
+    r = _region_results_fixture(excluded_names={'AWG20(BL)'})['a.dxf']
+    by_name = {row['name']: row for row in r['region_rows']}
+    assert by_name['AWG20(BL)']['mark'] == '除外'
+    assert by_name['AWG20(BL)']['label_count'] == 1   # 除外前の件数
+    assert by_name['RACK1']['mark'] == '特定'
+
+
+def test_region_results_specified_region_unaffected_by_other_exclusion():
+    """除外指定が他の領域に対するものなら、特定領域（RACK1）のラベルは
+    影響を受けない。"""
+    r = _region_results_fixture(excluded_names={'AWG20(BL)'})['a.dxf']
+    by_label = {row['ラベル']: row for row in r['rows']}
+    assert by_label['R10']['領域'] == 'RACK1'
+
+
+# ---------------------------------------------------------------------------
+# エンドツーエンド: 生成したExcelを openpyxl で読み戻す（表4）
+# ---------------------------------------------------------------------------
+
+def test_excel_output_reflects_exclusion_end_to_end():
+    """除外ON時、各ファイルシート・抽出ラベル一覧からラベルが消え、
+    領域一覧には行が残り判定列が'除外'、Summaryの総抽出ラベル数が減ることを
+    実際に生成したExcelで確認する。"""
+    region_results = _region_results_fixture(excluded_names={'AWG20(BL)'})
+    xlsx = create_region_excel_output(region_results)
+    wb = _load_wb(xlsx)
+
+    file_ws = wb['a']
+    file_labels = {row[1].value for row in file_ws.iter_rows(min_row=2)}
+    assert 'CB001' not in file_labels
+    assert 'R10' in file_labels
+
+    total_ws = wb['抽出ラベル一覧']
+    total_labels = {row[1].value for row in total_ws.iter_rows(min_row=2)}
+    assert 'CB001' not in total_labels
+
+    region_ws = wb['領域一覧']
+    header = [c.value for c in region_ws[1]]
+    assert header == ['ファイル名', '領域名', '判定', '面積率[%]',
+                       '領域内ラベル数', '領域内機器符号候補数']
+    rows_by_name = {row[1]: row for row in region_ws.iter_rows(min_row=2, values_only=True)}
+    assert rows_by_name['AWG20(BL)'][2] == '除外'
+    assert rows_by_name['AWG20(BL)'][4] == 1   # 除外前の件数
+
+    summary_ws = wb['Summary']
+    summary_header = [c.value for c in summary_ws[1]]
+    total_col = summary_header.index('総抽出ラベル数')
+    assert summary_ws.cell(row=2, column=total_col + 1).value == 1   # 2 -> 1
+
+
+def test_excel_output_without_exclusion_matches_legacy_sheet_structure():
+    """excluded_names 無指定（既定）でも領域一覧シートは6列（判定列が空欄）。"""
+    region_results = _region_results_fixture()
+    xlsx = create_region_excel_output(region_results)
+    wb = _load_wb(xlsx)
+    region_ws = wb['領域一覧']
+    header = [c.value for c in region_ws[1]]
+    assert header == ['ファイル名', '領域名', '判定', '面積率[%]',
+                       '領域内ラベル数', '領域内機器符号候補数']
+    rows_by_name = {row[1]: row for row in region_ws.iter_rows(min_row=2, values_only=True)}
+    assert rows_by_name['AWG20(BL)'][2] in (None, '')
+    assert rows_by_name['RACK1'][2] == '特定'

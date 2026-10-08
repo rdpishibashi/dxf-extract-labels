@@ -371,10 +371,19 @@ def test_build_ref_designator_region_results():
     """'ref_designator_count'（v3.0.0新設）が 'final_count'/'filtered_count'
     （旧「機器符号（候補）以外も抽出」用、v3.0.0で廃止）に代わって提供される。
     'subtitle' も region_results に引き継がれる（v3.0.0、Summaryシートに
-    サブタイトルが表示されないバグの修正）。"""
+    サブタイトルが表示されないバグの修正）。
+
+    'total_in_frame' は v3.11.0 で 'kept_labels'（除外後のラベル数）から
+    再計算するようになった（領域除外機能の追加に伴う。除外指定が無い場合は
+    常に len(data['labels']) と一致する——実際のパイプラインでも
+    extract_ref_designator_data() は info['total_in_frame'] = len(normalized)
+    と info['labels'] = normalized を同時に設定するため、
+    'total_in_frame' が len(labels) と異なることは実データでは起こらない。
+    旧テストはこの不変条件に反する人為的な値〈4〉を設定しており、
+    「入力値をそのまま通す」という実装詳細を検証していただけだった）。"""
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     ref_data_by_file = {
-        'a.dxf': {'labels': [('R10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 4},
+        'a.dxf': {'labels': [('R10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 2},
     }
     region_analyses = {
         'a.dxf': {
@@ -390,7 +399,7 @@ def test_build_ref_designator_region_results():
     results = ref_designator.build_ref_designator_region_results(
         ref_data_by_file, region_analyses, name_selections_by_file, sort_value='asc')
     r = results['a.dxf']
-    assert r['total_in_frame'] == 4
+    assert r['total_in_frame'] == 2   # len(labels)。除外指定が無いため不変
     assert r['ref_designator_count'] == 2   # R10 + CN3、いずれもパターン一致
     assert r['subtitle'] == 'SUB-A'
     assert r['title'] == 'TITLE-A'
@@ -405,6 +414,8 @@ def test_build_ref_designator_region_results():
     assert r['region_rows'][0]['name'] == 'RACK1'
     assert r['region_rows'][0]['label_count'] == 1   # RACK1内はR10のみ
     assert r['region_rows'][0]['ref_designator_count'] == 1
+    # mark: 除外指定なし・RACK1は特定済みなので'特定'（v3.11.0新設）
+    assert r['region_rows'][0]['mark'] == '特定'
 
 
 # ---------------------------------------------------------------------------

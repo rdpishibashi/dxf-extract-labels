@@ -204,3 +204,7 @@ log*.txt
 /CLAUDE.md
 /docs/
 /backup_docs
+
+# 機器符号一覧（designator master）の生成物 — ULVAC の設計情報（ENTRON-EX2の
+# NFB構成）を含むため、public リポジトリには含めない（2026-10-08）
+/data/

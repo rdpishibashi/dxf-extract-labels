@@ -1,8 +1,9 @@
-"""機器符号一覧（designator master）生成ロジックの単体テスト。
+"""機器符号一覧（designator master）生成・索引ロジックの単体テスト。
 
 `model/designator_master.py` の純粋関数（符号トークンの分解・用途の割り当て・
-取り消し線判定・S系除外判定）を、合成データのみで検証する。原本 Excel
-（リポジトリ外・`.xls`）には依存しない（`dev-workflow` スキル2-5の方針）。
+取り消し線判定・S系除外判定・照合キーの正規化・HMACダイジェスト・索引ロード）を、
+合成データのみで検証する。原本 Excel（リポジトリ外・`.xls`）には依存しない
+（`dev-workflow` スキル2-5の方針）。
 
 このテストが守る組み合わせは、引き継ぎ書（2026-10-08、設計フェーズ）の
 2-1 組み合わせ表に対応する:
@@ -12,6 +13,10 @@
   分解形の混在（警告）（`expand_code_cell`）
 - 取り消し線: なし/セル全体/リッチテキストの一部範囲（`split_struck_lines`）
 - S系除外判定: 用途空/枠取り/実機記述/非S系（`is_spare_entry`）
+- 照合キーの正規化: 一覧側の `(CB)` 除去（`master_code_key`）、
+  ラベル側のΩ区切り等（`label_match_key`）
+- HMACダイジェスト: 鍵による値の安定性・鍵不一致の検出（`code_digest`/
+  `key_fingerprint`/`load_index`）
 """
 import os
 import sys
@@ -23,10 +28,19 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from model.designator_master import (  # noqa: E402
     assign_uses,
+    code_digest,
+    DesignatorMasterIndex,
     expand_code_cell,
     is_spare_entry,
+    key_fingerprint,
+    label_match_key,
+    load_index,
+    master_code_key,
+    MasterResult,
+    MasterRow,
     spare_exclusion_reason,
     split_struck_lines,
+    write_digest_file,
 )
 
 
@@ -204,3 +218,150 @@ def test_spare_exclusion_reason_distinguishes_empty_and_frame():
     assert spare_exclusion_reason('') == 'S系・用途空'
     assert spare_exclusion_reason('   ') == 'S系・用途空'
     assert spare_exclusion_reason('F1用') == 'S系・枠取り'
+
+
+# ---------------------------------------------------------------------------
+# master_code_key — 一覧側の照合キー正規化（(CB)除去＝解釈B、2026-10-08決定）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('code, expected', [
+    ('ELB(CB)001', 'ELB001'),
+    ('ELB(CB)251', 'ELB251'),
+    # 括弧を含まない符号は空白除去のみで不変
+    ('CB001', 'CB001'),
+    ('F023', 'F023'),
+    # ELB(CB)005 と既存のプレーン ELB005 が同一キーに統合される（重複排除の根拠）
+    ('ELB(CB)005', 'ELB005'),
+])
+def test_master_code_key(code, expected):
+    """一覧の `ELB(CB)001` 形は `(CB)` を除去し `ELB001` として登録する
+    （2026-10-08ユーザー決定: 解釈B。原文形は実データのDXFラベルに出現しない
+    ため、除去しないと一覧の約31%〈186/602件〉が照合に使われず死蔵する）。"""
+    assert master_code_key(code) == expected
+
+
+def test_master_code_key_of_elb_cb_matches_plain_elb():
+    """`ELB(CB)005` と `ELB005` は同じ照合キーに正規化される
+    （一覧内の重複が `build_digest_lines()` で自然に1件へ統合される根拠）。"""
+    assert master_code_key('ELB(CB)005') == master_code_key('ELB005')
+
+
+# ---------------------------------------------------------------------------
+# label_match_key — DXFラベル側の照合キー正規化
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('label, expected', [
+    ('CB002 (15A)', 'CB002'),
+    ('S 163', 'S163'),
+    # Ω区切り: 空白除去を先に行うと直前空白デリミタが消えて壊れる回帰防護
+    ('R0 2.2KΩ', 'R0'),
+    ('R84 4.7KΩ', 'R84'),
+    ('ELB005 (5A/30mA)', 'ELB005'),
+    ('ELB002 (5A/30mA)', 'ELB002'),
+    # 候補パターンのみ一致する符号（一覧には無い）もキー自体は正常に取れる
+    ('R10', 'R10'),
+    ('R10(2.2K)', 'R10'),
+])
+def test_label_match_key(label, expected):
+    """DXFラベルは `normalize_label()` → `_judgment_text()` の順で判定用
+    文字列を取り出した後に空白を除去する。順序を逆にすると `R0 2.2KΩ` の
+    Ω直前スペースデリミタが先に消えて `'R02.2KΩ'` のような壊れたキーになる
+    （この順序がモジュール docstring の固定ルール）。"""
+    assert label_match_key(label) == expected
+
+
+# ---------------------------------------------------------------------------
+# code_digest / key_fingerprint — HMACダイジェストの安定性・鍵依存性
+# ---------------------------------------------------------------------------
+
+def test_code_digest_stable_for_same_key_and_secret():
+    """同じ照合キー・同じ鍵なら常に同じダイジェストになる。"""
+    assert code_digest('ELB001', 'secret-a') == code_digest('ELB001', 'secret-a')
+
+
+def test_code_digest_differs_with_different_secret():
+    """鍵が異なれば同じ照合キーでもダイジェストが異なる
+    （鍵無しの単純ハッシュでは秘匿にならないため、HMACが必須という設計根拠）。"""
+    assert code_digest('ELB001', 'secret-a') != code_digest('ELB001', 'secret-b')
+
+
+def test_code_digest_differs_with_different_key():
+    """同じ鍵でも照合キーが異なればダイジェストが異なる。"""
+    assert code_digest('ELB001', 'secret-a') != code_digest('CB001', 'secret-a')
+
+
+def test_key_fingerprint_differs_with_different_secret():
+    """鍵が異なればフィンガープリントも異なる（鍵不一致の検出に使う）。"""
+    assert key_fingerprint('secret-a') != key_fingerprint('secret-b')
+
+
+def test_key_fingerprint_stable_for_same_secret():
+    """同じ鍵なら常に同じフィンガープリントになる。"""
+    assert key_fingerprint('secret-a') == key_fingerprint('secret-a')
+
+
+# ---------------------------------------------------------------------------
+# load_index / DesignatorMasterIndex — 索引のロードと所属判定
+# ---------------------------------------------------------------------------
+
+def _make_result(codes_and_uses):
+    rows = [MasterRow('TEST', code, use, 1) for code, use in codes_and_uses]
+    return MasterResult(rows=rows)
+
+
+def test_load_index_returns_none_when_secret_is_empty(tmp_path):
+    """鍵が空文字列/Noneのときは `None` を返す（2026-10-08ユーザー決定:
+    鍵未設定時はCANのみで継続。DEFが黙って全件0になる状態と区別するため、
+    呼び出し側はこの `None` を「一覧なし」として扱う）。"""
+    result = _make_result([('ELB001', '用途')])
+    digest_path = tmp_path / 'digests.txt'
+    write_digest_file(result, digest_path, 'secret-a')
+    assert load_index(str(digest_path), '') is None
+    assert load_index(str(digest_path), None) is None
+
+
+def test_load_index_returns_none_when_file_missing(tmp_path):
+    """ダイジェストファイルが存在しない場合は `None` を返す。"""
+    assert load_index(str(tmp_path / 'missing.txt'), 'secret-a') is None
+
+
+def test_load_index_returns_none_when_secret_mismatches(tmp_path):
+    """ダイジェスト生成時と異なる鍵で読み込むと `None` を返す（鍵不一致を
+    フィンガープリントで検出する。黙ってDEFが0件になるのではなく、呼び出し側が
+    「鍵が異なる」と判定できるようにするための挙動）。"""
+    result = _make_result([('ELB001', '用途')])
+    digest_path = tmp_path / 'digests.txt'
+    write_digest_file(result, digest_path, 'secret-a')
+    assert load_index(str(digest_path), 'secret-wrong') is None
+
+
+def test_load_index_contains_matches_registered_codes(tmp_path):
+    """正しい鍵でロードした索引は、登録済みの符号に対する DXF ラベルを
+    `contains()` で True と判定する（`(CB)`除去・Ω区切り等の照合キー正規化が
+    一覧側・ラベル側で一致していることの統合確認）。"""
+    result = _make_result([('ELB(CB)001', '用途1'), ('CB001', '用途2'), ('F023', '')])
+    digest_path = tmp_path / 'digests.txt'
+    secret = 'secret-a'
+    write_digest_file(result, digest_path, secret)
+
+    index = load_index(str(digest_path), secret)
+    assert index is not None
+    assert len(index) == 3
+
+    # 一覧にある符号（別称除去・空白混入を含む実データ表記）
+    assert index.contains('ELB001') is True
+    assert index.contains('ELB001 (5A/30mA)') is True  # (CB)除去後のELB001と一致
+    assert index.contains('CB001') is True
+    assert index.contains('F023') is True
+    # 一覧に無い符号（候補パターンには一致するがDEFにはならない）
+    assert index.contains('R10') is False
+    assert index.contains('CN3') is False
+
+
+def test_load_index_fingerprint_attribute_matches_key_fingerprint():
+    """ロードした索引の `fingerprint` 属性は `key_fingerprint()` の値と一致する。"""
+    result = _make_result([('ELB001', '用途')])
+    secret = 'secret-a'
+    index = DesignatorMasterIndex(
+        digests=frozenset(), fingerprint=key_fingerprint(secret), secret=secret)
+    assert index.fingerprint == key_fingerprint(secret)

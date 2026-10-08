@@ -1,11 +1,16 @@
-"""機器符号一覧（designator master）生成モジュール
+"""機器符号一覧（designator master）生成・索引モジュール
 
 原本 Excel（手作業で作成された ENTRON-EX2_NFB_LIST.xls 等、BIFF形式の旧 .xls）
-から「分類（シート名）/ 機器符号 / 用途」の1行1符号のマスターリストを作る。
+から「分類（シート名）/ 機器符号 / 用途」の1行1符号のマスターリストを作り、
+機器符号判断パイプライン（`ref_designator.designator_mark()`）が参照する
+HMACダイジェスト索引を提供する（v3.10.0）。
 
-**今回のスコープ**: マスターリストの生成と確認のみ。機器符号判断パイプライン
-（`ref_designator.py` の `is_ref_designator_label()`）への組み込みは行わない
-（将来、本モジュールに `load_designator_master()` を追加して接続する想定）。
+**公開リポジトリへは平文を置かない**: 符号・用途・分類はリポジトリ外
+（`data/designator_master.csv`、`.gitignore`対象）にのみ存在する。パイプラインが
+参照する `assets/designator_digests.txt`（git管理対象）には HMAC-SHA256
+ダイジェストのみを記録し、鍵（`DESIGNATOR_MASTER_KEY`）を持たない限り
+符号文字列を復元できない（符号空間が約91,000通りと小さいため、鍵無しの
+単純ハッシュでは秘匿にならない。2026-10-08実測・ユーザー確認）。
 
 **原本のブレ／揺れへの対応**（2026-10実測。詳細な件数は
 `docs/REF_DESIGNATOR.md`「機器符号一覧」節を参照）:
@@ -26,12 +31,31 @@
   枠取り表記（`^[FRB][0-9]用?$`）のものは「予備位置」として除外する
   （S系以外には適用しない。用途が実機記述のS系符号は残す）
 
-このモジュールは streamlit に依存しない（CLI・将来のパイプラインの両方から
+**照合キーの正規化**（パイプラインでの DEF/CAN 判定に使う。v3.10.0新設）:
+
+- 一覧側（`master_code_key()`）: NFKC正規化・空白除去に加え、`ELB(CB)001`の
+  ような「本来の符号(別称)」形から別称部分を除去し`ELB001`とする
+  （2026-10-08ユーザー決定。原本には全186件が`ELB(CB)nnn`形のみ存在し、
+  実データのDXFラベル側には`ELB(CB)001`という原文表記は出現しないため、
+  除去しないと一覧の約31%が照合に使われないまま死蔵する）
+- ラベル側（`label_match_key()`）: `ref_designator_patterns.normalize_label()`
+  → `_judgment_text()` の順で判定用文字列を取り出した**後に**空白を除去する。
+  **この順序を逆にしてはいけない** — `_judgment_text()` はΩ記号の直前の
+  空白をデリミタとして使うため（`'R0 2.2KΩ'` → `'R0'`）、先に空白を除去すると
+  デリミタ自体が消えてΩ区切りが機能しなくなる
+
+このモジュールは streamlit に依存しない（CLI・パイプラインの両方から
 呼べるようにするため）。xlrd は旧BIFF形式の読み取りにのみ必要。
 """
+import hashlib
+import hmac
+import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
+
+from .ref_designator_patterns import normalize_label, _judgment_text
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +523,193 @@ def _write_unprocessed_sheet(writer, result, header_format):
     ws.set_column('C:C', 30)
     ws.set_column('D:D', 30)
     ws.set_column('E:E', 50)
+
+
+# ---------------------------------------------------------------------------
+# 照合キーの正規化（一覧側・ラベル側）
+# ---------------------------------------------------------------------------
+
+_PAREN_INFIX_RE = re.compile(r'^([A-Z]+)\(([A-Z]+)\)([0-9A-Za-z]*)$')
+
+
+def master_code_key(code):
+    """一覧側の符号を照合キーに正規化する。
+
+    NFKC正規化・空白除去に加え、`ELB(CB)001`のような「符号(別称)nnn」形から
+    別称部分`(CB)`を除去し`ELB001`とする（2026-10-08ユーザー決定、モジュール
+    docstring参照）。この形以外は空白除去のみで変化しない。
+    """
+    s = unicodedata.normalize('NFKC', code)
+    s = _WHITESPACE_RE.sub('', s)
+    m = _PAREN_INFIX_RE.match(s)
+    if m:
+        return f'{m.group(1)}{m.group(3)}'
+    return s
+
+
+def label_match_key(label):
+    """DXFから抽出したラベルを照合キーに正規化する。
+
+    `normalize_label()`（NFKC+前後空白除去）→ `_judgment_text()`（括弧等の
+    デリミタより前を判定用文字列として取り出す）の順に適用した**後に**空白を
+    全除去する。この順序は固定——モジュール docstring の「照合キーの正規化」
+    節を参照（Ω区切りの判定が空白の位置に依存するため、先に空白を除去すると
+    壊れる）。
+    """
+    normalized = normalize_label(label)
+    judgment = _judgment_text(normalized)
+    return _WHITESPACE_RE.sub('', judgment)
+
+
+# ---------------------------------------------------------------------------
+# HMACダイジェスト（鍵付きハッシュ）— 一覧の平文を公開リポジトリに置かないため
+# ---------------------------------------------------------------------------
+
+# 鍵フィンガープリント算出用の固定プローブ文字列（符号ではない、ダイジェスト
+# ファイルとは無関係の値を鍵で叩くだけ）。この文字列自体に意味はない。
+_FINGERPRINT_PROBE = 'designator-master-key-fingerprint-probe'
+_DIGEST_HEADER_PREFIX = '#'
+_FINGERPRINT_LINE_PREFIX = '# key_fingerprint:'
+
+
+def code_digest(key, secret):
+    """照合キーを HMAC-SHA256 でダイジェスト化する（hex 64文字）。
+
+    符号の総当たり空間は約91,000通りしかなく（2026-10-08実測、モジュール
+    docstring参照）、鍵無しの単純ハッシュ（素のSHA-256等）では公開した時点で
+    全列挙により復元できてしまう。鍵付き（HMAC）であることが必須。
+    """
+    return hmac.new(secret.encode('utf-8'), key.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def key_fingerprint(secret):
+    """鍵の検査用フィンガープリント（先頭16桁）。鍵そのものではない。
+
+    ダイジェストファイル生成時の鍵と実行時の鍵が異なると、DEF判定が
+    1件も該当しないまま正常終了してしまう（黙った機能不全）。この値を
+    ダイジェストファイルに記録しておき、実行時に再計算した値と比較することで
+    「鍵が異なる」ことを検出できるようにする（鍵自体は復元できないので
+    記録しても安全）。
+    """
+    return hmac.new(
+        secret.encode('utf-8'), _FINGERPRINT_PROBE.encode('utf-8'), hashlib.sha256
+    ).hexdigest()[:16]
+
+
+def build_digest_lines(result, secret):
+    """ダイジェストファイルの全行（ヘッダーコメント＋ソート済みダイジェスト）を返す。
+
+    一覧側の正規化は `master_code_key()` で行う（`ELB(CB)005`→`ELB005`等の
+    重複はここで自然に1件へ統合される）。
+    """
+    keys = sorted({master_code_key(r.code) for r in result.rows})
+    digests = sorted(code_digest(k, secret) for k in keys)
+    lines = [
+        f'{_DIGEST_HEADER_PREFIX} designator master digest',
+        f'{_DIGEST_HEADER_PREFIX} generated: {date.today().isoformat()}',
+        f'{_DIGEST_HEADER_PREFIX} count: {len(digests)}',
+        f'{_FINGERPRINT_LINE_PREFIX} {key_fingerprint(secret)}',
+    ]
+    lines.extend(digests)
+    return lines
+
+
+def write_digest_file(result, path, secret):
+    """`build_digest_lines()` の内容をファイルへ書く（鍵そのものは書かない）。"""
+    lines = build_digest_lines(result, secret)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+class DesignatorMasterIndex:
+    """ロード済みの機器符号ダイジェスト索引。
+
+    ダイジェスト（HMAC値）のみを保持し、平文の符号は一切保持しない。
+    `contains()` は毎回 `label_match_key()` → `code_digest()` を計算して
+    集合に対する所属判定を行う。
+    """
+
+    def __init__(self, digests, fingerprint, secret):
+        self._digests = frozenset(digests)
+        self.fingerprint = fingerprint
+        self._secret = secret
+
+    def __len__(self):
+        return len(self._digests)
+
+    def contains(self, label):
+        """DXFラベル文字列が機器符号一覧に含まれるかどうかを判定する。"""
+        key = label_match_key(label)
+        if not key:
+            return False
+        return code_digest(key, self._secret) in self._digests
+
+
+def load_index(path, secret):
+    """ダイジェストファイルを読み、`DesignatorMasterIndex` を返す。
+
+    次のいずれかに該当する場合は `None` を返す（2026-10-08ユーザー決定:
+    鍵が使えない場合は従来動作〈CANのみ〉で継続し、呼び出し側が画面に
+    注記を出す）:
+
+    - `secret` が空（鍵未設定）
+    - `path` のファイルが存在しない
+    - ファイル中の鍵フィンガープリントが、現在の鍵から計算した値と一致しない
+      （鍵がダイジェスト生成時と異なる＝鍵不一致）
+    """
+    if not secret:
+        return None
+    if not os.path.isfile(path):
+        return None
+
+    with open(path, encoding='utf-8') as f:
+        raw_lines = [ln.strip() for ln in f if ln.strip()]
+
+    stored_fingerprint = None
+    digests = []
+    for ln in raw_lines:
+        if ln.startswith(_FINGERPRINT_LINE_PREFIX):
+            stored_fingerprint = ln[len(_FINGERPRINT_LINE_PREFIX):].strip()
+            continue
+        if ln.startswith(_DIGEST_HEADER_PREFIX):
+            continue
+        digests.append(ln)
+
+    if stored_fingerprint is None:
+        return None
+    if key_fingerprint(secret) != stored_fingerprint:
+        return None
+
+    return DesignatorMasterIndex(digests, stored_fingerprint, secret)
+
+
+def resolve_secret(streamlit_secrets_path=None):
+    """鍵（`DESIGNATOR_MASTER_KEY`）を解決する（CLI・streamlit非依存の経路用）。
+
+    解決順: 環境変数 `DESIGNATOR_MASTER_KEY` → `.streamlit/secrets.toml`
+    （`tomllib`、Python 3.11+ 標準ライブラリで直接パースする。streamlit
+    自体への依存は作らない）。どちらにも無ければ `None` を返す。
+
+    鍵の生成・表示は行わない（値を標準出力・ログに出す呼び出し元を作らない
+    こと。2026-10-08、ユーザーへの引き継ぎ事項）。
+    """
+    key = os.environ.get('DESIGNATOR_MASTER_KEY')
+    if key:
+        return key
+
+    if streamlit_secrets_path is None:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        streamlit_secrets_path = os.path.join(project_root, '.streamlit', 'secrets.toml')
+
+    if not os.path.isfile(streamlit_secrets_path):
+        return None
+
+    try:
+        import tomllib
+    except ImportError:
+        return None
+
+    with open(streamlit_secrets_path, 'rb') as f:
+        data = tomllib.load(f)
+    value = data.get('DESIGNATOR_MASTER_KEY')
+    return value if isinstance(value, str) and value else None

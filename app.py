@@ -17,6 +17,7 @@ from model.excel_output import (
 from model import ref_designator
 from model import terminal_detector
 from model import assembly_compare
+from model import designator_master
 from config import region_detection_config
 from view import region_selection
 
@@ -26,6 +27,47 @@ def handle_error(e, show_traceback=True):
     st.error(f"エラーが発生しました: {str(e)}")
     if show_traceback:
         st.error(traceback.format_exc())
+
+
+def _resolve_master_index():
+    """機器符号一覧の索引（`designator_master.DesignatorMasterIndex`）を解決する。
+
+    鍵の解決順は `st.secrets.get('DESIGNATOR_MASTER_KEY')` → 環境変数
+    `DESIGNATOR_MASTER_KEY`（`st.secrets` はローカルの `.streamlit/secrets.toml`
+    とStreamlit Cloudの Secrets の両方を自動で読むため、これだけで両環境を
+    カバーできる。ファイルが無い等で例外を投げる場合があるため try/except で
+    包む）。
+
+    鍵が無い・ダイジェストファイルが無い・鍵が一覧生成時と異なる（鍵不一致）
+    のいずれでも索引は `None` になり、機器符号判断はCAN/空欄のみの従来動作に
+    なる（2026-10-08ユーザー決定）。呼び出し元は本関数の2番目の戻り値
+    （状態メッセージ）を画面に表示し、どの状態かが分かるようにする
+    （「利用可のときも件数を出す」——設定済みのつもりで実は無効、という
+    逆方向の事故も防ぐため、鍵が無い場合だけでなく読み込めた場合も表示する）。
+
+    戻り値: (master_index または None, 状態メッセージ文字列)。
+    """
+    try:
+        secret = st.secrets.get('DESIGNATOR_MASTER_KEY')
+    except Exception:
+        secret = None
+    if not secret:
+        secret = os.environ.get('DESIGNATOR_MASTER_KEY')
+
+    digest_path = os.path.join(current_dir, 'assets', 'designator_digests.txt')
+
+    if not secret:
+        return None, ("機器符号一覧が未設定のため DEF 判定は行われていません"
+                       "（CAN と空欄のみ）")
+    if not os.path.isfile(digest_path):
+        return None, ("機器符号一覧のダイジェストファイルが見つからないため "
+                       "DEF 判定は行われていません（CAN と空欄のみ）")
+
+    index = designator_master.load_index(digest_path, secret)
+    if index is None:
+        return None, ("鍵が機器符号一覧の生成時と異なるため DEF 判定は行われていません"
+                       "（CAN と空欄のみ）")
+    return index, f"機器符号一覧: {len(index)}件を読み込み済み（DEF判定あり）"
 
 st.set_page_config(
     page_title="DXF Extract Labels",
@@ -404,7 +446,7 @@ def _render_region_confirmation_section(enable_region_detection, locked):
         st.session_state['region_analyses'], locked)
 
 
-def _resolve_assembly_compare(results, compare_assembly_option):
+def _resolve_assembly_compare(results, compare_assembly_option, master_index=None):
     """「結線図-組立図を比較」ON時、抽出結果からA（結線図）・B（組立図）を
     タイトルで自動判定する（`assembly_compare.judge_drawing_types()`）。
 
@@ -435,10 +477,10 @@ def _resolve_assembly_compare(results, compare_assembly_option):
 
     st.session_state['type_judgment_applied'] = dict(selection)
     return assembly_compare.compare_assembly(
-        results, validation['wiring_files'], validation['b_fname'])
+        results, validation['wiring_files'], validation['b_fname'], master_index=master_index)
 
 
-def _handle_extract_button(uploaded_files, region_cfg, opts):
+def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
     """「ラベルを抽出」ボタンを表示し、押されたらモード（領域付き/通常）に
     応じた抽出処理を実行する。
 
@@ -492,12 +534,13 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                         for fname in ref_data_by_file
                     }
                     region_results = ref_designator.build_ref_designator_region_results(
-                        ref_data_by_file, analyses, name_selections_by_file, sort_value)
+                        ref_data_by_file, analyses, name_selections_by_file, sort_value,
+                        master_index=master_index)
                     assembly_result = _resolve_assembly_compare(
-                        region_results, compare_assembly_option)
+                        region_results, compare_assembly_option, master_index=master_index)
                     st.session_state.excel_result = create_region_excel_output(
                         region_results, terminal_results=terminal_results,
-                        assembly_compare=assembly_result)
+                        assembly_compare=assembly_result, master_index=master_index)
                     st.session_state.output_filename = output_filename
                     st.session_state['is_region_mode'] = True
                     st.session_state['region_results_summary'] = {
@@ -513,11 +556,13 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
                         [(uf.name, uf) for uf in uploaded_files], frame_lineweight,
                         status_placeholder=status_placeholder, start_time=start_time)
 
-                    ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value)
-                    assembly_result = _resolve_assembly_compare(ref_final, compare_assembly_option)
+                    ref_final = ref_designator.build_ref_designator_final(
+                        ref_data_by_file, sort_value, master_index=master_index)
+                    assembly_result = _resolve_assembly_compare(
+                        ref_final, compare_assembly_option, master_index=master_index)
                     st.session_state.excel_result = create_ref_designator_excel_output(
                         ref_final, sort_value, terminal_results=terminal_results,
-                        assembly_compare=assembly_result)
+                        assembly_compare=assembly_result, master_index=master_index)
                     st.session_state.output_filename = output_filename
                     st.session_state['is_region_mode'] = False
                     st.session_state['ref_results_summary'] = ref_final
@@ -532,32 +577,35 @@ def _handle_extract_button(uploaded_files, region_cfg, opts):
             handle_error(e)
 
 
-def _apply_type_judgment(selection, validation):
+def _apply_type_judgment(selection, validation, master_index=None):
     """「判定を実行」ボタンの処理本体: 確定した判定（`validation`）で比較を
     実行し、Excelを再生成する（`extract_results_full`/`extract_sort_value` に
     保持した抽出結果一式を使い、`terminal_results`・`output_filename` も前回と
     同じ値を引き継ぐ。表4「呼び出し元×Excel出力関数」参照——初回抽出時と
-    同じ引数一式を渡すことを確認済み）。呼び出し前に `validation['errors']`
-    が空であることを呼び出し元が確認していること。"""
+    同じ引数一式を渡すことを確認済み。v3.10.0で `master_index` も同様に
+    初回抽出時〈`_handle_extract_button()`〉と同じ値を渡す）。呼び出し前に
+    `validation['errors']` が空であることを呼び出し元が確認していること。"""
     results = st.session_state['extract_results_full']
     compare_result = assembly_compare.compare_assembly(
-        results, validation['wiring_files'], validation['b_fname'])
+        results, validation['wiring_files'], validation['b_fname'], master_index=master_index)
 
     terminal_results = st.session_state.get('terminal_results')
     if st.session_state.get('is_region_mode', False):
         st.session_state.excel_result = create_region_excel_output(
-            results, terminal_results=terminal_results, assembly_compare=compare_result)
+            results, terminal_results=terminal_results, assembly_compare=compare_result,
+            master_index=master_index)
     else:
         st.session_state.excel_result = create_ref_designator_excel_output(
             results, st.session_state['extract_sort_value'],
-            terminal_results=terminal_results, assembly_compare=compare_result)
+            terminal_results=terminal_results, assembly_compare=compare_result,
+            master_index=master_index)
 
     st.session_state['type_judgment_applied'] = dict(selection)
     st.session_state['download_done'] = False
     st.rerun()
 
 
-def _render_type_judgment_section():
+def _render_type_judgment_section(master_index=None):
     """「図面種別判定結果」セクション（v3.7.0）: 「結線図-組立図を比較」
     ON時に抽出したファイルについて、結線図・組立図の判定結果
     （図番・タイトル・サブタイトルとともに）一覧表示し、チェックボックスで
@@ -622,10 +670,10 @@ def _render_type_judgment_section():
     run_disabled = bool(validation['errors'])
     run_type = "secondary" if (not run_disabled and already_applied) else "primary"
     if st.button("判定を実行", type=run_type, disabled=run_disabled, key='type_judgment_apply'):
-        _apply_type_judgment(selection, validation)
+        _apply_type_judgment(selection, validation, master_index=master_index)
 
 
-def _render_results_section():
+def _render_results_section(master_index_status=None):
     """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。
 
     v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
@@ -633,6 +681,12 @@ def _render_results_section():
     （旧3分岐から単純化）。「領域の確認」セクションを空のときは表示しなく
     したこと（2026-09-10）に伴い、「抽出結果プレビュー」等の置き場として
     「抽出結果」という見出しのセクションをここに新設した。
+
+    `master_index_status`（v3.10.0新設）: 機器符号一覧（DEF判定）が
+    利用できているかどうかの状態メッセージ（`_resolve_master_index()` の
+    2番目の戻り値）。利用可・未設定・鍵不一致のいずれでも必ず表示する
+    （利用可のときも件数を出すことで、設定済みのつもりで実は無効、という
+    逆方向の事故も防ぐ）。
 
     「結線図-組立図を比較」関連の判定表示・操作（v3.7.0で「図面種別判定結果」
     セクションへ分離）はこの関数の対象外——呼び出し元 `app()` が
@@ -642,6 +696,8 @@ def _render_results_section():
     # ============================================================
     if st.session_state.get('excel_result'):
         st.subheader("抽出結果")
+        if master_index_status:
+            st.caption(master_index_status)
         is_region_mode = st.session_state.get('is_region_mode', False)
 
         if is_region_mode:
@@ -730,6 +786,8 @@ def app():
 
     region_cfg = _build_region_cfg()
 
+    master_index, master_index_status = _resolve_master_index()
+
     detected = 'region_analyses' in st.session_state
     region_selection_confirmed = bool(st.session_state.get('region_selection_confirmed'))
 
@@ -744,10 +802,10 @@ def app():
         not opts['enable_region_detection']
         or (detected and region_selection_confirmed)
     ):
-        _handle_extract_button(uploaded_files, region_cfg, opts)
+        _handle_extract_button(uploaded_files, region_cfg, opts, master_index=master_index)
 
-    _render_type_judgment_section()
-    _render_results_section()
+    _render_type_judgment_section(master_index=master_index)
+    _render_results_section(master_index_status=master_index_status)
 
 
 if __name__ == "__main__":

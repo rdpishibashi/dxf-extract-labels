@@ -242,12 +242,14 @@ def test_normalize_labels_nfkc_and_strip():
 # ---------------------------------------------------------------------------
 
 def test_build_labeled_rows_without_region():
-    """'機器符号候補' 列は R10/CN3 のようなパターン一致ラベルで 'Y' になる
-    （v3.0.0で全ラベルを対象にするようになったため追加された列）。"""
+    """'機器符号候補' 列は R10/CN3 のようなパターン一致ラベルで 'CAN' になる
+    （v3.0.0で全ラベルを対象にするようになったため追加された列。v3.10.0で
+    機器符号一覧に一致する場合は 'DEF' になるよう3値化されたが、R10/CN3は
+    一覧に無いため master_index=None 時と同じ 'CAN' のままで変わらない）。"""
     rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('R10', 10, 10), ('CN3', 5, 5)])
     assert rows == [
-        {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1},
-        {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 2},
+        {'機器符号候補': 'CAN', 'ラベル': 'CN3', '個数': 1},
+        {'機器符号候補': 'CAN', 'ラベル': 'R10', '個数': 2},
     ]
 
 
@@ -255,7 +257,8 @@ def test_build_labeled_rows_marks_non_matching_label_as_none():
     """パターンに一致しないラベル（スペース入り等）は '機器符号候補' が None。"""
     rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('NOTE ONE', 5, 5)])
     by_label = {r['ラベル']: r['機器符号候補'] for r in rows}
-    assert by_label['R10'] == 'Y'
+    # R10は機器符号一覧に無いため、v3.10.0でも'CAN'（候補パターン一致のみ）
+    assert by_label['R10'] == 'CAN'
     assert by_label['NOTE ONE'] is None
 
 
@@ -267,7 +270,10 @@ def test_build_labeled_rows_with_region():
     by_label = {r['ラベル']: r for r in rows}
     assert by_label['R10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
-    assert by_label['R10']['機器符号候補'] == 'Y'
+    # R10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
+    # （候補パターン一致のみ。master_index=None時のDEF/CAN判定は
+    # test_designator_def_can.py が検証する）
+    assert by_label['R10']['機器符号候補'] == 'CAN'
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +340,9 @@ def test_build_region_output_counts_and_sorts():
 # ---------------------------------------------------------------------------
 
 def test_build_ref_designator_final():
-    """'ref_designator_count'（v3.0.0新設）は '機器符号候補'='Y' の行の
-    個数合計。R10/CN3 はいずれもパターンに一致するため 1+1=2。"""
+    """'ref_designator_count'（v3.0.0新設）は '機器符号候補' が 'DEF'/'CAN'
+    （v3.10.0で3値化。旧'Y'に相当）の行の個数合計。R10/CN3 はいずれも
+    パターンに一致するため（かつ機器符号一覧には無いため'CAN'のまま）1+1=2。"""
     ref_data_by_file = {
         'a.dxf': {
             'labels': [('R10', 0, 0), ('CN3', 1, 1)],
@@ -350,8 +357,8 @@ def test_build_ref_designator_final():
     }
     ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value='asc')
     assert ref_final['a.dxf']['rows'] == [
-        {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1},
-        {'機器符号候補': 'Y', 'ラベル': 'R10', '個数': 1},
+        {'機器符号候補': 'CAN', 'ラベル': 'CN3', '個数': 1},
+        {'機器符号候補': 'CAN', 'ラベル': 'R10', '個数': 1},
     ]
     assert ref_final['a.dxf']['total_in_frame'] == 5
     assert ref_final['a.dxf']['frames'] == 1
@@ -391,7 +398,8 @@ def test_build_ref_designator_region_results():
     by_label = {row['ラベル']: row for row in r['rows']}
     assert by_label['R10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
-    assert by_label['R10']['機器符号候補'] == 'Y'
+    # R10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN（上記参照）
+    assert by_label['R10']['機器符号候補'] == 'CAN'
     # region_rows: 領域一覧用の全領域データ（v3.0.0新設）
     assert len(r['region_rows']) == 1
     assert r['region_rows'][0]['name'] == 'RACK1'

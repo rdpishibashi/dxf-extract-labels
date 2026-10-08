@@ -93,7 +93,8 @@ def test_create_ref_designator_excel_output_sheet_and_values():
     total_header = [c.value for c in ws[1]]
     assert total_header == ['機器符号候補', 'ラベル', '個数', '図番']
     total_rows = [(c[0].value, c[1].value, c[2].value) for c in ws.iter_rows(min_row=2)]
-    assert total_rows == [('Y', 'CN1', 2), ('Y', 'R10', 1)]
+    # CN1/R10は機器符号一覧（master_index未指定）に無いため、v3.10.0では'CAN'
+    assert total_rows == [('CAN', 'CN1', 2), ('CAN', 'R10', 1)]
     total_drawing_numbers = {row[1].value: row[3].value for row in ws.iter_rows(min_row=2)}
     assert total_drawing_numbers == {'CN1': 'EE1234-500-01A', 'R10': 'EE1234-500-01A'}
 
@@ -579,7 +580,9 @@ def test_create_region_excel_output_label_summary_sheet():
 
     r001 = rows['R001']
     assert r001[0] == 'RACK1'
-    assert r001[1] == 'Y'   # R001 は機器符号候補パターンに一致
+    # R001は候補パターンに一致するがmaster_index未指定（=None）のため'CAN'
+    # （v3.10.0。機器符号一覧に一致する場合の'DEF'はtest_designator_def_can.pyで検証）
+    assert r001[1] == 'CAN'
     assert r001[3] == 8
     assert r001[4] == 'EE6492-039-38A' and r001[5] == 5
     assert r001[6] == 'b' and r001[7] == 3

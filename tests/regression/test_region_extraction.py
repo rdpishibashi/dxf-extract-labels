@@ -23,6 +23,7 @@ from model.region_detector import (  # noqa: E402
     detect_drawing_frames,
 )
 from model import ref_designator  # noqa: E402
+from model.common_utils import normalize_width  # noqa: E402
 from tests.dxf_cache import analyze_dxf_regions  # noqa: E402
 
 # サンプル DXF はプロジェクト間で共用するため Tools/sample-dxf/ に集約されている。
@@ -179,7 +180,8 @@ def test_connection_point_region_excluded():
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
 def test_name_candidates_exclude_circuit_and_notes():
-    """名称候補から機器符号・NOTE・☆・境界線分上(距離0)が除外される。"""
+    """名称候補から機器符号・NOTE・☆・境界線分上(距離0)・英大文字で始まらない
+    語（2026-10、長い日本語注記文の混入対策）が除外される。"""
     a = analyze_dxf_regions(SINGLE)
     for reg in a['regions']:
         for d, t in reg['name_candidates']:
@@ -188,6 +190,8 @@ def test_name_candidates_exclude_circuit_and_notes():
             assert 'NOTE' not in t.upper()       # NOTE 除外
             assert '☆' not in t                   # ☆ 除外
             assert not any('a' <= ch <= 'z' for ch in t)  # 英小文字を含む名称は除外
+            up_first = normalize_width(t).upper().strip()[0]  # 全角→半角正規化後に判定
+            assert 'A' <= up_first <= 'Z'                 # 英大文字で始まる
 
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')

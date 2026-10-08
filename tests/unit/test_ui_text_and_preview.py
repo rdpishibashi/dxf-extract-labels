@@ -28,6 +28,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
+import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 from model.excel_output import create_ref_designator_excel_output  # noqa: E402
 from app import _FRAME_NOT_FOUND_ERROR_MARKER, _region_confirmation_targets  # noqa: E402
@@ -189,6 +190,32 @@ def test_targets_include_files_with_pending_regions():
     fname, analysis, pending_regions = targets[0]
     assert fname == 'contested.dxf'
     assert pending_regions == [reg]
+
+
+def test_targets_excludes_regions_marked_for_exclusion():
+    """「除外」指定された領域は、要選択候補が2件以上あっても「領域の確認」の
+    対象から除く（v3.11.0新設、§4決定2「除外領域は領域の確認に表示しない」）。"""
+    reg_a = {
+        'id': 0, 'frame': 0, 'area_pct': 50.0, 'corners': [],
+        'name_candidates': [(1.0, 'A'), (2.0, 'B')],
+    }
+    reg_excluded = {
+        'id': 1, 'frame': 0, 'area_pct': 30.0, 'corners': [],
+        'name_candidates': [(1.0, 'C'), (2.0, 'D')],
+    }
+    analyses = {
+        'mixed.dxf': {'error': None, 'regions': [reg_a, reg_excluded]},
+    }
+    st.session_state['gre_C'] = True
+    try:
+        targets = _region_confirmation_targets(
+            analyses, checked_names={'A', 'B', 'C', 'D'})
+    finally:
+        del st.session_state['gre_C']
+    assert len(targets) == 1
+    fname, analysis, pending_regions = targets[0]
+    assert fname == 'mixed.dxf'
+    assert pending_regions == [reg_a]
 
 
 # ---------------------------------------------------------------------------

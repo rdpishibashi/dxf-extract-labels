@@ -38,6 +38,7 @@ from model.region_detector import (  # noqa: E402
 
 import streamlit as st  # noqa: E402
 import app  # noqa: E402
+from view import region_selection  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -298,3 +299,56 @@ def test_global_checked_region_names_reads_grc_prefixed_keys():
 
 def test_global_checked_region_names_empty_when_nothing_checked():
     assert app._global_checked_region_names() == set()
+
+
+# ---------------------------------------------------------------------------
+# region_selection.global_excluded_region_names（gre_<name> セッション状態からの
+# 集合構築。v3.11.0新設）
+# ---------------------------------------------------------------------------
+
+def test_global_excluded_region_names_reads_gre_prefixed_keys():
+    st.session_state['gre_RACK1'] = True
+    st.session_state['gre_RACK2'] = False
+    st.session_state['gre_CTC'] = True
+    st.session_state['unrelated_key'] = True
+    assert region_selection.global_excluded_region_names() == {'RACK1', 'CTC'}
+
+
+def test_global_excluded_region_names_empty_when_nothing_checked():
+    assert region_selection.global_excluded_region_names() == set()
+
+
+# ---------------------------------------------------------------------------
+# app._gather_name_selections — 「除外」指定された領域のスキップ（v3.11.0新設）
+# ---------------------------------------------------------------------------
+
+def test_gather_name_selections_skips_region_excluded_by_single_candidate():
+    """候補1件のみの領域でも、その候補が「除外」指定されていれば
+    名称を決定しない（§4決定2・9、領域の除外は名称採用の判断自体をしない）。"""
+    _set_global_checked('CTC')
+    st.session_state['gre_CTC'] = True
+    try:
+        analysis = {'regions': [_region(1, [(1.0, 'CTC')])]}
+        assert app._gather_name_selections('a.dxf', analysis) == {}
+    finally:
+        del st.session_state['gre_CTC']
+
+
+def test_gather_name_selections_skips_region_excluded_among_multiple_candidates():
+    """複数候補のうち1つでも「除外」指定された候補を持つ領域は、
+    グローバル決定（1件一致）もフォールバックUIも一切適用しない。"""
+    _set_global_checked('RACK2')
+    st.session_state['gre_RACK1'] = True
+    try:
+        analysis = {'regions': [_region(5, [(1.0, 'RACK1'), (2.0, 'RACK2')])]}
+        assert app._gather_name_selections('a.dxf', analysis) == {}
+    finally:
+        del st.session_state['gre_RACK1']
+
+
+def test_gather_name_selections_unaffected_when_no_exclusion():
+    """`gre_` キーが一切無い（除外機能を使わない呼び出し元）場合は
+    従来通りの挙動のまま（後方互換）。"""
+    _set_global_checked('RACK2')
+    analysis = {'regions': [_region(5, [(1.0, 'RACK1'), (2.0, 'RACK2')])]}
+    assert app._gather_name_selections('a.dxf', analysis) == {('a.dxf', 5): ['RACK2']}

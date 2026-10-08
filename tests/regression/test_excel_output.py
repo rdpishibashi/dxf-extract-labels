@@ -343,11 +343,12 @@ def test_zenkaku_circuit_symbol_recognized_by_filter():
 
 def test_region_list_sheet_has_no_page_no_column():
     """v3.0.0で「ページ No.」列は廃止された。領域一覧のヘッダーは
-    ファイル名・領域名・面積率[%]・領域内ラベル数・領域内機器符号候補数の5列。"""
+    ファイル名・領域名・判定・面積率[%]・領域内ラベル数・領域内機器符号候補数の6列
+    （'判定'列はv3.11.0新設、領域名の直後に配置）。"""
     wb = _load_wb(create_region_excel_output(_make_region_results()))
     ws = wb['領域一覧']
     headers = [c.value for c in ws[1]]
-    assert headers == ['ファイル名', '領域名', '面積率[%]', '領域内ラベル数', '領域内機器符号候補数']
+    assert headers == ['ファイル名', '領域名', '判定', '面積率[%]', '領域内ラベル数', '領域内機器符号候補数']
     assert 'ページ No.' not in headers
     assert '図面' not in headers
 
@@ -355,7 +356,9 @@ def test_region_list_sheet_has_no_page_no_column():
 def test_create_region_excel_output_region_list_merges_by_filename_and_name():
     """`region_rows` に同一ファイル・同一領域名の行が複数（ページ横断）ある場合、
     面積率・領域内ラベル数・領域内機器符号候補数を合算して1行にまとめる
-    （v3.0.0、`ページ No.` 廃止に伴う仕様）。"""
+    （v3.0.0、`ページ No.` 廃止に伴う仕様）。'mark' キーを持たない行は
+    '判定' が空欄になる（v3.11.0、既存呼び出し元との後方互換。空文字列セルは
+    openpyxlで読み返すと None になる）。"""
     results = _make_region_results()
     results['circuit.dxf']['region_rows'] = [
         {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 20.0, 'label_count': 3, 'ref_designator_count': 2},
@@ -365,8 +368,8 @@ def test_create_region_excel_output_region_list_merges_by_filename_and_name():
     wb = _load_wb(create_region_excel_output(results))
     ws = wb['領域一覧']
     rows = {row[1]: row for row in ws.iter_rows(min_row=2, values_only=True)}
-    assert rows['RACK1'] == ('circuit.dxf', 'RACK1', 35.0, 4, 3)
-    assert rows['CM DRV, PSW UNIT'] == ('circuit.dxf', 'CM DRV, PSW UNIT', 10.0, 0, 0)
+    assert rows['RACK1'] == ('circuit.dxf', 'RACK1', None, 35.0, 4, 3)
+    assert rows['CM DRV, PSW UNIT'] == ('circuit.dxf', 'CM DRV, PSW UNIT', None, 10.0, 0, 0)
 
 
 def test_create_region_excel_output_region_list_autofilter_and_summary_no_filter():

@@ -88,6 +88,19 @@ def _accumulate_total_counts(total_counter, label_drawing_numbers, label_counts,
         label_drawing_numbers.setdefault(lbl, set()).add(ident)
 
 
+_REGION_MARK_PRIORITY = {'除外': 2, '特定': 1, '': 0}
+
+
+def _merge_region_mark(current, new):
+    """領域一覧シートの'判定'列をファイル横断でマージする際の優先順位判定
+    （v3.11.0新設）。同一ファイル・同一領域名が複数ページにまたがる場合、
+    除外 > 特定 > 空欄 の優先順位で勝ち残らせる（除外優先の一貫性、
+    2026-10-08ユーザー決定）。"""
+    if _REGION_MARK_PRIORITY.get(new, 0) > _REGION_MARK_PRIORITY.get(current, 0):
+        return new
+    return current
+
+
 def _build_total_rows(total_counter, label_drawing_numbers, master_index=None):
     """抽出ラベル一覧（旧 Total）シート用の行データ（ラベル昇順、図番はABC順で
     カンマ結合）を返す。「機器符号候補」列は `designator_mark()` による判定
@@ -303,7 +316,11 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
     `ファイル名×領域名` でマージ・合算して記載する（v3.0.0、`ページ No.` 列は
     廃止し、面積率・領域内ラベル数・領域内機器符号候補数をページ横断で合算する。
     データは各ファイルの `region_rows`〈`ref_designator.build_all_regions_summary()`
-    参照〉から得る）。
+    参照〉から得る）。`判定`列（v3.11.0新設、`領域名`の直後）は
+    `'除外'`/`'特定'`/空欄のいずれかで、同一ファイル・同一領域名が複数ページに
+    またがる場合は`除外 > 特定 > 空欄`の優先順位でマージする（除外優先の一貫性、
+    2026-10-08ユーザー決定）。`region_rows`に`'mark'`キーが無い場合は空欄扱い
+    （既存の呼び出し元との後方互換）。
     """
     region_results = dict(sorted(region_results.items(), key=lambda kv: kv[0]))
     output = BytesIO()
@@ -343,24 +360,29 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
                                  col_widths=(12, 25, 10, 30))
 
         # 領域一覧: 検出した全領域（確定・未確定を問わない）を、ファイル名×領域名で
-        # マージ・合算して記載する（v3.0.0）。
+        # マージ・合算して記載する（v3.0.0）。'判定'列（v3.11.0）は
+        # 除外 > 特定 > 空欄 の優先順位でマージする。
         merged_regions = {}
         region_order = []
         for fname, data in region_results.items():
             for r in data.get('region_rows', []):
                 key = (fname, r['name'])
                 if key not in merged_regions:
-                    merged_regions[key] = {'area_pct': 0.0, 'label_count': 0, 'ref_designator_count': 0}
+                    merged_regions[key] = {
+                        'area_pct': 0.0, 'label_count': 0, 'ref_designator_count': 0, 'mark': '',
+                    }
                     region_order.append(key)
                 agg = merged_regions[key]
                 agg['area_pct'] += r['area_pct']
                 agg['label_count'] += r['label_count']
                 agg['ref_designator_count'] += r['ref_designator_count']
+                agg['mark'] = _merge_region_mark(agg['mark'], r.get('mark', ''))
 
         reg_rows = [
             {
                 'ファイル名': fname,
                 '領域名': name,
+                '判定': merged_regions[(fname, name)]['mark'],
                 '面積率[%]': round(merged_regions[(fname, name)]['area_pct'], 1),
                 '領域内ラベル数': merged_regions[(fname, name)]['label_count'],
                 '領域内機器符号候補数': merged_regions[(fname, name)]['ref_designator_count'],
@@ -374,6 +396,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
             _write_header_row(reg_ws, reg_df.columns.values, header_format)
             reg_ws.set_column('A:A', 28)
             reg_ws.set_column('B:B', 30)
+            reg_ws.set_column('C:C', 10)
             reg_ws.autofilter(0, 0, len(reg_df), len(reg_df.columns) - 1)
 
         # 領域別ラベル一覧: 領域名ごとに全ファイル横断でラベルを集計する

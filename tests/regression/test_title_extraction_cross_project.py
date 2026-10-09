@@ -37,7 +37,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from model.extract_labels import extract_labels  # noqa: E402
+from tests import dxf_cache  # noqa: E402
 
 TOOLS_ROOT = os.path.dirname(PROJECT_ROOT)
 DIFF_MANAGER_ROOT = os.path.join(TOOLS_ROOT, 'DXF-diff-manager')
@@ -87,7 +87,7 @@ def _sample_problem_files():
 
 def _reference_title_subtitle(dxf_path):
     """primary自身の正しい呼び出し方（両オプションをセット）で得られる期待値。"""
-    _, info = extract_labels(
+    _, info = dxf_cache.extract_labels(
         dxf_path,
         extract_drawing_numbers_option=True,
         extract_title_option=True,

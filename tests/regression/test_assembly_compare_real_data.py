@@ -44,7 +44,7 @@ pytestmark = [
 
 from model import ref_designator  # noqa: E402
 from model import assembly_compare as ac  # noqa: E402
-from model.extract_labels import extract_labels  # noqa: E402
+from tests import dxf_cache  # noqa: E402
 from model.excel_output import create_ref_designator_excel_output  # noqa: E402
 
 
@@ -57,9 +57,9 @@ def ref_final():
     ref_data_by_file = {}
     for fname in A_FILES + [B_FILE]:
         path = os.path.join(DATA_DIR, fname)
-        data = ref_designator.extract_ref_designator_data(
+        data = dxf_cache.extract_ref_designator_data(
             path, frame_lineweight=100, original_filename=fname)
-        _, dn_info = extract_labels(
+        _, dn_info = dxf_cache.extract_labels(
             path, extract_drawing_numbers_option=True, extract_title_option=True,
             original_filename=fname)
         data['main_drawing_number'] = dn_info.get('main_drawing_number')

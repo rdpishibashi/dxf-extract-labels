@@ -33,13 +33,18 @@ A_FILES = ['EE6491-039-16A.dxf', 'EE6491-039-21A.dxf']
 # B側: タイトルに「組立図」を含む実在ファイル（このデータセット中1件のみ）
 B_FILE = 'EE6892-455B.dxf'
 
-pytestmark = pytest.mark.skipif(
-    not all(os.path.exists(os.path.join(DATA_DIR, f)) for f in A_FILES + [B_FILE]),
-    reason=f'実データ未配置のためスキップ: {DATA_DIR}')
+pytestmark = [
+    pytest.mark.skipif(
+        not all(os.path.exists(os.path.join(DATA_DIR, f)) for f in A_FILES + [B_FILE]),
+        reason=f'実データ未配置のためスキップ: {DATA_DIR}'),
+    # module fixture `ref_final` が40MBの実DXFを抽出する（setup 約9秒）ため、
+    # モジュール全体を slow とする（conftest.py 参照）。
+    pytest.mark.slow,
+]
 
 from model import ref_designator  # noqa: E402
 from model import assembly_compare as ac  # noqa: E402
-from model.extract_labels import extract_labels  # noqa: E402
+from tests import dxf_cache  # noqa: E402
 from model.excel_output import create_ref_designator_excel_output  # noqa: E402
 
 
@@ -52,9 +57,9 @@ def ref_final():
     ref_data_by_file = {}
     for fname in A_FILES + [B_FILE]:
         path = os.path.join(DATA_DIR, fname)
-        data = ref_designator.extract_ref_designator_data(
+        data = dxf_cache.extract_ref_designator_data(
             path, frame_lineweight=100, original_filename=fname)
-        _, dn_info = extract_labels(
+        _, dn_info = dxf_cache.extract_labels(
             path, extract_drawing_numbers_option=True, extract_title_option=True,
             original_filename=fname)
         data['main_drawing_number'] = dn_info.get('main_drawing_number')

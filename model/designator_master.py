@@ -38,7 +38,7 @@ HMACダイジェスト索引を提供する（v3.10.0）。
   （2026-10-08ユーザー決定。原本には全186件が`ELB(CB)nnn`形のみ存在し、
   実データのDXFラベル側には`ELB(CB)001`という原文表記は出現しないため、
   除去しないと一覧の約31%が照合に使われないまま死蔵する）
-- ラベル側（`label_match_key()`）: `ref_designator_patterns.normalize_label()`
+- ラベル側（`label_match_key()`）: `label_classifier.normalize_label()`
   → `_judgment_text()` の順で判定用文字列を取り出した**後に**空白を除去する。
   **この順序を逆にしてはいけない** — `_judgment_text()` はΩ記号の直前の
   空白をデリミタとして使うため（`'R0 2.2KΩ'` → `'R0'`）、先に空白を除去すると
@@ -55,7 +55,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
-from .ref_designator_patterns import normalize_label, _judgment_text
+from .label_classifier import normalize_label, _judgment_text
 
 
 # ---------------------------------------------------------------------------

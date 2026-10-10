@@ -1,4 +1,4 @@
-"""機器符号パターン分類ロジック（model/ref_designator_patterns.py）の回帰テスト。
+"""機器符号パターン分類ロジック（model/label_classifier.py）の回帰テスト。
 
 **2026-07-30 移設の経緯**: `model/ref_designator.py`（DXF抽出パイプライン）は
 判定条件の簡素化により、本モジュールの除外・追加・確定パターンを使わなく
@@ -6,7 +6,7 @@
 `test_ref_designator.py` 参照）。しかし本モジュール自体は
 `region_detector.py` の領域名候補フィルタが引き続き利用しているため、
 このファイルの回帰テストは削除せず、対象モジュールを `ref_designator`
-から `ref_designator_patterns` に付け替えて維持する。
+から `label_classifier` に付け替えて維持する。
 
 検証済み仕様（2026-07-26 確定、reference_designator_candidates.xlsx が正）:
   - パターン: 英字繰返し(-英字繰返し)?+数字繰返し+英数字/ハイフン任意、または英字繰返しのみ
@@ -26,7 +26,45 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from model import ref_designator_patterns as rdp  # noqa: E402
+from model import label_classifier as _lc  # noqa: E402
+
+
+class _LegacyView:
+    """2026-10-10 の3分類一元化で削除した旧判定（`classify_judgment_detailed` 等）の
+    うち、**残したデータ**（`PATTERN_CATEGORIES`・`EXCLUSION_*`・`ADDED_DESIGNATOR_PATTERNS`）
+    の中身を守るテストが使う関数だけを、テスト側で再現したもの。除外語の所属カテゴリ
+    （`GND`→circuit_description 等）は `classify_label()` が引き続き使うため、この
+    テストで守り続ける。削除した機能（追加除外パターン・確定パターン・`split_candidates` 等）
+    に依存するテストは理由付きで skip している。"""
+
+    def __getattr__(self, name):
+        return getattr(_lc, name)
+
+    @staticmethod
+    def classify_judgment_detailed(judgment, label=None):
+        if not judgment or not _lc.CANDIDATE_PATTERN.match(judgment):
+            return 'no_match', None
+        for name, (words, _d) in _lc.EXCLUSION_EXACT_CATEGORIES.items():
+            if judgment in words:
+                return 'excluded', name
+        for name, rx, _d in _lc.EXCLUSION_REGEX_CATEGORIES:
+            if rx.match(judgment):
+                return 'excluded', name
+        full = label if label is not None else judgment
+        if _lc.matched_added_designator_category(full) is not None:
+            return 'candidate', None
+        return 'candidate', None
+
+    @classmethod
+    def is_ref_designator_candidate(cls, label):
+        return cls.classify_judgment_detailed(_lc._judgment_text(label), label)[0] == 'candidate'
+
+
+rdp = _LegacyView()
+
+_REMOVED = pytest.mark.skip(
+    reason='2026-10-10 3分類一元化で削除した機能（追加除外パターン・確定パターン・'
+           'split_candidates/summarize_labels）に依存。代替: test_label_classifier.py')
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +306,7 @@ def test_w_no_prefix_requires_exact_casing_and_spacing():
     ('TITLE', 'titleblock_terms'),
     ('DATE', 'titleblock_terms'),
     ('W1234', 'wiring_digit_run'),
-    ('ETC-JP2', 'added_excl:ETC-JPn*'),
+    pytest.param('ETC-JP2', 'added_excl:ETC-JPn*', marks=_REMOVED),
 ])
 def test_exclusion_categories(label, reason):
     assert rdp.is_ref_designator_candidate(label) is False, (
@@ -293,6 +331,7 @@ def test_dwgno_is_candidate_after_jis_dwg_prefix_removal():
     assert rdp.is_ref_designator_candidate('DWGNO') is True
 
 
+@_REMOVED
 def test_jis123_still_excluded_via_unrelated_added_pattern():
     """`JIS123` はjis_dwg_prefix削除後も除外されたままだが、その理由は
     jis_dwg_prefixではなく、別途2026-07-26にユーザー確定した追加除外パターン
@@ -337,6 +376,7 @@ def test_circuit_description_two_digit_suffix_not_excluded(label):
     ('OUT12', 'added_excl:O.*'),   # O.* が OUTn* より先に定義されており先に一致
     ('IN10', 'added_excl:I.*'),
 ])
+@_REMOVED
 def test_added_exclusion_overrides_two_digit_suffix_exception(label, category):
     """追加除外パターン（reference_deginator_pattern_added.txt、2026-07-26）は
     桁数を問わず除外するため、OUT12/IN10 は 2026-07-10 の「数字2桁以上は
@@ -435,6 +475,7 @@ def test_wiring_digit_run_ignores_parenthetical_digits():
     ('B12', 'letters_digits_2or3'),       # A,B除外は単一英字パターン限定
     ('FB', None),                         # 英字のみ（数字を要求するパターンはいずれも不一致）
 ])
+@_REMOVED
 def test_matched_confirmed_category(label, expected):
     assert rdp.matched_confirmed_category(label) == expected
 
@@ -450,6 +491,7 @@ def test_matched_confirmed_category(label, expected):
     ('CN-IF1-1A', 'cn_if_prefix'),
     ('CN-IFX', 'cn_if_prefix'),
 ])
+@_REMOVED
 def test_confirmed_cn_patterns(label, expected):
     assert rdp.matched_confirmed_category(label) == expected
 
@@ -462,6 +504,7 @@ def test_confirmed_cn_patterns(label, expected):
     ('VR5(10K)', 'vr_paren_suffix'),
     ('VR100(10K)', 'vr_paren_suffix'),
 ])
+@_REMOVED
 def test_confirmed_paren_suffix_patterns_use_full_label(label, expected):
     """R(...)/VR(...) は括弧の中身自体を問うため、`_judgment_text()` で
     括弧を取り除いた文字列ではなく正規化済みラベル全体（括弧含む）に対して
@@ -469,6 +512,7 @@ def test_confirmed_paren_suffix_patterns_use_full_label(label, expected):
     assert rdp.matched_confirmed_category(label) == expected
 
 
+@_REMOVED
 def test_confirmed_paren_suffix_requires_parens():
     """R10/VR5 単体（括弧なし）は r_paren_suffix/vr_paren_suffix の対象外。
     R10 は既存の letters_digits_2or3 で確定するが、VR5 はどの判定基準にも
@@ -477,6 +521,7 @@ def test_confirmed_paren_suffix_requires_parens():
     assert rdp.matched_confirmed_category('VR5') is None
 
 
+@_REMOVED
 def test_is_confirmed_designator_requires_candidate_first():
     """is_confirmed_designator は機器符号候補であることが前提。除外パターン
     該当のラベルは、たとえ確定パターンの正規表現に文字列として一致しても
@@ -496,6 +541,7 @@ def test_normalize_label_nfkc_and_strip():
     assert rdp.normalize_label(None) == ''
 
 
+@_REMOVED
 def test_split_candidates():
     """候補（＝除外パターンに該当しないもの）は Patterns 一致・除外非該当のみ。
     除外パターン該当（GND・TITLE）は結果に含まれない
@@ -505,6 +551,7 @@ def test_split_candidates():
     assert candidates == ['R10', 'CN3']
 
 
+@_REMOVED
 def test_split_candidates_drops_non_pattern_matches():
     """3パターン（Patterns シート）のいずれにも一致しない文字列（説明文・記号等）も
     結果に含まれない。"""
@@ -513,6 +560,7 @@ def test_split_candidates_drops_non_pattern_matches():
     assert candidates == ['R10']
 
 
+@_REMOVED
 def test_summarize_labels_counts_and_sorts():
     result = rdp.summarize_labels(['R10', 'R10', 'CN3'])
     assert result == [('CN3', 1), ('R10', 2)]
@@ -526,7 +574,7 @@ def test_summarize_labels_counts_and_sorts():
 # （ADDED_DESIGNATOR_PATTERNS、ラベル全体基準）→ 追加除外
 # （ADDED_EXCLUSION_PATTERNS、ラベル全体基準）。
 # 既存除外が「英単語」を優先的に除外し（MOTOR等）、追加機器符号は
-# 追加除外より優先される（DC12A3等）。model/ref_designator_patterns.py の
+# 追加除外より優先される（DC12A3等）。model/label_classifier.py の
 # 「2b. 追加パターン」節冒頭コメント参照。
 
 def test_compile_shorthand_pattern_notation():
@@ -556,6 +604,7 @@ def test_compile_shorthand_pattern_notation():
     ('OS1', 'added_desig:OS.*'),
     ('DC12A3', 'added_desig:DCnnan'),      # A衝突: 追加機器符号が追加除外に優先
 ])
+@_REMOVED
 def test_added_designator_patterns_confirmed(label, expected_category):
     """追加の機器符号パターンに一致するラベルは候補かつ確定（自動採用）になる。"""
     assert rdp.is_ref_designator_candidate(label) is True
@@ -569,6 +618,7 @@ def test_added_designator_patterns_confirmed(label, expected_category):
     ('I9', 'added_excl:I.*'),
     ('CM100', 'added_excl:CM.*'),
 ])
+@_REMOVED
 def test_added_exclusion_patterns_excluded(label, expected_category):
     """追加の除外パターンに一致し、追加の機器符号パターンで救済されない
     ラベルは除外される。"""
@@ -588,6 +638,7 @@ def test_existing_exclusion_wins_over_added_designator_prefix(label):
     assert rdp.is_ref_designator_candidate(label) is False
 
 
+@_REMOVED
 def test_added_patterns_do_not_affect_untouched_existing_labels():
     """追加パターンに一切関与しない既存ラベルの判定は変化しない（無回帰）。"""
     assert rdp.is_ref_designator_candidate('R10') is True

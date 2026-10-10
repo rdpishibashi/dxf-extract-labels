@@ -947,10 +947,17 @@ def test_fl1f_all_three_pieces_named_and_union_parent_removed():
     （2026-07-15 修正）。"""
     a = analyze_dxf_regions(FL1F_650)
     assert a['error'] is None
-    names = [r['default_name'] for r in a['regions']]
-    assert 'ＦＬ１Ｆ① ＊＊ （ＦＬ１Ｆ－Ｈ１２ＲＣＥ）' in names
-    assert 'ＦＬ１Ｆ② ＊＊ （ＦＬ１Ｆ－Ｍ０８Ｂ２Ｒ２）' in names
-    assert 'ＦＬ１Ｆ③ ＊＊ （ＦＬ１Ｆ－Ｍ０８Ｂ２Ｒ２）' in names
+    # 2026-10-10: 「符号 (型式)」形式（`ＦＬ１Ｆ① ＊＊ （ＦＬ１Ｆ－Ｈ１２ＲＣＥ）`）は括弧を
+    # 除いた `FL1F1` が機器符号候補のため、領域名候補にならなくなった（ユーザー決定）。
+    # このテストが守る本質（3分割された矩形①②③がそれぞれ別領域として検出される）は
+    # 幾何で確認する: x:370~428 の帯の上下2領域と x:313~370 の領域の計3つ。
+    boxes = sorted(
+        (round(min(p[0] for p in r['polygon'])), round(max(p[0] for p in r['polygon'])),
+         round(min(p[1] for p in r['polygon'])), round(max(p[1] for p in r['polygon'])))
+        for r in a['regions'] if r['frame'] == 0)
+    assert (313, 370, 104, 483) in boxes
+    assert (370, 428, 227, 483) in boxes
+    assert (370, 428, 104, 227) in boxes
     # 合体親（外周、bbox x:313~428, y:103.7~482.5相当）が独立領域として残らないこと
     for r in a['regions']:
         xs = [p[0] for p in r['polygon']]
@@ -1089,7 +1096,7 @@ EE6868_MPD = _find_sample('EE6868-500-01C.dxf')  # MPD RACK2 PANEL LIMITケー�
 
 @pytest.mark.skipif(not os.path.exists(EE6868_MPD), reason='サンプル DXF が無い')
 def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1():
-    """既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: `EE6868-500-01C.dxf`
+    """【2026-10-10 解消済み。下記は経緯】既知の限界（2026-07-26、ユーザー承認済み・修正見送り）: `EE6868-500-01C.dxf`
     図面1/領域2 の正解は 'MPD RACK2 PANEL LIMIT'〈距離8.5、Tier1/下辺〉だが、
     'XO00 (NX-ID5442)'〈距離4.5、Tier2/上辺、かつ辺の中央により近い〉の方が
     距離・中央度のいずれでも上回り、しかも両候補ともこのファイル内で他に
@@ -1108,8 +1115,10 @@ def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1(
         r for r in a['regions']
         if r['frame'] == 0
         and any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in r['name_candidates']))
-    assert target['default_name'] == 'XO00 (NX-ID5442)'
-    assert any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in target['name_candidates'])
+    # 2026-10-10: `XO00 (NX-ID5442)`（符号 (型式) 形式）は括弧を除いた `XO00` が機器符号
+    # 候補のため領域名候補から外れ、既知の限界は解消した（正解が既定名称になる）。
+    assert target['default_name'] == 'MPD RACK2 PANEL LIMIT'
+    assert all(t != 'XO00 (NX-ID5442)' for _d, t in target['name_candidates'])
 
 
 # ---------------------------------------------------------------------------

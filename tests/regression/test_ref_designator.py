@@ -72,10 +72,10 @@ def _find_sample(name):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize('label', [
-    'R10', 'CN3', 'D4', 'CN1', 'A1', 'B12',       # 英字+数字（除外なしなのでA/Bも通る）
+    'U10', 'CN3', 'CN1', 'A1', 'A12',             # 英字+数字（A・C・L・Q・U・F は1字+数字でも機器符号候補）
     'CNCNT',                                       # 英字のみ（追加機器符号 CN.* に一致）
     'CN-IF2-1', 'AAC1B4-07', 'AB-CD12',            # 英字-英字+数字(+ハイフン任意)
-    'R10(2.2K)', 'U23B(DAC)',                      # 括弧付き（括弧前で判定）
+    'U10(2.2K)', 'U23B(DAC)',                      # 括弧付き（括弧前で判定）
     'AWG14', 'RACK1', 'W1234',                     # 旧除外パターン該当語（英数字の符号は候補のまま）
 ])
 def test_classify_labels_keeps_all_pattern_matches(label):
@@ -111,10 +111,10 @@ def test_classify_labels_rejects_non_pattern_matches(label):
 
 
 def test_classify_labels_judges_before_parenthesis_but_outputs_original():
-    """括弧より前の部分で判定し、出力は原文のまま（例: 'R10(1234)' は
-    判定用文字列 'R10' がパターンに一致するため候補になり、出力は
-    括弧付きの原文 'R10(1234)' のまま）。"""
-    labels = [('R10(1234)', 1.0, 2.0)]
+    """括弧より前の部分で判定し、出力は原文のまま（例: 'U10(1234)' は
+    判定用文字列 'U10' がパターンに一致するため候補になり、出力は
+    括弧付きの原文 'U10(1234)' のまま）。"""
+    labels = [('U10(1234)', 1.0, 2.0)]
     assert ref_designator.classify_labels(labels) == labels
 
 
@@ -129,7 +129,8 @@ def test_classify_labels_judges_before_parenthesis_but_outputs_original():
     'MC001 (-000-05)2/2',
     # ' **' 区切り（2026-09-11 ユーザー指示。実データ表記
     # '型式 ** (正式な型番)'）。
-    'FL1F1 ** (FL1F-H12RCE)',
+    # ('FL1F1 ** (FL1F-H12RCE)' は2026-10-10に「英字+数字+英字+数字」が領域名候補になったため
+    #  機器符号候補ではなくなった。test_label_classifier.py の NON_DESIGNATOR_PATTERNS 参照)
     'SX03 ** (NX-SID800)',
     # 'W No.' 前方一致（2026-09-11 ユーザー指示）。実データでピリオド直後の
     # スペース有無・末尾説明文・数字4桁連続を含む型番など表記ゆれがある。
@@ -156,9 +157,9 @@ def test_is_ref_designator_label_w_no_prefix_rejects_non_matching_casing():
 @pytest.mark.parametrize('label', [
     # Ω（オーム記号）を含む語の直前で区切る（2026-09-11 ユーザー指示）。
     # ユーザー提供Excelで「機器符号候補のはず」と報告された括弧なし表記。
-    'R0 2.2KΩ',
-    'R1 2.2KΩ',
-    'R84 4.7KΩ',
+    'U0 2.2KΩ',
+    'U1 2.2KΩ',
+    'U84 4.7KΩ',
 ])
 def test_is_ref_designator_label_ohm_symbol_fix(label):
     """括弧を使わずスペース区切りで抵抗値（Ω）が続く実データ表記が、主抽出
@@ -187,10 +188,10 @@ def test_is_ref_designator_label_excludes_single_uppercase_letter(label):
     assert ref_designator.is_ref_designator_label(label) is False
 
 
-@pytest.mark.parametrize('label', ['CNCNT', 'R1', 'C1'])
+@pytest.mark.parametrize('label', ['CNCNT', 'U1', 'C1'])
 def test_is_ref_designator_label_still_accepts_multi_char_labels(label):
     """単一英字の除外追加が、2文字以上の英字繰返し（`AB`等）・英字+数字
-    （`R1`等）を誤って除外していないことを確認する（回帰防止）。"""
+    （`U1`等）を誤って除外していないことを確認する（回帰防止）。"""
     assert ref_designator.is_ref_designator_label(label) is True
 
 
@@ -202,7 +203,7 @@ def test_single_letter_is_neither_designator_nor_region_name():
     assert classify_label('V') == OTHER
 
 
-@pytest.mark.parametrize('label', ['N24-', 'CN1-', 'R10-', 'L1+', 'V+', 'V-'])
+@pytest.mark.parametrize('label', ['N24-', 'CN1-', 'U10-', 'L1+', 'V+', 'V-'])
 def test_is_ref_designator_label_excludes_trailing_sign(label):
     """末尾が "+"/"-" で終わる文字列（電源端子表記、例 `N24-`・`L1+`）は
     機器符号候補ではない（2026-09-14ユーザー指摘で発覚した回帰の修正）。
@@ -239,9 +240,9 @@ def test_is_ref_designator_label_rejects_common_nouns(label):
 # ---------------------------------------------------------------------------
 
 def test_normalize_labels_nfkc_and_strip():
-    labels = [('　ＣＮ１　', 0.0, 0.0), ('', 1.0, 1.0), ('R10', 2.0, 2.0)]
+    labels = [('　ＣＮ１　', 0.0, 0.0), ('', 1.0, 1.0), ('U10', 2.0, 2.0)]
     result = ref_designator.normalize_labels(labels)
-    assert result == [('CN1', 0.0, 0.0), ('R10', 2.0, 2.0)]
+    assert result == [('CN1', 0.0, 0.0), ('U10', 2.0, 2.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -249,23 +250,23 @@ def test_normalize_labels_nfkc_and_strip():
 # ---------------------------------------------------------------------------
 
 def test_build_labeled_rows_without_region():
-    """'機器符号候補' 列は R10/CN3 のようなパターン一致ラベルで 'CAN' になる
+    """'機器符号候補' 列は U10/CN3 のようなパターン一致ラベルで 'CAN' になる
     （v3.0.0で全ラベルを対象にするようになったため追加された列。v3.10.0で
-    機器符号一覧に一致する場合は 'DEF' になるよう3値化されたが、R10/CN3は
+    機器符号一覧に一致する場合は 'DEF' になるよう3値化されたが、U10/CN3は
     一覧に無いため master_index=None 時と同じ 'CAN' のままで変わらない）。"""
-    rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('R10', 10, 10), ('CN3', 5, 5)])
+    rows = ref_designator.build_labeled_rows([('U10', 0, 0), ('U10', 10, 10), ('CN3', 5, 5)])
     assert rows == [
         {'機器符号候補': 'CAN', 'ラベル': 'CN3', '個数': 1},
-        {'機器符号候補': 'CAN', 'ラベル': 'R10', '個数': 2},
+        {'機器符号候補': 'CAN', 'ラベル': 'U10', '個数': 2},
     ]
 
 
 def test_build_labeled_rows_marks_non_matching_label_as_none():
     """パターンに一致しないラベル（スペース入り等）は '機器符号候補' が None。"""
-    rows = ref_designator.build_labeled_rows([('R10', 0, 0), ('NOTE ONE', 5, 5)])
+    rows = ref_designator.build_labeled_rows([('U10', 0, 0), ('NOTE ONE', 5, 5)])
     by_label = {r['ラベル']: r['機器符号候補'] for r in rows}
-    # R10は機器符号一覧に無いため、v3.10.0でも'CAN'（候補パターン一致のみ）
-    assert by_label['R10'] == 'CAN'
+    # U10は機器符号一覧に無いため、v3.10.0でも'CAN'（候補パターン一致のみ）
+    assert by_label['U10'] == 'CAN'
     assert by_label['NOTE ONE'] is None
 
 
@@ -273,14 +274,14 @@ def test_build_labeled_rows_with_region():
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     named = [{'polygon': square, 'name': 'RACK1', 'id': 0, 'frame': 0, 'area_pct': 50.0}]
     rows = ref_designator.build_labeled_rows(
-        [('R10', 10, 10), ('CN3', 200, 200)], named_regions=named)
+        [('U10', 10, 10), ('CN3', 200, 200)], named_regions=named)
     by_label = {r['ラベル']: r for r in rows}
-    assert by_label['R10']['領域'] == 'RACK1'
+    assert by_label['U10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
-    # R10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
+    # U10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
     # （候補パターン一致のみ。master_index=None時のDEF/CAN判定は
     # test_designator_def_can.py が検証する）
-    assert by_label['R10']['機器符号候補'] == 'CAN'
+    assert by_label['U10']['機器符号候補'] == 'CAN'
 
 
 # ---------------------------------------------------------------------------
@@ -330,15 +331,15 @@ def test_build_named_regions_numbers_multiple_unnamed():
 def test_build_region_output_counts_and_sorts():
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     named = [{'polygon': square, 'name': 'RACK1', 'id': 0, 'frame': 0, 'area_pct': 50.0}]
-    labels = [('R10', 10, 10), ('R10', 20, 20), ('CN3', 500, 500)]
+    labels = [('U10', 10, 10), ('U10', 20, 20), ('CN3', 500, 500)]
     out = ref_designator.build_region_output(labels, named, sort_value='desc')
-    assert [r['ラベル'] for r in out['rows']] == ['R10', 'CN3']   # desc
+    assert [r['ラベル'] for r in out['rows']] == ['U10', 'CN3']   # desc
     by_label = {r['ラベル']: r for r in out['rows']}
-    assert by_label['R10']['個数'] == 2
-    assert by_label['R10']['領域'] == 'RACK1'
+    assert by_label['U10']['個数'] == 2
+    assert by_label['U10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
     assert out['in_region_count'] == 2
-    assert out['region_label_counts'] == {'RACK1': {'R10': 2}}
+    assert out['region_label_counts'] == {'RACK1': {'U10': 2}}
     assert named[0]['label_count'] == 2   # named に label_count が付与される
 
 
@@ -348,11 +349,11 @@ def test_build_region_output_counts_and_sorts():
 
 def test_build_ref_designator_final():
     """'ref_designator_count'（v3.0.0新設）は '機器符号候補' が 'DEF'/'CAN'
-    （v3.10.0で3値化。旧'Y'に相当）の行の個数合計。R10/CN3 はいずれも
+    （v3.10.0で3値化。旧'Y'に相当）の行の個数合計。U10/CN3 はいずれも
     パターンに一致するため（かつ機器符号一覧には無いため'CAN'のまま）1+1=2。"""
     ref_data_by_file = {
         'a.dxf': {
-            'labels': [('R10', 0, 0), ('CN3', 1, 1)],
+            'labels': [('U10', 0, 0), ('CN3', 1, 1)],
             'total_in_frame': 5,
             'frames': 1,
             'warning': None,
@@ -365,7 +366,7 @@ def test_build_ref_designator_final():
     ref_final = ref_designator.build_ref_designator_final(ref_data_by_file, sort_value='asc')
     assert ref_final['a.dxf']['rows'] == [
         {'機器符号候補': 'CAN', 'ラベル': 'CN3', '個数': 1},
-        {'機器符号候補': 'CAN', 'ラベル': 'R10', '個数': 1},
+        {'機器符号候補': 'CAN', 'ラベル': 'U10', '個数': 1},
     ]
     assert ref_final['a.dxf']['total_in_frame'] == 5
     assert ref_final['a.dxf']['frames'] == 1
@@ -390,7 +391,7 @@ def test_build_ref_designator_region_results():
     「入力値をそのまま通す」という実装詳細を検証していただけだった）。"""
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     ref_data_by_file = {
-        'a.dxf': {'labels': [('R10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 2},
+        'a.dxf': {'labels': [('U10', 10, 10), ('CN3', 200, 200)], 'total_in_frame': 2},
     }
     region_analyses = {
         'a.dxf': {
@@ -407,19 +408,19 @@ def test_build_ref_designator_region_results():
         ref_data_by_file, region_analyses, name_selections_by_file, sort_value='asc')
     r = results['a.dxf']
     assert r['total_in_frame'] == 2   # len(labels)。除外指定が無いため不変
-    assert r['ref_designator_count'] == 2   # R10 + CN3、いずれもパターン一致
+    assert r['ref_designator_count'] == 2   # U10 + CN3、いずれもパターン一致
     assert r['subtitle'] == 'SUB-A'
     assert r['title'] == 'TITLE-A'
     assert r['drawing_number'] == 'EE1234-500-01A'
     by_label = {row['ラベル']: row for row in r['rows']}
-    assert by_label['R10']['領域'] == 'RACK1'
+    assert by_label['U10']['領域'] == 'RACK1'
     assert by_label['CN3']['領域'] == ''
-    # R10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN（上記参照）
-    assert by_label['R10']['機器符号候補'] == 'CAN'
+    # U10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN（上記参照）
+    assert by_label['U10']['機器符号候補'] == 'CAN'
     # region_rows: 領域一覧用の全領域データ（v3.0.0新設）
     assert len(r['region_rows']) == 1
     assert r['region_rows'][0]['name'] == 'RACK1'
-    assert r['region_rows'][0]['label_count'] == 1   # RACK1内はR10のみ
+    assert r['region_rows'][0]['label_count'] == 1   # RACK1内はU10のみ
     assert r['region_rows'][0]['ref_designator_count'] == 1
     # mark: 除外指定なし・RACK1は特定済みなので'特定'（v3.11.0新設）
     assert r['region_rows'][0]['mark'] == '特定'
@@ -488,10 +489,10 @@ def test_build_all_regions_summary_counts_labels_regardless_of_confirmation():
              'name_candidates': [(1.0, 'CM DRV')]},   # 未確定（候補のみ）
         ]
     }
-    labels = [('R10', 10, 10), ('NOTE ONE', 20, 20), ('CN3', 500, 500)]  # 500,500は矩形外
+    labels = [('U10', 10, 10), ('NOTE ONE', 20, 20), ('CN3', 500, 500)]  # 500,500は矩形外
     rows = ref_designator.build_all_regions_summary(analysis, {}, 'a.dxf', labels)
-    assert rows[0]['label_count'] == 2       # R10・NOTE ONE（矩形内の2件）
-    assert rows[0]['ref_designator_count'] == 1   # うち機器符号候補はR10のみ
+    assert rows[0]['label_count'] == 2       # U10・NOTE ONE（矩形内の2件）
+    assert rows[0]['ref_designator_count'] == 1   # うち機器符号候補はU10のみ
 
 
 def test_build_all_regions_summary_does_not_assign_unconfirmed_name_to_labels():
@@ -506,7 +507,7 @@ def test_build_all_regions_summary_does_not_assign_unconfirmed_name_to_labels():
              'name_candidates': [(1.0, 'CM DRV')]},
         ]
     }
-    labels = [('R10', 10, 10)]
+    labels = [('U10', 10, 10)]
     named, _ = ref_designator.build_named_regions(analysis, {}, 'a.dxf')
     rows = ref_designator.build_labeled_rows(labels, named_regions=named)
     assert rows[0]['領域'] == ''   # 未確定領域には割り当てられない
@@ -664,14 +665,14 @@ def test_is_ref_designator_label_flags_are_consistent_with_classify_labels(sampl
 # ---------------------------------------------------------------------------
 
 def _build_doc_with_invisible_entities():
-    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'R10'と、
+    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'U10'と、
     非表示(invisible=1)のラベル'Takahashi'・非表示の図面枠風LINE4本を配置する。"""
     doc = ezdxf.new()
     msp = doc.modelspace()
     for p1, p2 in [((0, 0), (200, 0)), ((200, 0), (200, 100)),
                    ((200, 100), (0, 100)), ((0, 100), (0, 0))]:
         msp.add_line(p1, p2, dxfattribs={'lineweight': 100, 'color': 7})
-    msp.add_text('R10', dxfattribs={'insert': (10, 10)})
+    msp.add_text('U10', dxfattribs={'insert': (10, 10)})
     invisible_text = msp.add_text('Takahashi', dxfattribs={'insert': (50, 50)})
     invisible_text.dxf.invisible = 1
     # 非表示の「図面枠風」LINE4本（可視の主枠とは別の場所、invisible=1）。
@@ -702,7 +703,7 @@ def test_invisible_label_excluded_from_collected_labels():
     result = _save_and_collect(_build_doc_with_invisible_entities())
     assert result['error'] is None
     texts = {t for (t, _x, _y) in result['labels']}
-    assert 'R10' in texts
+    assert 'U10' in texts
     assert 'Takahashi' not in texts
 
 
@@ -867,7 +868,7 @@ def test_invisible_excluded_from_extract_labels_direct_call():
 
 
 def _build_doc_with_hidden_layer_entities():
-    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'R10'（レイヤー'0'）と、
+    """合成DXF: 図面枠(0,0)-(200,100)の中に、可視ラベル'U10'（レイヤー'0'）と、
     off+frozenの専用レイヤーに置かれたラベル'OldDesigner'を配置する
     （2026-09-16、ユーザー報告: entity自身のinvisible属性ではなく、旧
     タイトルブロックを専用レイヤーごとoff/frozenにして非表示にする運用が
@@ -877,7 +878,7 @@ def _build_doc_with_hidden_layer_entities():
     for p1, p2 in [((0, 0), (200, 0)), ((200, 0), (200, 100)),
                    ((200, 100), (0, 100)), ((0, 100), (0, 0))]:
         msp.add_line(p1, p2, dxfattribs={'lineweight': 100, 'color': 7})
-    msp.add_text('R10', dxfattribs={'insert': (10, 10)})
+    msp.add_text('U10', dxfattribs={'insert': (10, 10)})
 
     hidden_layer_name = 'OLD_TITLEBLOCK_LAYER'
     doc.layers.add(hidden_layer_name)
@@ -895,7 +896,7 @@ def test_layer_off_frozen_label_excluded_from_collected_labels():
     result = _save_and_collect(_build_doc_with_hidden_layer_entities())
     assert result['error'] is None
     texts = {t for (t, _x, _y) in result['labels']}
-    assert 'R10' in texts
+    assert 'U10' in texts
     assert 'OldDesigner' not in texts
 
 
@@ -1163,3 +1164,12 @@ def test_formerly_excluded_words_now_appear_when_outside_info_frame():
         path, frame_lineweight=100, original_filename='EE6868-500-01C.dxf')
     all_labels = {t for t, _x, _y in data['labels']}
     assert 'GND' in all_labels
+
+
+@pytest.mark.parametrize('label', ['R10', 'R1', 'D4', 'B12', 'N24', 'P24', 'X05'])
+def test_classify_labels_drops_single_letter_plus_digits_except_aclquf(label):
+    """2026-10-10（ユーザー決定）: A・C・L・Q・U・F 以外の英大文字1字+数字1〜2桁（`R10`・`N24` 等）は
+    機器符号候補から外す（`label_classifier.OTHER_PATTERNS`）。以前は `test_classify_labels_keeps_all_
+    pattern_matches` が `D4`・`B12` を、各テストの固定ラベルが `R10` を候補として使っていた
+    （固定ラベルは `U10` に置き換えた）。"""
+    assert ref_designator.classify_labels([(label, 0.0, 0.0)]) == []

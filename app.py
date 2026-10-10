@@ -11,6 +11,7 @@ model_path = os.path.join(current_dir, 'model')
 sys.path.insert(0, model_path)
 
 from model.region_detector import collect_unique_region_candidate_names
+from model.ref_designator import unnamed_region_labels
 from model.excel_output import (
     create_ref_designator_excel_output, create_region_excel_output,
 )
@@ -424,8 +425,14 @@ def _render_global_region_names_section(locked):
     if 'region_analyses' not in st.session_state:
         return
     analyses = st.session_state['region_analyses']
+    # 名称のない領域も「領域一覧」に出す（表示名は ref_designator.unnamed_region_label()。
+    # 「特定」は既定ON。同じ表示名は1行にまとめる）。
+    unnamed = list(dict.fromkeys(
+        label for analysis in analyses.values()
+        for label in unnamed_region_labels(analysis).values()))
     region_selection.render_global_region_names_section(
-        collect_unique_region_candidate_names(analyses), locked, allow_exclude=True)
+        collect_unique_region_candidate_names(analyses) + unnamed, locked,
+        allow_exclude=True, default_on_names=unnamed)
 
 
 def _render_region_confirmation_section(enable_region_detection, locked):

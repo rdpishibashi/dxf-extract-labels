@@ -698,36 +698,33 @@ def test_level_pollution_fallback_recovers_frame():
     # 回復した2枠目（frame=1）の領域: 指定9ハンドルの線分と一致する8角の凹ポリゴン
     rec = sysif_by_frame[1]
     assert round(rec['area_pct'], 0) == 74.0
-    assert rec['corners'] == [
+    # face_snap=0.5（2026-10-10〜）では1パス目でこの領域が閉じるため、境界線のレベルは
+    # クラスタ平均（y=122.25）のまま採用される。頂点の並び・レベルの0.3以内の差は不問。
+    expected = [
         (462.95, 12.63), (462.95, 280.63), (802.84, 280.63), (802.84, 224.99),
         (836.89, 224.99), (836.89, 122.0), (659.94, 122.0), (659.94, 12.63),
     ]
+    assert len(rec['corners']) == len(expected)
+    for ex, ey in expected:
+        assert any(abs(ex - cx) < 0.3 and abs(ey - cy) < 0.3 for cx, cy in rec['corners'])
 
 
 @pytest.mark.skipif(not os.path.exists(_find_sample('EE6333-610-07A.dxf')),
                     reason='サンプル DXF が無い')
 def test_level_pollution_fallback_not_triggered_on_schematic():
-    """全枠に閾値超え領域がない図面（電源基板の回路図）で、4パス目のゲート条件なし
-    フォールバックが誤検出する ACCESSORY CABLE 65% / DC19A4 36%/30% を出力しないこと。
+    """全枠に閾値超え領域がない図面（電源基板の回路図）で、4パス目のフォールバックが
+    DC19A4 36%/30% を誤検出しないこと。
 
-    `EE6333-610-07A.dxf` は PROCESS POWER SUPPLY の回路図で、lw=25/color=2 の
-    大きな枠（基板外形・ケーブル系統）はあるが機能領域（ラック/ボックス）ではない。
-    ゲート条件なしのフォールバックはここで ACCESSORY CABLE 65% / DC19A4 36%/30% を
-    誤検出していた。「他の枠に閾値超え領域がある」条件により発動せず、この誤検出は
-    防がれる。
-
-    area_ratio の既定値が15%→5%（v1.9.0）に変更されたことで、この図面でも
-    'SB-1A(R3R)'（6.31%）・'MPD RACK3'（5.97%）という小さな正当な領域は検出される
-    ようになった（従来は15%閾値未満で非表示だっただけで、本来存在する領域）。
-    このテストが保証したい本質（ACCESSORY CABLE等の大きな誤検出が出ないこと）は
-    影響を受けない。"""
+    `EE6333-610-07A.dxf` は PROCESS POWER SUPPLY の回路図。`face_snap=0.5`
+    （2026-10-10、ユーザー決定）では、枠面積の65%を占める領域（旧称
+    ACCESSORY CABLE）が検出される。この65%領域は抽出が必要な領域であり
+    （ユーザー確認済み）、誤検出ではない。名称候補は領域外のラベルを拾う予備ルール
+    （Tier3）の廃止により空になる。DC19A4 の誤検出が出ないことだけを守る。"""
     a = analyze_dxf_regions(_find_sample('EE6333-610-07A.dxf'))
     assert a['error'] is None
     names = [r['default_name'] for r in a['regions']]
-    assert 'ACCESSORY CABLE' not in names
     assert 'DC19A4' not in names
-    for r in a['regions']:
-        assert r['area_pct'] < 10.0
+    assert any(60.0 < r['area_pct'] < 70.0 for r in a['regions'])
 
 
 @pytest.mark.skipif(not os.path.exists(ZENKAKU), reason='サンプル DXF が無い')
@@ -1002,19 +999,19 @@ def test_merged_sibling_rectangles_split_by_local_resplit():
 
 @pytest.mark.skipif(not os.path.exists(NEAR_MISS_SB1A_R3R), reason='サンプル DXF が無い')
 def test_local_resplit_does_not_merge_unrelated_near_miss_endpoints():
-    """`EE6333-610-07A.dxf` は境界線ではない部品線の端点同士が距離0.10〜0.31の
-    範囲に多数存在し、コネクティビティ判定のグローバルな緩和（face_snap拡大・
-    レベル平均化方式変更）を試みた際に、無関係な線同士が誤結合されて枠面積の
-    65%を占める巨大な誤合成領域が生成される回帰を引き起こした
-    （2026-07-15 発見）。局所修復方式ではこの回帰が起きず、`SB-1A(R3R)`
-    （枠面積比6%程度の小さな矩形）が正しく検出されることを確認する。"""
+    """`EE6333-610-07A.dxf` で、枠面積の65%の領域と約6%の小領域（旧 `SB-1A(R3R)`）の
+    2つが検出されること。
+
+    この図面は境界線ではない部品線の端点同士が距離0.10〜0.31に多数存在し、2026-07-15
+    には face_snap=0.1 を保つ根拠だった（65%の領域は誤合成とみなしていた）。
+    2026-10-10 のユーザー決定（face_snap=0.5）で、65%の領域は抽出が必要な正しい領域
+    として扱う。それ以外の巨大な誤合成領域（70%以上）が出ないことを守る。"""
     a = analyze_dxf_regions(NEAR_MISS_SB1A_R3R)
     assert a['error'] is None
-    names = [r['default_name'] for r in a['regions']]
-    assert 'SB-1A(R3R)' in names
-    for r in a['regions']:
-        pct = 100.0 * r['area'] / a['frame_area']
-        assert pct < 50.0, f"{r['default_name']!r} の面積比が異常に大きい: {pct:.1f}%（誤結合の疑い）"
+    pcts = [100.0 * r['area'] / a['frame_area'] for r in a['regions']]
+    assert any(60.0 < p < 70.0 for p in pcts)
+    assert any(5.0 <= p < 10.0 for p in pcts)
+    assert all(p < 70.0 for p in pcts), f"面積比が異常に大きい領域がある: {pcts}"
 
 
 CNPG01_BOUNDARY = _find_sample('EE6491-039-21A.dxf')  # CNPG01が領域境界線ちょうどに位置する

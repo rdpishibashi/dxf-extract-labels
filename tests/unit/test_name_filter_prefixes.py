@@ -44,7 +44,9 @@ def _build_doc(small_label, small_bbox=(10, 10, 30, 30), tiny_bbox=None, tiny_la
     _add_rect(msp, 0, 0, 200, 100, BOUNDARY_LW, BOUNDARY_COLOR)
     x0, y0, x1, y1 = small_bbox
     _add_rect(msp, x0, y0, x1, y1, BOUNDARY_LW, BOUNDARY_COLOR)
-    msp.add_text(small_label, dxfattribs={'insert': (x0 + 1, y1 + 1)})
+    # 名称ラベルは領域の内側（上辺から2）に置く。領域外のラベルを拾う予備ルール
+    # （Tier3）は2026-10-10に廃止したため、外側に置くと候補にならない。
+    msp.add_text(small_label, dxfattribs={'insert': (x0 + 1, y1 - 2)})
     if tiny_bbox:
         tx0, ty0, tx1, ty1 = tiny_bbox
         _add_rect(msp, tx0, ty0, tx1, ty1, BOUNDARY_LW, BOUNDARY_COLOR)

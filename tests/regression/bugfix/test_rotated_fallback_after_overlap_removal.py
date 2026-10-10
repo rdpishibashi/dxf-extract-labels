@@ -41,3 +41,13 @@ def test_rack_within_15_of_horizontal_edge_is_a_candidate():
     a = analyze_dxf_regions(_sample('EE6333-610-07A.dxf'))
     big = next(r for r in a['regions'] if 65 < r['area_pct'] < 66)
     assert [t for _d, t in big['name_candidates']] == ['RACK']
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(_sample('EE6333-610-07A.dxf') is None, reason='サンプル DXF が無い')
+def test_dc19a4_is_a_region_name_candidate_in_07a():
+    """「英字+数字+英字+数字」（`DC19A4`）は機器符号候補ではなく領域名候補（2026-10-10、
+    `label_classifier.NON_DESIGNATOR_PATTERNS`。戻すときはそのタプルを空にする）。"""
+    a = analyze_dxf_regions(_sample('EE6333-610-07A.dxf'))
+    r = next(r for r in a['regions'] if 29 < r['area_pct'] < 30)
+    assert 'DC19A4' in [t for _d, t in r['name_candidates']]

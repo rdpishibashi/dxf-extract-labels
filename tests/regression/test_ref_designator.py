@@ -129,7 +129,8 @@ def test_classify_labels_judges_before_parenthesis_but_outputs_original():
     'MC001 (-000-05)2/2',
     # ' **' 区切り（2026-09-11 ユーザー指示。実データ表記
     # '型式 ** (正式な型番)'）。
-    'FL1F1 ** (FL1F-H12RCE)',
+    # ('FL1F1 ** (FL1F-H12RCE)' は2026-10-10に「英字+数字+英字+数字」が領域名候補になったため
+    #  機器符号候補ではなくなった。test_label_classifier.py の NON_DESIGNATOR_PATTERNS 参照)
     'SX03 ** (NX-SID800)',
     # 'W No.' 前方一致（2026-09-11 ユーザー指示）。実データでピリオド直後の
     # スペース有無・末尾説明文・数字4桁連続を含む型番など表記ゆれがある。

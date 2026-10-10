@@ -31,7 +31,7 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     ('RACK1', DESIGNATOR), ('ECATIN2', DESIGNATOR), ('X14A', DESIGNATOR),
     ('R10(2.2K)', DESIGNATOR), ('R10(1234)', DESIGNATOR),
     ('CP004 (10A)', DESIGNATOR), ('CP004(10A)', DESIGNATOR),
-    ('SX01 (NX-SIH400)', DESIGNATOR), ('ＦＬ１Ｆ① ＊＊ （ＦＬ１Ｆ－Ｈ１２ＲＣＥ）', DESIGNATOR),
+    ('SX01 (NX-SIH400)', DESIGNATOR),
     ('AB12-34', DESIGNATOR), ('W No.M06004', DESIGNATOR), ('W No.M06008(CC050VZRB)', DESIGNATOR),
     # 3. 英字のみ
     ('CTC', REGION_NAME),                                     # unit_names
@@ -40,6 +40,12 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     ('SYSTEM', OTHER), ('WHITE', OTHER), ('TITLE', OTHER),
     ('CNESCD', DESIGNATOR), ('CNMDSBD', DESIGNATOR), ('MCBHPB', DESIGNATOR),  # 追加機器符号
     ('MFFX', REGION_NAME), ('FB', REGION_NAME), ('DWGNO', REGION_NAME), ('KURIHARA', REGION_NAME),
+    # 「英字+数字+英字+数字」は領域名候補（NON_DESIGNATOR_PATTERNS、2026-10-10）。ただし CN.*・DIO.* 等の
+    # 追加機器符号に一致するものは機器符号のまま
+    ('DC19A4', REGION_NAME), ('ＤＣ２１Ａ４', REGION_NAME), ('P24F5', REGION_NAME),
+    ('SX0201T1', REGION_NAME), ('XLS1A51', REGION_NAME),
+    ('ＦＬ１Ｆ① ＊＊ （ＦＬ１Ｆ－Ｈ１２ＲＣＥ）', REGION_NAME),  # FL1F1 の形（以前は機器符号）
+    ('CN200CBH1', DESIGNATOR), ('DIO0A4', DESIGNATOR), ('CIR0C4', DESIGNATOR),
     # 「符号 (型式)」でない括弧付き: 括弧より前が英字のみの除外語なら OTHER
     ('GND(M4)', OTHER),
     # 4. 複数語・記号入り

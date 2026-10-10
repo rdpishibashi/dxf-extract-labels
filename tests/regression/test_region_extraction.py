@@ -723,7 +723,9 @@ def test_level_pollution_fallback_not_triggered_on_schematic():
     a = analyze_dxf_regions(_find_sample('EE6333-610-07A.dxf'))
     assert a['error'] is None
     names = [r['default_name'] for r in a['regions']]
-    assert 'DC19A4' not in names
+    # `DC19A4` は2026-10-10 に領域名候補になった（NON_DESIGNATOR_PATTERNS。以前は誤検出の
+    # 名称として出ないことを守っていた）。
+    assert 'DC19A4' in names
     assert any(60.0 < r['area_pct'] < 70.0 for r in a['regions'])
 
 

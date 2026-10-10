@@ -31,7 +31,14 @@ def test_default_region_cfg_equals_default_region_config():
     """config.py が既定値のとき、app._build_region_cfg() の返り値は
     DEFAULT_REGION_CONFIG と完全に等価（UI撤去による検出結果の変化がないことの担保）。"""
     from app import _build_region_cfg
-    assert _build_region_cfg() == DEFAULT_REGION_CONFIG
+    import config
+    cfg = dict(_build_region_cfg())
+    # `NAME_EXCLUDE_TERMS` は config.py で意図的に DEFAULT_REGION_CONFIG から拡張している
+    # （2026-10-10 ユーザーが ACCESSORY CABLE / FLAT CABLE を追加）。それ以外のキーは完全に等価。
+    assert cfg.pop('name_exclude_terms') == tuple(config.region_detection_config.NAME_EXCLUDE_TERMS)
+    expected = dict(DEFAULT_REGION_CONFIG)
+    expected.pop('name_exclude_terms')
+    assert cfg == expected
 
 
 def test_config_module_does_not_define_extraction_config():

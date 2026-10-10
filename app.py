@@ -57,16 +57,14 @@ def _resolve_master_index():
     digest_path = os.path.join(current_dir, 'assets', 'designator_digests.txt')
 
     if not secret:
-        return None, ("機器符号一覧が未設定のため DEF 判定は行われていません"
-                       "（CAN と空欄のみ）")
+        return None, ("機器符号一覧が未設定のため DEF(defined) 判定は行われていません")
     if not os.path.isfile(digest_path):
         return None, ("機器符号一覧のダイジェストファイルが見つからないため "
-                       "DEF 判定は行われていません（CAN と空欄のみ）")
+                       "DEF(defined) 判定は行われていません")
 
     index = designator_master.load_index(digest_path, secret)
     if index is None:
-        return None, ("鍵が機器符号一覧の生成時と異なるため DEF 判定は行われていません"
-                       "（CAN と空欄のみ）")
+        return None, ("鍵が機器符号一覧の生成時と異なるため DEF(defined) 判定は行われていません")
     return index, f"機器符号一覧: {len(index)}件を読み込み済み（DEF判定あり）"
 
 st.set_page_config(
@@ -297,10 +295,8 @@ def _render_options_section(locked):
             value=False,
             key='enable_region_detection',
             disabled=locked,
-            help="ONにすると「領域を検出」ボタン「領域一覧」「領域の確認」"
+            help="ONにすると「領域を検出」ボタン、「領域一覧」と「領域の確認」"
                  "セクションが表示され、矩形領域付きでラベルを抽出できます。"
-                 "OFFにすると通常モードになります。"
-                 "（検出パラメータは config.py の region_detection_config で設定します）"
         )
         if not enable_region_detection:
             # OFF中に前回検出済みの領域データ（region_analyses）が残っていると、抽出時に
@@ -320,12 +316,12 @@ def _render_options_section(locked):
             "端子一覧を抽出",
             value=False,
             disabled=locked,
-            help="タイトルが「UNIT内結線図」の図面を対象に、TBで始まり英大文字・数字が"
-                 "続く端子台ラベルに対応する矩形（LINE+CIRCLEで構成）を検出し、矩形内の"
-                 "端子番号を「TB List」シート（抽出ラベル一覧シート直後）に出力します。"
-                 "「端子台」でユニークをとり、同じ番号が複数ある場合は件数をカッコで"
+            help="タイトルが「UNIT内結線図」の図面を対象に、TBで始まる"
+                 "端子台ラベルに対応する矩形構成を検出し、矩形内の"
+                 "端子番号を「TB List」シートに出力します。"
+                 "「端子台」ごとに同じ番号が複数ある場合は件数をカッコで"
                  "表示します（例: 7(2)）。\n\n"
-                 "サブタイトルが「TB COMPONENT」の図面（端子台の全端子番号一覧ページ）"
+                 "「TB COMPONENT」の図面（端子台の全端子番号一覧ページ）"
                  "は対象外です。"
         )
 
@@ -341,7 +337,7 @@ def _render_options_section(locked):
                  "抽出後に表示される「図面種別判定結果」セクションで、どの"
                  "図面を結線図・組立図としたかを確認・修正できます。自動判定"
                  "が確定できない場合（組立図が0件・複数件、結線図が0件等）は、"
-                 "比較シート無しでラベル抽出自体は完了します。"
+                 "比較シート無しでラベル抽出処理は進めます。"
         )
 
     with col_right:

@@ -46,3 +46,20 @@ def test_vertical_candidates_take_precedence_and_fallback_is_skipped():
     cands, tiers = region_name_candidates(
         POLY, labels, rotated_edge_roles=ROLES, horizontal_fallback=True)
     assert [t for _d, t in cands] == ['SIDE NAME']
+
+
+def test_horizontal_max_dist_extends_the_search_distance_only_for_the_fallback():
+    far = [('RACK', 50.0, 12.0)]  # 下辺の内側12（通常の上限10を超える）
+    cands, _ = region_name_candidates(
+        POLY, far, rotated_edge_roles=ROLES, horizontal_fallback=True)
+    assert cands == []
+    cands, tiers = region_name_candidates(
+        POLY, far, rotated_edge_roles=ROLES, horizontal_fallback=True, horizontal_max_dist=15)
+    assert [t for _d, t in cands] == ['RACK'] and tiers['RACK'] == 3
+
+
+def test_horizontal_only_skips_vertical_edge_candidates():
+    labels = [('SIDE NAME', 97.0, 25.0), ('MPD RACK3', 50.0, 3.0)]
+    cands, _ = region_name_candidates(
+        POLY, labels, rotated_edge_roles=ROLES, horizontal_fallback=True, horizontal_only=True)
+    assert [t for _d, t in cands] == ['MPD RACK3']

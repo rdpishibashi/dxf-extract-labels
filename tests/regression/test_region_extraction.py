@@ -775,8 +775,9 @@ def test_lshape_notch_bottom_edge_label_is_candidate():
     assert 'SYSTEM I/F BOX' in by_name
     lshape = by_name['SYSTEM I/F BOX']
     assert lshape['area_pct'] > 60
-    # FLAT CABLE は第2候補として残る（ユーザーがチェックボックスで選択可能）
-    assert 'FLAT CABLE' in [t for _d, t in lshape['name_candidates']]
+    # 2026-10-10: 'FLAT CABLE'・'ACCESSORY CABLE' は除外語（`name_exclude_terms`、config.py の
+    # NAME_EXCLUDE_TERMS と同値）のため、以前は第2候補だった FLAT CABLE も候補に出ない。
+    assert 'FLAT CABLE' not in [t for _d, t in lshape['name_candidates']]
     # ネストされた HEATER CTRL B.D 領域の保持（従来挙動の維持）
     assert 'HEATER CTRL B.D-5A(HCBD)' in by_name
     assert len(a['regions']) == 2

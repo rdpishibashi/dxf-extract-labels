@@ -12,8 +12,8 @@
 除外パターン・追加パターン・確定パターン・「未確定ラベル」UIでのレビュー・
 連動採用・判断ログは廃止した。これらのパターン判定ロジック自体は
 `region_detector.py` の領域名候補フィルタが引き続き利用しているため
-`ref_designator_patterns.py` に残っており、対応する回帰テストは
-`tests/regression/test_ref_designator_patterns.py` にある。
+`label_classifier.py` に残っており、対応する回帰テストは
+`tests/regression/test_label_classifier.py` にある。
 
 図面情報枠（タイトルブロック）の除外は、旧来の構造的除外（図面枠線を
 直接の子に持つ「フォーマットブロック」由来のテキストを丸ごと除外）から、
@@ -73,17 +73,28 @@ def _find_sample(name):
 
 @pytest.mark.parametrize('label', [
     'R10', 'CN3', 'D4', 'CN1', 'A1', 'B12',       # 英字+数字（除外なしなのでA/Bも通る）
-    'FB', 'CNCNT', 'MSS',                          # 英字のみ
+    'CNCNT',                                       # 英字のみ（追加機器符号 CN.* に一致）
     'CN-IF2-1', 'AAC1B4-07', 'AB-CD12',            # 英字-英字+数字(+ハイフン任意)
-    'R10(2.2K)', 'FB()', 'MSS(MOTOR)', 'U23B(DAC)',  # 括弧付き（括弧前で判定）
-    'GND', 'POWER', 'MOTOR', 'TITLE', 'DATE',      # 旧除外パターン該当語（新仕様では候補になる）
-    'AWG14', 'RACK1', 'W1234', 'XRST',             # 旧除外パターン該当語（同上）
+    'R10(2.2K)', 'U23B(DAC)',                      # 括弧付き（括弧前で判定）
+    'AWG14', 'RACK1', 'W1234',                     # 旧除外パターン該当語（英数字の符号は候補のまま）
 ])
 def test_classify_labels_keeps_all_pattern_matches(label):
-    """3候補パターンに一致するものはすべて出力される（除外パターンは廃止）。"""
+    """英数字を含む候補パターンに一致するものはすべて出力される（除外パターンは廃止）。"""
     labels = [(label, 0.0, 0.0)]
     result = ref_designator.classify_labels(labels)
     assert result == labels
+
+
+@pytest.mark.parametrize('label', [
+    'FB', 'MSS', 'FB()', 'MSS(MOTOR)', 'AB',       # 英字のみ（領域名候補になる語）
+    'GND', 'POWER', 'MOTOR', 'TITLE', 'DATE', 'XRST',  # 英字のみの除外語
+])
+def test_classify_labels_drops_letters_only_words(label):
+    """2026-10-10（ユーザー決定）: 英字のみの語は機器符号候補から外す
+    （`label_classifier.classify_label()` の3分類。2026-09-14 の「GND・SYSTEM等も
+    候補にする」決定を置き換えた）。以前は `test_classify_labels_keeps_all_pattern_matches`
+    が `FB`・`GND` 等も全件出力されることを守っていた。"""
+    assert ref_designator.classify_labels([(label, 0.0, 0.0)]) == []
 
 
 @pytest.mark.parametrize('label', [
@@ -164,7 +175,7 @@ def test_is_ref_designator_label_excludes_single_uppercase_letter(label):
     """英大文字1字だけの文字列（図形枠外の位置記号）は機器符号候補ではない
     （2026-09-14ユーザー指摘で発覚した回帰の修正）。
 
-    `ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES` の
+    `label_classifier.EXCLUSION_REGEX_CATEGORIES` の
     `single_letter_position`（`^[A-Z]$`）は元々この除外を担っていたが、
     v2.0.0で`is_ref_designator_label()`が除外パターンを一切使わない方式に
     簡素化された際、この1件だけ意図せず失われていた
@@ -176,23 +187,19 @@ def test_is_ref_designator_label_excludes_single_uppercase_letter(label):
     assert ref_designator.is_ref_designator_label(label) is False
 
 
-@pytest.mark.parametrize('label', ['AB', 'FB', 'CNCNT', 'R1', 'C1'])
+@pytest.mark.parametrize('label', ['CNCNT', 'R1', 'C1'])
 def test_is_ref_designator_label_still_accepts_multi_char_labels(label):
     """単一英字の除外追加が、2文字以上の英字繰返し（`AB`等）・英字+数字
     （`R1`等）を誤って除外していないことを確認する（回帰防止）。"""
     assert ref_designator.is_ref_designator_label(label) is True
 
 
-def test_region_name_candidate_filter_unaffected_by_single_letter_fix():
-    """`is_ref_designator_label()`への単一英字除外の追加が、
-    `region_detector.py`の領域名候補フィルタが使う
-    `classify_judgment_detailed()`（`PATTERN_CATEGORIES`を直接参照する別経路）
-    には影響しないことを固定する（`_SINGLE_LETTER_PATTERN`は
-    `is_ref_designator_label()`内のみのローカルな例外であり、
-    `ref_designator_patterns.PATTERN_CATEGORIES`自体は変更していないため）。"""
-    from model.ref_designator_patterns import classify_judgment_detailed
-    status, cat = classify_judgment_detailed('H', 'H')
-    assert (status, cat) == ('excluded', 'single_letter_position')
+def test_single_letter_is_neither_designator_nor_region_name():
+    """単一英字（`H`・`V`）は機器符号候補でも領域名候補でもない（3分類の OTHER）。
+    旧: 領域名フィルタ側の `single_letter_position` 除外が残っていることを固定していた。"""
+    from model.label_classifier import classify_label, OTHER
+    assert classify_label('H') == OTHER
+    assert classify_label('V') == OTHER
 
 
 @pytest.mark.parametrize('label', ['N24-', 'CN1-', 'R10-', 'L1+', 'V+', 'V-'])
@@ -200,7 +207,7 @@ def test_is_ref_designator_label_excludes_trailing_sign(label):
     """末尾が "+"/"-" で終わる文字列（電源端子表記、例 `N24-`・`L1+`）は
     機器符号候補ではない（2026-09-14ユーザー指摘で発覚した回帰の修正）。
 
-    `ref_designator_patterns.EXCLUSION_REGEX_CATEGORIES` の
+    `label_classifier.EXCLUSION_REGEX_CATEGORIES` の
     `trailing_sign`（`.*[+-]$`）は元々この除外を担っていたが、
     v2.0.0で`is_ref_designator_label()`が除外パターンを一切使わない方式に
     簡素化された際、この1件だけ意図せず失われていた（`letters_digits_any`
@@ -220,12 +227,11 @@ def test_is_ref_designator_label_excludes_trailing_sign(label):
 
 
 @pytest.mark.parametrize('label', ['GND', 'SYSTEM', 'MOTOR', 'OVERHEAT', 'WHITE', 'RED'])
-def test_is_ref_designator_label_still_accepts_common_nouns(label):
+def test_is_ref_designator_label_rejects_common_nouns(label):
     """普通名詞・回路説明語・ケーブル色（`GND`・`SYSTEM`・`MOTOR`・`WHITE`等）は
-    引き続き機器符号候補として扱われることを固定する（v2.0.0の明示的な方針
-    〈EXCLUSION_EXACT_CATEGORIESを判定に使わない〉を維持している回帰防止、
-    2026-09-14ユーザー確認）。"""
-    assert ref_designator.is_ref_designator_label(label) is True
+    機器符号候補ではない（2026-10-10 ユーザー決定。2026-09-14 の「候補として扱う」
+    決定を置き換えた。これらは領域名候補にも使わない＝3分類の OTHER）。"""
+    assert ref_designator.is_ref_designator_label(label) is False
 
 
 # ---------------------------------------------------------------------------

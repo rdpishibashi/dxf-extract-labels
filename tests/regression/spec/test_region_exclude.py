@@ -244,13 +244,13 @@ def test_build_all_regions_summary_label_count_uses_pre_exclusion_labels():
 # ---------------------------------------------------------------------------
 
 def _region_results_fixture(excluded_names=frozenset()):
-    """AWG20(BL)領域(ラベルCB001)とRACK1領域(ラベルR10)を持つ合成データ。
+    """AWG20(BL)領域(ラベルCB001)とRACK1領域(ラベルU10)を持つ合成データ。
     2領域は重ならない。"""
     square_a = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
     square_b = [(50.0, 50.0), (60.0, 50.0), (60.0, 60.0), (50.0, 60.0)]
     ref_data_by_file = {
         'a.dxf': {
-            'labels': [('CB001', 5.0, 5.0), ('R10', 55.0, 55.0)],
+            'labels': [('CB001', 5.0, 5.0), ('U10', 55.0, 55.0)],
             'total_in_frame': 2,
         },
     }
@@ -278,7 +278,7 @@ def test_region_results_no_exclusion_matches_legacy_output():
     r = _region_results_fixture()['a.dxf']
     assert r['total_in_frame'] == 2
     labels_in_rows = {row['ラベル'] for row in r['rows']}
-    assert labels_in_rows == {'CB001', 'R10'}
+    assert labels_in_rows == {'CB001', 'U10'}
     assert r['ref_designator_count'] == 2  # 両方CAN
 
 
@@ -287,7 +287,7 @@ def test_region_results_excluded_region_removes_its_labels():
     total_in_frame・ref_designator_countも減る。"""
     r = _region_results_fixture(excluded_names={'AWG20(BL)'})['a.dxf']
     labels_in_rows = {row['ラベル'] for row in r['rows']}
-    assert labels_in_rows == {'R10'}
+    assert labels_in_rows == {'U10'}
     assert r['total_in_frame'] == 1          # 2 -> 1（CB001除外）
     assert r['ref_designator_count'] == 1    # 2 -> 1
 
@@ -307,7 +307,7 @@ def test_region_results_specified_region_unaffected_by_other_exclusion():
     影響を受けない。"""
     r = _region_results_fixture(excluded_names={'AWG20(BL)'})['a.dxf']
     by_label = {row['ラベル']: row for row in r['rows']}
-    assert by_label['R10']['領域'] == 'RACK1'
+    assert by_label['U10']['領域'] == 'RACK1'
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +325,7 @@ def test_excel_output_reflects_exclusion_end_to_end():
     file_ws = wb['a']
     file_labels = {row[1].value for row in file_ws.iter_rows(min_row=2)}
     assert 'CB001' not in file_labels
-    assert 'R10' in file_labels
+    assert 'U10' in file_labels
 
     total_ws = wb['抽出ラベル一覧']
     total_labels = {row[1].value for row in total_ws.iter_rows(min_row=2)}

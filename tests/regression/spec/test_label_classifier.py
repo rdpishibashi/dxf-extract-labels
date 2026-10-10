@@ -27,12 +27,19 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     # 1. OTHER（単一英字・末尾符号・空）
     ('H', OTHER), ('V', OTHER), ('N24-', OTHER), ('L1+', OTHER), ('', OTHER),
     # 2. DESIGNATOR（英字のみ以外の候補パターン。括弧・型式は無視して判定）
-    ('R10', DESIGNATOR), ('CN-IF2-1', DESIGNATOR), ('THM01', DESIGNATOR),
+    ('U10', DESIGNATOR), ('CN-IF2-1', DESIGNATOR), ('THM01', DESIGNATOR),
     ('RACK1', DESIGNATOR), ('ECATIN2', DESIGNATOR), ('X14A', DESIGNATOR),
-    ('R10(2.2K)', DESIGNATOR), ('R10(1234)', DESIGNATOR),
+    ('U10(2.2K)', DESIGNATOR), ('U10(1234)', DESIGNATOR),
     ('CP004 (10A)', DESIGNATOR), ('CP004(10A)', DESIGNATOR),
     ('SX01 (NX-SIH400)', DESIGNATOR),
     ('AB12-34', DESIGNATOR), ('W No.M06004', DESIGNATOR), ('W No.M06008(CC050VZRB)', DESIGNATOR),
+    # 1a. OTHER_PATTERNS: A・C・L・Q・U・F 以外の英大文字1字+数字1〜2桁は機器符号候補にも領域名候補にもしない
+    # （2026-10-10 ユーザー指定。戻すときは OTHER_PATTERNS を空にする）
+    ('R10', OTHER), ('R1', OTHER), ('N24', OTHER), ('P24', OTHER), ('D4', OTHER),
+    ('X05', OTHER), ('Y02', OTHER), ('M10', OTHER), ('B12', OTHER), ('R10(2.2K)', OTHER),
+    ('A10', DESIGNATOR), ('C1', DESIGNATOR), ('L5', DESIGNATOR), ('Q1', DESIGNATOR),
+    ('U23', DESIGNATOR), ('F7', DESIGNATOR),
+    ('R100', DESIGNATOR), ('R10A', DESIGNATOR),   # 3桁・後ろに英字は対象外
     # 3. 英字のみ
     ('CTC', REGION_NAME),                                     # unit_names
     ('GND', OTHER), ('AGND', OTHER), ('MOTOR', OTHER), ('OPEN', OTHER),
@@ -56,7 +63,7 @@ def test_classify_label(label, expected):
     assert classify_label(label) == expected
 
 
-@pytest.mark.parametrize('label', ['R10', 'CNESCD', 'CP004 (10A)'])
+@pytest.mark.parametrize('label', ['U10', 'CNESCD', 'CP004 (10A)'])
 def test_excel_candidate_column_follows_designator_class(label):
     assert is_ref_designator_label(label) is True
 

@@ -71,14 +71,15 @@ def test_no_regions_shows_new_message():
     assert not any('詳細設定' in t for t in info_texts)
 
 
-def test_regions_without_name_candidates_also_shows_message():
-    """検出領域自体は存在するが、いずれも名称候補（name_candidates）が
-    1件も無い場合も、同じメッセージが表示される（`collect_unique_region_
-    candidate_names()` の戻り値が空になる条件はこのケースも含むため）。"""
+def test_regions_without_name_candidates_are_listed_not_reported_as_missing():
+    """検出領域は存在するが、いずれも名称候補が1件も無い場合（2026-10-10 変更）:
+    名称のない領域も「領域一覧」に行として出すため、「検出されませんでした」の
+    メッセージは出さず、「領域一覧」の見出しを表示する。
+    （以前は同じメッセージを出していたが、領域は検出されているので不正確だった。）"""
     at = _run({'a.dxf': [{'id': 0, 'name_candidates': []}]})
     assert at.exception.len == 0
-    info_texts = [i.value for i in at.info]
-    assert info_texts == ['一定面積の領域は検出されませんでした。']
+    assert [i.value for i in at.info] == []
+    assert any(sh.value == '領域一覧' for sh in at.subheader)
 
 
 def test_no_message_when_region_analyses_absent():

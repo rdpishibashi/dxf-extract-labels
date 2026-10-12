@@ -3,7 +3,10 @@
 **受入条件**:
   - 名称候補が0件の領域（無名領域）の表示名は `<出力名>（<面積%整数>%）`（例 `no name 2（65%）`）。
     出力名は既存の規則（図面内の無名領域が1つなら `no name`、複数なら `no name N`）。
-    ファイル名は含めない（見出しに表示されているため）。
+  - 2026-10-12 ユーザー決定: どの図面の領域か分かるよう末尾に図番を付ける
+    （`no name 2（65%）DE3527-553-10E`）。図番が無ければ拡張子を除いたファイル名、
+    どちらも無ければ付けない。別図面の同じ表示名は図面ごとの行になり、「特定」「除外」も
+    図面ごとに効く。Excel の領域名（`no name` / `no name N`）は変わらない。
   - 無名領域の「特定」は既定ON（従来から自動採用していたため）。明示的にOFFにすると採用しない。
   - 無名領域の「除外」は領域内ラベルを取り除く（以前は無名領域は除外対象外だった）。
   - 「領域一覧」に出さない呼び出し側（DXF-label-comparison）は、キーが無いので従来どおり自動採用。
@@ -48,9 +51,27 @@ def test_labels_multiple_unnamed_are_numbered_in_region_order():
     assert ref_designator.unnamed_region_labels(a) == {0: 'no name 1（65%）', 2: 'no name 2（6%）'}
 
 
-def test_label_has_no_filename():
-    a = {'regions': [_reg(0, [], 30)]}
-    assert '.dxf' not in ref_designator.unnamed_region_labels(a)[0]
+@pytest.mark.parametrize('extra, expected', [
+    ({'main_drawing_number': 'DE3527-553-10E', 'source_filename': 'x.dxf'}, 'no name（30%）DE3527-553-10E'),
+    ({'main_drawing_number': None, 'source_filename': 'DE9999-111-01A.dxf'}, 'no name（30%）DE9999-111-01A'),
+    ({}, 'no name（30%）'),
+])
+def test_label_ends_with_drawing_number_or_filename_stem(extra, expected):
+    """図番 → 拡張子なしファイル名 → 付けない、の順で末尾の識別子を決める。"""
+    a = {'regions': [_reg(0, [], 30)], **extra}
+    assert ref_designator.unnamed_region_labels(a) == {0: expected}
+
+
+def test_same_label_in_two_drawings_is_per_drawing():
+    """同じ出力名・面積でも図面が違えば別の表示名＝別の「特定」「除外」になる。"""
+    a = {'regions': [_reg(0, [], 30)], 'main_drawing_number': 'AA1111-111-01A'}
+    b = {'regions': [_reg(0, [], 30)], 'main_drawing_number': 'BB2222-222-01A'}
+    st.session_state['grc_no name（30%）AA1111-111-01A'] = False
+    st.session_state['gre_no name（30%）BB2222-222-01A'] = True
+    assert region_selection.gather_name_selections('a.dxf', a) == {('a.dxf', 0): ['']}
+    assert region_selection.gather_name_selections('b.dxf', b) == {}
+    assert ref_designator.excluded_region_ids(a, {'no name（30%）BB2222-222-01A'}) == set()
+    assert ref_designator.excluded_region_ids(b, {'no name（30%）BB2222-222-01A'}) == {0}
 
 
 def test_default_is_adopted_when_key_absent():

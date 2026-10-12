@@ -382,6 +382,18 @@ def _build_region_cfg():
     return region_selection.build_region_cfg(region_detection_config)
 
 
+# st.spinner は開始から 0.5 秒経ってから表示される（streamlit/elements/spinner.py の
+# DELAY_SECS）。その前に進捗用の st.empty() を作ると進捗メッセージが先に出て、
+# spinner が出た時点でその下へ動いてしまう。spinner の表示後に作るため少し待つ。
+SPINNER_APPEAR_WAIT_SEC = 0.6
+
+
+def _status_placeholder_after_spinner():
+    """spinner が表示されるのを待ってから進捗表示用の `st.empty()` を返す。"""
+    time.sleep(SPINNER_APPEAR_WAIT_SEC)
+    return st.empty()
+
+
 def _render_region_detection_trigger(uploaded_files, region_cfg):
     """「領域を検出」ボタンを表示し、押されたら各ファイルを解析して
     `st.session_state['region_analyses']` に格納する。
@@ -399,7 +411,7 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
                 # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
                 # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示、
                 # DXF-diff-managerと同じ書式。`_handle_extract_button()` 参照）。
-                status_placeholder = st.empty()
+                status_placeholder = _status_placeholder_after_spinner()
                 analyses = region_selection.run_region_detection(
                     [(uf.name, uf) for uf in uploaded_files], region_cfg,
                     status_placeholder, time.time())
@@ -511,7 +523,7 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
             with st.spinner(f'{len(uploaded_files)}個のDXFファイルを処理中...'):
                 # 進捗表示（ファイル名・件数・経過秒数）は spinner の下に出す
                 # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示）。
-                status_placeholder = st.empty()
+                status_placeholder = _status_placeholder_after_spinner()
                 start_time = time.time()
 
                 # 前回の結果をクリアする

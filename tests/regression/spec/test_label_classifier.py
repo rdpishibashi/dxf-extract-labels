@@ -37,6 +37,7 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     # （2026-10-10 ユーザー指定。戻すときは OTHER_PATTERNS を空にする）
     ('R10', OTHER), ('R1', OTHER), ('N24', OTHER), ('P24', OTHER), ('D4', OTHER),
     ('X05', OTHER), ('Y02', OTHER), ('M10', OTHER), ('B12', OTHER), ('R10(2.2K)', OTHER),
+    ('AWG12', OTHER), ('AWG', OTHER), ('AWG20 (x)', OTHER), ('AWGX1', DESIGNATOR),   # AWG+数字のみ除外
     ('A10', DESIGNATOR), ('C1', DESIGNATOR), ('L5', DESIGNATOR), ('Q1', DESIGNATOR),
     ('U23', DESIGNATOR), ('F7', DESIGNATOR),
     ('R100', DESIGNATOR), ('R10A', DESIGNATOR),   # 3桁・後ろに英字は対象外

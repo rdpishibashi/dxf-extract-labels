@@ -449,7 +449,7 @@ def test_build_region_label_summary_aggregates_across_files():
 
 def _make_assembly_compare_result():
     """A（a.dxf: U10×2）とB（b.dxf: U10×2・C1×1）の比較結果。
-    U10 は両方・個数一致（無色）、C1 は B のみ（緑）を含む最小データ。"""
+    U10 は両方・個数一致（薄い緑）、C1 は B のみ（薄い青）を含む最小データ。"""
     from model.assembly_compare import compare_assembly
     results = {
         'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 2}],
@@ -513,7 +513,7 @@ def test_create_ref_designator_excel_output_assembly_compare_columns_and_header_
 
 
 def test_create_ref_designator_excel_output_assembly_compare_row_colors():
-    """区分ごとの行色を確認する（両方・個数一致=無色、B のみ=緑）。"""
+    """区分ごとの行色を確認する（両方・個数一致=薄い緑、B のみ=薄い青）。"""
     results = _make_ref_designator_results()
     wb = _load_wb(create_ref_designator_excel_output(
         results, 'asc', assembly_compare=_make_assembly_compare_result()))
@@ -522,11 +522,11 @@ def test_create_ref_designator_excel_output_assembly_compare_row_colors():
 
     r10 = rows['U10']
     assert r10[6].value == '両方'
-    assert r10[0].fill.start_color.rgb == '00000000'   # 無色（一致）
+    assert r10[0].fill.start_color.rgb == 'FFEAF7EC'   # 薄い緑（一致）
 
     c1 = rows['C1']
     assert c1[6].value == 'B のみ'
-    assert c1[0].fill.start_color.rgb == 'FFC6EFCE'   # 緑
+    assert c1[0].fill.start_color.rgb == 'FFEAF1FB'   # 薄い青
 
 
 def test_create_region_excel_output_assembly_compare_position():

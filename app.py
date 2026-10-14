@@ -689,6 +689,43 @@ def _render_type_judgment_section(master_index=None):
         _apply_type_judgment(selection, validation, master_index=master_index)
 
 
+CANDIDATE_COLUMN = '機器符号候補'
+CANDIDATE_BLANK = '（空欄）'
+_CANDIDATE_ORDER = ('DEF', 'CAN')
+
+
+def candidate_filter_options(series):
+    """「機器符号候補」列に実際にある値を `DEF` → `CAN` → `（空欄）` の順で返す
+    （画面の絞り込み選択欄用。その他の値があれば最後に追加）。"""
+    present = {CANDIDATE_BLANK if (pd.isna(v) or str(v).strip() == '') else str(v)
+               for v in series}
+    ordered = [v for v in _CANDIDATE_ORDER if v in present]
+    ordered += sorted(v for v in present if v not in _CANDIDATE_ORDER and v != CANDIDATE_BLANK)
+    if CANDIDATE_BLANK in present:
+        ordered.append(CANDIDATE_BLANK)
+    return ordered
+
+
+def filter_by_candidate(df, selected):
+    """「機器符号候補」列が `selected`（`candidate_filter_options()` の値）に含まれる行だけを
+    返す（index は保持）。表示専用で、Excel出力には使わない。"""
+    keys = df[CANDIDATE_COLUMN].apply(
+        lambda v: CANDIDATE_BLANK if (pd.isna(v) or str(v).strip() == '') else str(v))
+    return df[keys.isin(set(selected))]
+
+
+def render_candidate_filter(df, key):
+    """表の上に「機器符号候補」の絞り込み選択欄を出し、絞り込み後の df を返す。
+    列が無い、または値が無いときは選択欄を出さず df をそのまま返す。初期状態は全選択。"""
+    if CANDIDATE_COLUMN not in df.columns or df.empty:
+        return df
+    options = candidate_filter_options(df[CANDIDATE_COLUMN])
+    # 選択肢の構成が変わったとき（新しい抽出結果など）に古い選択が残らないよう、key に含める
+    selected = st.pills(CANDIDATE_COLUMN, options, selection_mode='multi',
+                        default=options, key=f"{key}:{'|'.join(options)}")
+    return filter_by_candidate(df, selected or [])
+
+
 def _render_results_section(master_index_status=None):
     """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。
 
@@ -740,8 +777,10 @@ def _render_results_section(master_index_status=None):
                 key="extract_preview_sheet",
                 on_change=_mark_extract_preview_expanded,
             )
-            st.dataframe(
-                preview_xl.parse(preview_sheet), width='stretch', hide_index=True)
+            preview_df = render_candidate_filter(
+                preview_xl.parse(preview_sheet),
+                key=f"extract_cand_filter_{preview_sheet}")
+            st.dataframe(preview_df, width='stretch', hide_index=True)
 
         download_done = st.session_state.get('download_done', False)
 

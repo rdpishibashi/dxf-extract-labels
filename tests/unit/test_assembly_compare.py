@@ -128,29 +128,29 @@ def test_drawing_ident_falls_back_to_filename_without_extension():
 def test_compare_assembly_aggregates_across_multiple_wiring_files():
     results = {
         'a1.dxf': _result(
-            [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 2}],
+            [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 2}],
             main_drawing_number='EE001'),
         'a2.dxf': _result(
-            [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 3},
+            [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 3},
              {'機器符号候補': None, 'ラベル': 'タイトル', '個数': 1}],
             main_drawing_number='EE002'),
         'b.dxf': _result(
-            [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 5}],
+            [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 5}],
             main_drawing_number='EE900'),
     }
     wiring_files = ['a1.dxf', 'a2.dxf']
     result = ac.compare_assembly(results, wiring_files, 'b.dxf')
 
     rows_by_label = {r['ラベル']: r for r in result['rows']}
-    r10 = rows_by_label['U10']
-    assert r10['A 合計出現数'] == 5
-    assert r10['A 図番数'] == 2
-    assert r10['A 図番'] == 'EE001, EE002'
-    assert r10['B 出現数'] == 5
-    assert r10['比較結果'] == ac.KUBUN_BOTH
-    # U10は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
+    r1 = rows_by_label['U1']
+    assert r1['A 合計出現数'] == 5
+    assert r1['A 図番数'] == 2
+    assert r1['A 図番'] == 'EE001, EE002'
+    assert r1['B 出現数'] == 5
+    assert r1['比較結果'] == ac.KUBUN_BOTH
+    # U1は機器符号一覧（master_index）に無いため、v3.10.0ではCAN
     # （候補パターン一致のみ。master_index=None時の既定動作）
-    assert r10['機器符号候補'] == 'CAN'
+    assert r1['機器符号候補'] == 'CAN'
 
     title_row = rows_by_label['タイトル']
     assert title_row['比較結果'] == ac.KUBUN_A_ONLY
@@ -170,7 +170,7 @@ def test_compare_assembly_aggregates_across_multiple_wiring_files():
 
 def test_compare_assembly_b_only_label():
     results = {
-        'a.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 1}],
+        'a.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 1}],
                           main_drawing_number='EE001'),
         'b.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'C1', '個数': 4}],
                           main_drawing_number='EE900'),
@@ -185,7 +185,7 @@ def test_compare_assembly_b_only_label():
 
 def test_compare_assembly_no_wiring_files_yields_a_only_empty():
     results = {
-        'b.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 1}],
+        'b.dxf': _result([{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 1}],
                           main_drawing_number='EE900'),
     }
     result = ac.compare_assembly(results, [], 'b.dxf')

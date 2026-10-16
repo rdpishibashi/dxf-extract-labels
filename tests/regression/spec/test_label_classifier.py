@@ -3,6 +3,7 @@
 **受入条件**: `classify_label()` が次の判定順で分類し、Excelの「機器符号候補」列
 （`is_ref_designator_label`）と領域名候補フィルタ（`region_detector`）が同じ関数を使う。
   1. 空・単一英大文字・末尾 `+`/`-` → OTHER
+  1b. `CN`+ハイフンを含む・英字+数字2桁・`A`+数字1桁 → REGION_NAME（2026-10-16 追加）
   2. 英字のみ以外の候補パターンに一致（括弧・` **` より前で判定）→ DESIGNATOR
   3. 英字のみ: unit_names → REGION_NAME／他の除外語・除外パターン → OTHER／
      追加機器符号（CN.*・MC.*・MOT.* 等）→ DESIGNATOR／それ以外 → REGION_NAME
@@ -27,20 +28,31 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     # 1. OTHER（単一英字・末尾符号・空）
     ('H', OTHER), ('V', OTHER), ('N24-', OTHER), ('L1+', OTHER), ('', OTHER),
     # 2. DESIGNATOR（英字のみ以外の候補パターン。括弧・型式は無視して判定）
-    ('U10', DESIGNATOR), ('CN-IF2-1', DESIGNATOR), ('THM01', DESIGNATOR),
+    ('U1', DESIGNATOR), ('MC-IF2', DESIGNATOR), ('THM001', DESIGNATOR),
     ('RACK1', DESIGNATOR), ('ECATIN2', DESIGNATOR), ('X14A', DESIGNATOR),
-    ('U10(2.2K)', DESIGNATOR), ('U10(1234)', DESIGNATOR),
+    ('U1(2.2K)', DESIGNATOR), ('U1(1234)', DESIGNATOR),
     ('CP004 (10A)', DESIGNATOR), ('CP004(10A)', DESIGNATOR),
-    ('SX01 (NX-SIH400)', DESIGNATOR),
+    ('SX001 (NX-SIH400)', DESIGNATOR),
     ('AB12-34', DESIGNATOR), ('W No.M06004', DESIGNATOR), ('W No.M06008(CC050VZRB)', DESIGNATOR),
     # 1a. OTHER_PATTERNS: A・C・L・Q・U・F 以外の英大文字1字+数字1〜2桁は機器符号候補にも領域名候補にもしない
     # （2026-10-10 ユーザー指定。戻すときは OTHER_PATTERNS を空にする）
     ('R10', OTHER), ('R1', OTHER), ('N24', OTHER), ('P24', OTHER), ('D4', OTHER),
     ('X05', OTHER), ('Y02', OTHER), ('M10', OTHER), ('B12', OTHER), ('R10(2.2K)', OTHER),
     ('AWG12', OTHER), ('AWG', OTHER), ('AWG20 (x)', OTHER), ('AWGX1', DESIGNATOR),   # AWG+数字のみ除外
-    ('A10', DESIGNATOR), ('C1', DESIGNATOR), ('L5', DESIGNATOR), ('Q1', DESIGNATOR),
-    ('U23', DESIGNATOR), ('F7', DESIGNATOR),
+    ('C1', DESIGNATOR), ('L5', DESIGNATOR), ('Q1', DESIGNATOR), ('U2', DESIGNATOR), ('F7', DESIGNATOR),
     ('R100', DESIGNATOR), ('R10A', DESIGNATOR),   # 3桁・後ろに英字は対象外
+    # 1b. FORCED_REGION_NAME_PATTERNS（2026-10-16 ユーザー指定）: 追加機器符号に一致しても領域名候補
+    #   CN で始まりハイフンを含む
+    ('CN-IF2-1', REGION_NAME), ('CN-IF2', REGION_NAME), ('CN-IF3-1A', REGION_NAME), ('ＣＮ－ＩＦ２－１', REGION_NAME),
+    ('CN-IF2-', OTHER),   # 末尾ハイフンは従来どおり OTHER
+    ('CN1', DESIGNATOR), ('CNPG01A', DESIGNATOR),   # ハイフンなしの CN.* は機器符号のまま
+    #   英大文字1字以上+数字ちょうど2桁（追加機器符号 CN.*・LS.*・DCPS.*・TH.* 等も含む）
+    ('THM01', REGION_NAME), ('SX01 (NX-SIH400)', REGION_NAME), ('SX03 ** (NX-SID800)', REGION_NAME),
+    ('LED16', REGION_NAME), ('CNE06', REGION_NAME), ('LS10', REGION_NAME), ('DCPS01', REGION_NAME),
+    ('A10', REGION_NAME), ('U10', REGION_NAME), ('U23', REGION_NAME), ('U10(2.2K)', REGION_NAME),
+    ('R10', OTHER), ('M10', OTHER),   # OTHER_PATTERNS が先に判定される
+    #   A+数字1桁
+    ('A1', REGION_NAME), ('A9', REGION_NAME),
     # 3. 英字のみ
     ('CTC', REGION_NAME),                                     # unit_names
     ('GND', OTHER), ('AGND', OTHER), ('MOTOR', OTHER), ('OPEN', OTHER),
@@ -64,7 +76,7 @@ def test_classify_label(label, expected):
     assert classify_label(label) == expected
 
 
-@pytest.mark.parametrize('label', ['U10', 'CNESCD', 'CP004 (10A)'])
+@pytest.mark.parametrize('label', ['U1', 'CNESCD', 'CP004 (10A)'])
 def test_excel_candidate_column_follows_designator_class(label):
     assert is_ref_designator_label(label) is True
 
@@ -80,8 +92,10 @@ _KW = dict(min_letters=3, exclude_lowercase=True, exclude_terms=('NOTE', '☆'),
 
 @pytest.mark.parametrize('label, valid', [
     ('MFFX', True), ('CTC', True), ('SYSTEM I/F BOX', True), ('EFEM UPPER', True),
-    ('GND(M4)', False), ('CP004 (10A)', False), ('SX01 (NX-SIH400)', False),
-    ('THM01', False), ('CNESCD', False), ('GND', False), ('SYSTEM', False),
+    ('GND(M4)', False), ('CP004 (10A)', False), ('SX001 (NX-SIH400)', False),
+    ('THM001', False), ('CNESCD', False), ('GND', False), ('SYSTEM', False),
+    ('THM01', True), ('SX01 (NX-SIH400)', True), ('CN-IF2-1', True),   # 2026-10-16 領域名候補化
+    ('A10', False),   # 領域名候補だが英字3字未満
     ('RACK1', True),  # circuit_keep_terms（RACK）は機器符号扱いにしない
 ])
 def test_region_name_filter_uses_same_classification(label, valid):

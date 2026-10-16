@@ -49,7 +49,7 @@ def _load_wb(data: bytes):
 @pytest.fixture
 def master_index():
     """CB001・ELB001（元は `ELB(CB)001`）・F023 を登録した合成索引。
-    U10/CN3/GND は意図的に含めない（候補パターンのみ一致＝CANになることの
+    U1/CN3/GND は意図的に含めない（候補パターンのみ一致＝CANになることの
     対照群として使う）。"""
     result = MasterResult(rows=[
         MasterRow('TEST', 'CB001', '用途1', 1),
@@ -74,7 +74,7 @@ def master_index():
     ('ELB001 (5A/30mA)', MARK_DEFINED, MARK_CANDIDATE),  # 括弧付き実データ表記
     ('F023', MARK_DEFINED, MARK_CANDIDATE),
     # 候補パターンのみ一致（一覧には無い）
-    ('U10', MARK_CANDIDATE, MARK_CANDIDATE),
+    ('U1', MARK_CANDIDATE, MARK_CANDIDATE),
     ('CN3', MARK_CANDIDATE, MARK_CANDIDATE),
     # どちらにも該当しない
     ('(2/5)', None, None),
@@ -95,7 +95,7 @@ def test_designator_mark_three_values(master_index, label, expected_with_index, 
 def _normal_mode_ref_data():
     return {
         'a.dxf': {
-            'labels': [('CB001', 0, 0), ('U10', 1, 1), ('(2/5)', 2, 2)],
+            'labels': [('CB001', 0, 0), ('U1', 1, 1), ('(2/5)', 2, 2)],
             'total_in_frame': 3,
             'frames': 1,
             'main_drawing_number': 'EE1234-500-01A',
@@ -110,7 +110,7 @@ def test_normal_mode_def_reaches_file_sheet_and_total_sheet(master_index):
     両方にDEFが到達する（渡し漏れがあればどちらかだけDEFが欠ける）。"""
     ref_final = ref_designator.build_ref_designator_final(
         _normal_mode_ref_data(), sort_value='asc', master_index=master_index)
-    # Summaryの「機器符号候補ラベル数」= DEF+CANの個数合計（U10のCANも含め2）
+    # Summaryの「機器符号候補ラベル数」= DEF+CANの個数合計（U1のCANも含め2）
     assert ref_final['a.dxf']['ref_designator_count'] == 2
 
     xlsx = create_ref_designator_excel_output(
@@ -120,13 +120,13 @@ def test_normal_mode_def_reaches_file_sheet_and_total_sheet(master_index):
     file_ws = wb['a']
     file_rows = {r[1].value: r[0].value for r in file_ws.iter_rows(min_row=2)}
     assert file_rows['CB001'] == 'DEF'
-    assert file_rows['U10'] == 'CAN'
+    assert file_rows['U1'] == 'CAN'
     assert file_rows['(2/5)'] is None
 
     total_ws = wb['抽出ラベル一覧']
     total_rows = {r[1].value: r[0].value for r in total_ws.iter_rows(min_row=2)}
     assert total_rows['CB001'] == 'DEF'
-    assert total_rows['U10'] == 'CAN'
+    assert total_rows['U1'] == 'CAN'
 
     summary_ws = wb['Summary']
     header = [c.value for c in summary_ws[1]]
@@ -158,7 +158,7 @@ def _region_mode_fixtures():
     square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
     ref_data_by_file = {
         'a.dxf': {
-            'labels': [('CB001', 10, 10), ('U10', 20, 20)],
+            'labels': [('CB001', 10, 10), ('U1', 20, 20)],
             'total_in_frame': 2,
         },
     }
@@ -184,7 +184,7 @@ def test_region_mode_def_reaches_all_four_sheets(master_index):
     region_results = ref_designator.build_ref_designator_region_results(
         ref_data_by_file, region_analyses, name_selections_by_file, sort_value='asc',
         master_index=master_index)
-    # ref_designator_count = DEF(CB001)+CAN(U10) の個数合計 = 2
+    # ref_designator_count = DEF(CB001)+CAN(U1) の個数合計 = 2
     assert region_results['a.dxf']['ref_designator_count'] == 2
     # 領域一覧用: region_rows の ref_designator_count もDEF+CAN合算で2
     assert region_results['a.dxf']['region_rows'][0]['ref_designator_count'] == 2
@@ -195,7 +195,7 @@ def test_region_mode_def_reaches_all_four_sheets(master_index):
     file_ws = wb['a']
     file_rows = {r[1].value: r[0].value for r in file_ws.iter_rows(min_row=2)}
     assert file_rows['CB001'] == 'DEF'
-    assert file_rows['U10'] == 'CAN'
+    assert file_rows['U1'] == 'CAN'
 
     total_ws = wb['抽出ラベル一覧']
     total_rows = {r[1].value: r[0].value for r in total_ws.iter_rows(min_row=2)}
@@ -204,13 +204,13 @@ def test_region_mode_def_reaches_all_four_sheets(master_index):
     region_ws = wb['領域一覧']
     header = [c.value for c in region_ws[1]]
     count_col = header.index('領域内機器符号候補数')
-    # DEF(CB001)+CAN(U10)の合算で2（3値化してもこの列の値は不変）
+    # DEF(CB001)+CAN(U1)の合算で2（3値化してもこの列の値は不変）
     assert region_ws.cell(row=2, column=count_col + 1).value == 2
 
     lbl_ws = wb['領域別ラベル一覧']
     lbl_rows = {r[2].value: r[1].value for r in lbl_ws.iter_rows(min_row=2)}
     assert lbl_rows['CB001'] == 'DEF'
-    assert lbl_rows['U10'] == 'CAN'
+    assert lbl_rows['U1'] == 'CAN'
 
 
 def test_region_mode_without_master_index_matches_legacy_output():
@@ -237,7 +237,7 @@ def _assembly_compare_results():
     return {
         'wiring.dxf': {
             'rows': [{'機器符号候補': None, 'ラベル': 'CB001', '個数': 2},
-                     {'機器符号候補': None, 'ラベル': 'U10', '個数': 1}],
+                     {'機器符号候補': None, 'ラベル': 'U1', '個数': 1}],
             'title': 'UNIT内結線図', 'main_drawing_number': 'EE001',
         },
         'assembly.dxf': {
@@ -256,7 +256,7 @@ def test_compare_assembly_def_reaches_comparison_sheet(master_index):
         results, ['wiring.dxf'], 'assembly.dxf', master_index=master_index)
     rows_by_label = {r['ラベル']: r for r in compare_result['rows']}
     assert rows_by_label['CB001']['機器符号候補'] == 'DEF'
-    assert rows_by_label['U10']['機器符号候補'] == 'CAN'
+    assert rows_by_label['U1']['機器符号候補'] == 'CAN'
 
     ref_final = ref_designator.build_ref_designator_final(
         _normal_mode_ref_data(), sort_value='asc', master_index=master_index)
@@ -266,7 +266,7 @@ def test_compare_assembly_def_reaches_comparison_sheet(master_index):
     cmp_ws = wb['結線図-組立図比較']
     cmp_rows = {r[1].value: r[0].value for r in cmp_ws.iter_rows(min_row=2)}
     assert cmp_rows['CB001'] == 'DEF'
-    assert cmp_rows['U10'] == 'CAN'
+    assert cmp_rows['U1'] == 'CAN'
 
 
 def test_compare_assembly_without_master_index_matches_legacy_output():

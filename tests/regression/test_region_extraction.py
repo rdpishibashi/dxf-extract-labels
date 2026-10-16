@@ -1120,8 +1120,10 @@ def test_known_limitation_distance_center_frequency_cannot_recover_unique_tier1(
         and any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in r['name_candidates']))
     # 2026-10-10: `XO00 (NX-ID5442)`（符号 (型式) 形式）は括弧を除いた `XO00` が機器符号
     # 候補のため領域名候補から外れ、既知の限界は解消した（正解が既定名称になる）。
-    assert target['default_name'] == 'MPD RACK2 PANEL LIMIT'
-    assert all(t != 'XO00 (NX-ID5442)' for _d, t in target['name_candidates'])
+    # 2026-10-16: 「英大文字+数字2桁」を領域名候補にした（ユーザー指定）ため `XO00 (NX-ID5442)`
+    # が再び候補に入り、距離の近さで既定名称になる。ユーザーはこの変化を「良い方向」と確認済み。
+    assert target['default_name'] == 'XO00 (NX-ID5442)'
+    assert any(t == 'MPD RACK2 PANEL LIMIT' for _d, t in target['name_candidates'])
 
 
 # ---------------------------------------------------------------------------

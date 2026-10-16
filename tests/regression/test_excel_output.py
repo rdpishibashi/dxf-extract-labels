@@ -47,7 +47,7 @@ def _make_ref_designator_results():
         'fileA.dxf': {
             'rows': [
                 {'機器符号候補': 'Y', 'ラベル': 'CN1', '個数': 2},
-                {'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 1},
+                {'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 1},
             ],
             'total_in_frame': 10,
             'ref_designator_count': 3,
@@ -93,10 +93,10 @@ def test_create_ref_designator_excel_output_sheet_and_values():
     total_header = [c.value for c in ws[1]]
     assert total_header == ['機器符号候補', 'ラベル', '個数', '図番']
     total_rows = [(c[0].value, c[1].value, c[2].value) for c in ws.iter_rows(min_row=2)]
-    # CN1/U10は機器符号一覧（master_index未指定）に無いため、v3.10.0では'CAN'
-    assert total_rows == [('CAN', 'CN1', 2), ('CAN', 'U10', 1)]
+    # CN1/U1は機器符号一覧（master_index未指定）に無いため、v3.10.0では'CAN'
+    assert total_rows == [('CAN', 'CN1', 2), ('CAN', 'U1', 1)]
     total_drawing_numbers = {row[1].value: row[3].value for row in ws.iter_rows(min_row=2)}
-    assert total_drawing_numbers == {'CN1': 'EE1234-500-01A', 'U10': 'EE1234-500-01A'}
+    assert total_drawing_numbers == {'CN1': 'EE1234-500-01A', 'U1': 'EE1234-500-01A'}
 
 
 def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_and_merge():
@@ -116,7 +116,7 @@ def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_
             'source_drawing_number': None, 'title': None, 'subtitle': None,
         },
         'c.dxf': {
-            'rows': [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 1}], 'total_in_frame': 1,
+            'rows': [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 1}], 'total_in_frame': 1,
             'ref_designator_count': 1, 'frames': 1,
             'main_drawing_number': None,
             'source_drawing_number': None, 'title': None, 'subtitle': None,
@@ -125,13 +125,13 @@ def test_create_ref_designator_excel_output_total_sheet_drawing_number_fallback_
     wb = _load_wb(create_ref_designator_excel_output(results, 'asc'))
     rows = {row[1].value: row[3].value for row in wb['抽出ラベル一覧'].iter_rows(min_row=2)}
     assert rows['CN1'] == 'EE1234-500-01A, EE5678-600-02B'
-    assert rows['U10'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
+    assert rows['U1'] == 'c'   # 図番未抽出 → ファイル名（拡張子なし）
 
 
 def test_create_ref_designator_excel_output_sort_desc():
     wb = _load_wb(create_ref_designator_excel_output(_make_ref_designator_results(), 'desc'))
     labels = [row[1].value for row in wb['fileA'].iter_rows(min_row=2)]
-    assert labels == ['U10', 'CN1']
+    assert labels == ['U1', 'CN1']
 
 
 def test_create_ref_designator_excel_output_sorted_by_filename():
@@ -180,7 +180,7 @@ def _make_region_results(fname='circuit.dxf'):
     return {
         fname: {
             'rows': [
-                {'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 2, '領域': 'RACK1'},
+                {'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 2, '領域': 'RACK1'},
                 {'機器符号候補': 'Y', 'ラベル': 'CN3', '個数': 1, '領域': ''},
             ],
             'named': [
@@ -196,7 +196,7 @@ def _make_region_results(fname='circuit.dxf'):
             'drawing_number': '',
             'title': None,
             'subtitle': None,
-            'region_label_counts': {'RACK1': {'U10': 2}},
+            'region_label_counts': {'RACK1': {'U1': 2}},
             'region_rows': [
                 {'id': 0, 'frame': 0, 'name': 'RACK1', 'area_pct': 25.0,
                  'label_count': 2, 'ref_designator_count': 2},
@@ -229,7 +229,7 @@ def test_create_region_excel_output_total_sheet_position_and_values():
     header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     assert header == ['機器符号候補', 'ラベル', '個数', '図番']
     rows = {row[1].value: row[2].value for row in ws.iter_rows(min_row=2)}
-    assert rows == {'U10': 2, 'CN3': 1}
+    assert rows == {'U1': 2, 'CN3': 1}
 
 
 def test_create_region_excel_output_total_sheet_drawing_number_merge():
@@ -241,7 +241,7 @@ def test_create_region_excel_output_total_sheet_drawing_number_merge():
     results.update(_make_region_results('b.dxf'))
     wb = _load_wb(create_region_excel_output(results))
     rows = {row[1].value: row[3].value for row in wb['抽出ラベル一覧'].iter_rows(min_row=2)}
-    assert rows['U10'] == 'a, b'
+    assert rows['U1'] == 'a, b'
 
 
 def test_create_region_excel_output_total_sheet_absent_when_no_labels():
@@ -448,13 +448,13 @@ def test_build_region_label_summary_aggregates_across_files():
 # ---------------------------------------------------------------------------
 
 def _make_assembly_compare_result():
-    """A（a.dxf: U10×2）とB（b.dxf: U10×2・C1×1）の比較結果。
-    U10 は両方・個数一致（薄い緑）、C1 は B のみ（薄い青）を含む最小データ。"""
+    """A（a.dxf: U1×2）とB（b.dxf: U1×2・C1×1）の比較結果。
+    U1 は両方・個数一致（薄い緑）、C1 は B のみ（薄い青）を含む最小データ。"""
     from model.assembly_compare import compare_assembly
     results = {
-        'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 2}],
+        'a.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 2}],
                   'main_drawing_number': 'EE001'},
-        'b.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'U10', '個数': 2},
+        'b.dxf': {'rows': [{'機器符号候補': 'Y', 'ラベル': 'U1', '個数': 2},
                             {'機器符号候補': 'Y', 'ラベル': 'C1', '個数': 1}],
                   'main_drawing_number': 'EE900'},
     }
@@ -520,7 +520,7 @@ def test_create_ref_designator_excel_output_assembly_compare_row_colors():
     ws = wb['結線図-組立図比較']
     rows = {row[1].value: row for row in ws.iter_rows(min_row=2)}
 
-    r10 = rows['U10']
+    r10 = rows['U1']
     assert r10[6].value == '両方'
     assert r10[0].fill.start_color.rgb == 'FFEAF7EC'   # 薄い緑（一致）
 

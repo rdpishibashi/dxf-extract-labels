@@ -3,6 +3,8 @@
 **受入条件**: `classify_label()` が次の判定順で分類し、Excelの「機器符号候補」列
 （`is_ref_designator_label`）と領域名候補フィルタ（`region_detector`）が同じ関数を使う。
   1. 空・単一英大文字・末尾 `+`/`-` → OTHER
+  1-00. ひらがな・カタカナ・漢字を含む（括弧内も含む）→ OTHER（2026-10-17。同日の最初の指定「括弧内は無視」を上書き）
+  別称除去: `ELB(CB)001` のような先頭の「符号(別称)番号」形は別称を外して `ELB001` として判定（2026-10-17）
   1b. `CN`+ハイフンを含む・英字+数字2桁・`A`+数字1桁 → REGION_NAME（2026-10-16 追加）
   2. 英字のみ以外の候補パターンに一致（括弧・` **` より前で判定）→ DESIGNATOR
   3. 英字のみ: unit_names → REGION_NAME／他の除外語・除外パターン → OTHER／
@@ -56,9 +58,15 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     # 1-0. TB で始まるものはすべて機器符号候補（2026-10-17 ユーザー指定。端子台）。末尾 +/- だけは OTHER
     ('TB', DESIGNATOR), ('TB01', DESIGNATOR), ('TB-1', DESIGNATOR), ('TB 1', DESIGNATOR),
     ('ＴＢ０１', DESIGNATOR), ('TB10(2.2K)', DESIGNATOR), ('TB1+', OTHER), ('TB1-', OTHER),
-    # 括弧より前にひらがな・カタカナ・漢字を含むものは機器符号候補でも領域名でもない（2026-10-17 ユーザー指定）
+    # ひらがな・カタカナ・漢字を含むものは（括弧内も含め）機器符号候補でも領域名でもない（2026-10-17 ユーザー指定）
     ('TB取付板', OTHER), ('TB01あ', OTHER), ('DC PS3のみピン番号変更', OTHER), ('MOVE 設定', OTHER),
-    ('CP004 (日本語)', DESIGNATOR),   # 括弧内の日本語は判定に使わない
+    ('CP004 (日本語)', OTHER),        # 括弧内の日本語も OTHER（2026-10-17。旧: 判定に使わず DESIGNATOR）
+    ('TBBit (下図は参考例)', OTHER), ('AWG24(シールド線)', OTHER), ('Han（ハーティング）コネクタ', OTHER),
+    ('TB COMPONENT', DESIGNATOR), ('TBHPB TBHCH', DESIGNATOR),   # 英語の複合語は候補のまま
+    # 別称除去（2026-10-17）。後ろが数字で始まる形だけが対象
+    ('ELB(CB)001', DESIGNATOR), ('ＥＬＢ（ＣＢ）００１', DESIGNATOR), ('ELB(CB)001 (5A/30mA)', DESIGNATOR),
+    ('ELB(CB) 251', DESIGNATOR), ('MCCB(CB)001', DESIGNATOR), ('ELB(CB)', REGION_NAME), ('ABC(DEF)GHI', REGION_NAME),
+    ('MSS(MOTOR)', REGION_NAME), ('FB(WH)', REGION_NAME), ('GND(M4)', OTHER), ('R10(2.2K)', OTHER),
     ('SENSOR ユニット', OTHER), ('ユニット', OTHER),   # カタカナも日本語（2026-10-17 ユーザー決定。以前は領域名候補）
     # 3. 英字のみ
     ('CTC', REGION_NAME),                                     # unit_names

@@ -15,6 +15,7 @@ v3.0.0（2026-08）: 「機器符号（候補）以外も抽出」「図面番�
 Summary 以外の全シートにオートフィルタを設定した。
 """
 import os
+import unicodedata
 import pandas as pd
 from io import BytesIO
 from collections import Counter
@@ -31,6 +32,40 @@ SUMMARY_COLUMNS = (
     'ファイル名', '総抽出ラベル数', '機器符号候補ラベル数', 'ページ数',
     '検出領域数', '図番', 'タイトル', 'サブタイトル',
 )
+
+
+# 列幅の自動調整（2026-10-17 ユーザー要望）: 最長データ（全角・ambiguous幅は2字換算）+ 余白、
+# 上限 MAX_COLUMN_WIDTH。カンマ区切りで図番を複数並べる列は長さに合わせると見づらくなるため、
+# 図番4〜5個分の固定幅 DRAWING_LIST_COLUMN_WIDTH にする。
+MAX_COLUMN_WIDTH = 60
+MIN_COLUMN_WIDTH = 6
+DRAWING_LIST_COLUMN_WIDTH = 70   # 図番（1個 約14字）×4.5 + カンマ区切り
+COLUMN_PADDING = 2
+
+
+def display_width(text):
+    """文字列の表示幅（半角=1、全角・ambiguous=2）。Excel/表の列幅の見積もりに使う。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in 'WFA' else 1 for ch in str(text))
+
+
+def autofit_width(header, values, maximum=MAX_COLUMN_WIDTH):
+    """見出し `header` と `values` の最長表示幅に合わせた列幅（文字数単位）を返す。"""
+    longest = max([display_width(header)] + [display_width(v) for v in values
+                                              if v is not None and v == v])
+    return max(MIN_COLUMN_WIDTH, min(maximum, longest + COLUMN_PADDING))
+
+
+def _set_autofit_columns(ws, columns, rows, fixed_widths=None):
+    """`rows`（`{列名: 値}` の列、または `columns` と同順のタプル）の各列を自動調整幅にする。
+    `fixed_widths={列名: 幅}` の列は固定幅（図番カンマ列）。"""
+    fixed_widths = fixed_widths or {}
+    for i, name in enumerate(columns):
+        if name in fixed_widths:
+            width = fixed_widths[name]
+        else:
+            values = [(r[name] if isinstance(r, dict) else r[i]) for r in rows]
+            width = autofit_width(name, values)
+        ws.set_column(i, i, width)
 
 
 def _add_standard_formats(workbook):
@@ -56,7 +91,7 @@ def _write_summary_hyperlinks(ws, filenames, link_format, col=0, start_row=1):
 
 
 def _write_label_count_sheet(writer, sheet_name, rows, header_format,
-                              columns=('機器符号候補', 'ラベル', '個数'), col_widths=(12, 25, 10),
+                              columns=('機器符号候補', 'ラベル', '個数'), fixed_widths=None,
                               skip_if_empty=True):
     """`[{列名: 値, ...}, ...]` 形式の行データを、ヘッダー書式・オートフィルタ付きで
     シートに書き込む（抽出ラベル一覧・各ファイルのラベル一覧シート共通の書式）。
@@ -74,9 +109,7 @@ def _write_label_count_sheet(writer, sheet_name, rows, header_format,
     df.to_excel(writer, sheet_name=sheet_name, index=False)
     ws = writer.sheets[sheet_name]
     _write_header_row(ws, columns, header_format)
-    for i, width in enumerate(col_widths):
-        letter = chr(ord('A') + i)
-        ws.set_column(f'{letter}:{letter}', width)
+    _set_autofit_columns(ws, columns, rows, fixed_widths)
     ws.autofilter(0, 0, len(df), len(columns) - 1)
     return ws
 
@@ -127,7 +160,7 @@ def _write_terminal_sheet(writer, terminal_results, header_format):
     rows = build_terminal_rows(terminal_results)
     return _write_label_count_sheet(
         writer, 'TB List', rows, header_format,
-        columns=('端子台', '端子No.', '図番'), col_widths=(25, 40, 20))
+        columns=('端子台', '端子No.', '図番'), fixed_widths={'図番': DRAWING_LIST_COLUMN_WIDTH})
 
 
 def _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_format):
@@ -167,14 +200,25 @@ def _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_for
         for col_idx, col_name in enumerate(COMPARE_COLUMNS):
             ws.write(row_idx, col_idx, r[col_name], fmt)
 
-    ws.set_column('A:A', 12)
-    ws.set_column('B:B', 25)
-    ws.set_column('C:E', 12)
-    ws.set_column('F:F', 30)
-    ws.set_column('G:G', 12)
+    _set_autofit_columns(ws, COMPARE_COLUMNS, rows, fixed_widths={'A 図番': DRAWING_LIST_COLUMN_WIDTH})
     ws.freeze_panes(1, 0)
     ws.autofilter(0, 0, len(rows), len(COMPARE_COLUMNS) - 1)
     return ws
+
+
+def _set_label_summary_widths(ws, files, rows, master_index):
+    """`領域別ラベル一覧` シートの列幅を自動調整する（領域名・機器符号候補・ラベル・合計個数、
+    続くファイルごとの 図番・個数 の組）。"""
+    ws.set_column(0, 0, autofit_width('領域名', [r['領域名'] for r in rows]))
+    ws.set_column(1, 1, autofit_width('機器符号候補', [designator_mark(r['ラベル'], master_index) or ''
+                                                       for r in rows]))
+    ws.set_column(2, 2, autofit_width('ラベル', [r['ラベル'] for r in rows]))
+    ws.set_column(3, 3, autofit_width('合計個数', [r['合計個数'] for r in rows]))
+    col = 4
+    for fname, ident in files:
+        ws.set_column(col, col, autofit_width('図番', [ident]))
+        ws.set_column(col + 1, col + 1, autofit_width('個数', [r['per_file'].get(fname, 0) for r in rows]))
+        col += 2
 
 
 def _build_summary_row(fname, total_in_frame, ref_designator_count, frames,
@@ -258,12 +302,12 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
         summary_ws = writer.sheets['Summary']
         _write_header_row(summary_ws, summary_df.columns.values, header_format)
         _write_summary_hyperlinks(summary_ws, [fname for fname, _data in sorted_items], link_format)
-        summary_ws.set_column('A:A', 28)
+        _set_autofit_columns(summary_ws, SUMMARY_COLUMNS, summary_data)
 
         total_data = _build_total_rows(total_counter, label_drawing_numbers, master_index=master_index)
         _write_label_count_sheet(writer, '抽出ラベル一覧', total_data, header_format,
                                  columns=('機器符号候補', 'ラベル', '個数', '図番'),
-                                 col_widths=(12, 25, 10, 30))
+                                 fixed_widths={'図番': DRAWING_LIST_COLUMN_WIDTH})
 
         _write_terminal_sheet(writer, terminal_results, header_format)
         _write_assembly_compare_sheet(writer, workbook, assembly_compare, header_format)
@@ -276,8 +320,7 @@ def create_ref_designator_excel_output(results, sort_option, terminal_results=No
             elif sort_option == 'desc':
                 rows.sort(key=lambda r: r['ラベル'], reverse=True)
             _write_label_count_sheet(writer, sheet_name, rows, header_format,
-                                     columns=('機器符号候補', 'ラベル', '個数'),
-                                     col_widths=(12, 25, 10))
+                                     columns=('機器符号候補', 'ラベル', '個数'))
 
     output.seek(0)
     return output.getvalue()
@@ -345,7 +388,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
         summary_ws = writer.sheets['Summary']
         _write_header_row(summary_ws, summary_df.columns.values, header_format)
         _write_summary_hyperlinks(summary_ws, list(region_results.keys()), link_format)
-        summary_ws.set_column('A:A', 28)
+        _set_autofit_columns(summary_ws, SUMMARY_COLUMNS, summary_data)
 
         total_counter = Counter()
         label_drawing_numbers = {}
@@ -357,7 +400,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
         total_data = _build_total_rows(total_counter, label_drawing_numbers, master_index=master_index)
         _write_label_count_sheet(writer, '抽出ラベル一覧', total_data, header_format,
                                  columns=('機器符号候補', 'ラベル', '個数', '図番'),
-                                 col_widths=(12, 25, 10, 30))
+                                 fixed_widths={'図番': DRAWING_LIST_COLUMN_WIDTH})
 
         # 領域一覧: 検出した全領域（確定・未確定を問わない）を、ファイル名×領域名で
         # マージ・合算して記載する（v3.0.0）。'判定'列（v3.11.0）は
@@ -394,9 +437,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
             reg_df.to_excel(writer, sheet_name='領域一覧', index=False)
             reg_ws = writer.sheets['領域一覧']
             _write_header_row(reg_ws, reg_df.columns.values, header_format)
-            reg_ws.set_column('A:A', 28)
-            reg_ws.set_column('B:B', 30)
-            reg_ws.set_column('C:C', 10)
+            _set_autofit_columns(reg_ws, reg_df.columns, reg_rows)
             reg_ws.autofilter(0, 0, len(reg_df), len(reg_df.columns) - 1)
 
         # 領域別ラベル一覧: 領域名ごとに全ファイル横断でラベルを集計する
@@ -427,11 +468,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
                     lbl_ws.write(row_num, col + 1, r['per_file'].get(fname, 0))
                     col += 2
 
-            lbl_ws.set_column('A:A', 28)
-            lbl_ws.set_column('B:B', 12)
-            lbl_ws.set_column('C:C', 25)
-            lbl_ws.set_column(3, 3, 10)
-            lbl_ws.set_column(4, col - 1, 16)
+            _set_label_summary_widths(lbl_ws, files, label_summary_rows, master_index)
             lbl_ws.freeze_panes(1, 0)
             lbl_ws.autofilter(0, 0, len(label_summary_rows), col - 1)
 
@@ -442,7 +479,7 @@ def create_region_excel_output(region_results, terminal_results=None, assembly_c
             sheet_name = os.path.splitext(fname)[0][:31]
             _write_label_count_sheet(
                 writer, sheet_name, data['rows'], header_format,
-                columns=('機器符号候補', 'ラベル', '個数', '領域'), col_widths=(12, 25, 8, 40),
+                columns=('機器符号候補', 'ラベル', '個数', '領域'),
                 skip_if_empty=False)
 
     output.seek(0)

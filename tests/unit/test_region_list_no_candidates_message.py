@@ -1,4 +1,4 @@
-"""「領域一覧」セクションで、面積条件を満たす領域が1件も無かったときの
+"""「領域一覧」（2026-10-17 に見出しを「抽出領域の選択」へ改称）セクションで、面積条件を満たす領域が1件も無かったときの
 案内メッセージを検証する（2026-09-10、ユーザー指示による文言変更）。
 
 旧UI（「領域検出の詳細設定」フォームがあった頃）の「面積条件を満たす領域が
@@ -79,7 +79,7 @@ def test_regions_without_name_candidates_are_listed_not_reported_as_missing():
     at = _run({'a.dxf': [{'id': 0, 'name_candidates': []}]})
     assert at.exception.len == 0
     assert [i.value for i in at.info] == []
-    assert any(sh.value == '領域一覧' for sh in at.subheader)
+    assert any(sh.value == '抽出領域の選択' for sh in at.subheader)
 
 
 def test_no_message_when_region_analyses_absent():
@@ -97,4 +97,18 @@ def test_no_message_when_candidates_exist():
     at = _run({'a.dxf': [{'id': 0, 'name_candidates': [[1.0, 'B CHAMBER']]}]})
     assert at.exception.len == 0
     assert [i.value for i in at.info] == []
-    assert any(sh.value == '領域一覧' for sh in at.subheader)
+    assert any(sh.value == '抽出領域の選択' for sh in at.subheader)
+
+
+def test_locked_region_list_shows_current_selection_not_the_frozen_base():
+    """結果表示中（ロック）の「抽出領域の選択」表は、固定してある初期値（base）ではなく現在の選択状態を
+    表示する。ロックで `disabled` が変わるとウィジェットIDが変わり編集内容が失われるため、base のままだと
+    チェックが全部外れて見え、さらに差分として選択を消してしまっていた（2026-10-17）。"""
+    from view.region_selection import region_list_dataframe
+    base = {'A': (False, False), 'B': (False, False)}
+    current = {'A': (True, False), 'B': (False, True)}
+    unlocked = region_list_dataframe(['A', 'B'], base, True)
+    locked = region_list_dataframe(['A', 'B'], current, True)
+    assert unlocked['特定'].tolist() == [False, False]
+    assert locked['特定'].tolist() == [True, False] and locked['除外'].tolist() == [False, True]
+    assert list(region_list_dataframe(['A'], base, False).columns) == ['特定', '領域名']

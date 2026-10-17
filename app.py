@@ -14,6 +14,7 @@ from model.region_detector import collect_unique_region_candidate_names
 from model.ref_designator import unnamed_region_labels
 from model.excel_output import (
     create_ref_designator_excel_output, create_region_excel_output,
+    display_width, autofit_width, DRAWING_LIST_COLUMN_WIDTH,
 )
 from model import ref_designator
 from model import terminal_detector
@@ -233,7 +234,7 @@ def _render_intro():
             "1. DXFファイルをアップロードしてください（複数可）",
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」をONにした場合は、「領域を検出」ボタンで矩形領域を検出し、"
-            "「領域一覧」で抽出したい領域名にチェックを入れます（複数選択可）。"
+            "「抽出領域の選択」で抽出したい領域名にチェックを入れます（複数選択可）。"
             "チェックで決定できなかった領域は「領域の確認」で個別に選択します",
             "4. 「ラベルを抽出」ボタンで処理を実行します（結果はそのままExcelとして"
             "ダウンロードできます）。抽出後はオプション等を振り返れますが変更は"
@@ -296,7 +297,7 @@ def _render_options_section(locked):
             value=False,
             key='enable_region_detection',
             disabled=locked,
-            help="ONにすると「領域を検出」ボタン、「領域一覧」と「領域の確認」"
+            help="ONにすると「領域を検出」ボタン、「抽出領域の選択」と「領域の確認」"
                  "セクションが表示され、矩形領域付きでラベルを抽出できます。"
         )
         if not enable_region_detection:
@@ -412,8 +413,12 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
                 # ため、st.empty() は spinner の内側（2026-09-23 ユーザー指示、
                 # DXF-diff-managerと同じ書式。`_handle_extract_button()` 参照）。
                 status_placeholder = _status_placeholder_after_spinner()
+                # 面積条件に満たない小領域も検出しておく（採用は「ラベルを抽出」時に、
+                # 全ファイルで採用された名称と一致するものだけ。`ref_designator.
+                # add_minor_region_selections()`）。他プロジェクトは検出しない。
                 analyses = region_selection.run_region_detection(
-                    [(uf.name, uf) for uf in uploaded_files], region_cfg,
+                    [(uf.name, uf) for uf in uploaded_files],
+                    {**region_cfg, 'detect_minor_regions': True},
                     status_placeholder, time.time())
                 status_placeholder.empty()
                 st.session_state['region_analyses'] = analyses
@@ -442,9 +447,15 @@ def _render_global_region_names_section(locked):
     unnamed = list(dict.fromkeys(
         label for analysis in analyses.values()
         for label in unnamed_region_labels(analysis).values()))
+    # 5%未満の小領域の採用オプション（抽出時にだけ効くため `region_selection_confirmed` は
+    # 戻さない）。「領域一覧」の表の右に置く。
+    def _minor_option():
+        st.checkbox(MINOR_INCLUDE_CONFIRMED_LABEL, key=MINOR_INCLUDE_CONFIRMED_KEY,
+                    disabled=locked, help=MINOR_INCLUDE_CONFIRMED_HELP)
+
     region_selection.render_global_region_names_section(
         collect_unique_region_candidate_names(analyses) + unnamed, locked,
-        allow_exclude=True, default_on_names=unnamed)
+        allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option)
 
 
 def _render_region_confirmation_section(enable_region_detection, locked):
@@ -548,6 +559,13 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         fname: _gather_name_selections(fname, analyses[fname])
                         for fname in ref_data_by_file
                     }
+                    minor_targets = (
+                        ref_designator.adopted_region_names(name_selections_by_file)
+                        if st.session_state.get(MINOR_INCLUDE_CONFIRMED_KEY)
+                        else region_selection.unconditional_region_names(analyses))
+                    name_selections_by_file = ref_designator.add_minor_region_selections(
+                        analyses, name_selections_by_file, minor_targets,
+                        excluded_names=region_selection.global_excluded_region_names())
                     region_results = ref_designator.build_ref_designator_region_results(
                         ref_data_by_file, analyses, name_selections_by_file, sort_value,
                         master_index=master_index,
@@ -689,6 +707,45 @@ def _render_type_judgment_section(master_index=None):
         _apply_type_judgment(selection, validation, master_index=master_index)
 
 
+MINOR_INCLUDE_CONFIRMED_KEY = 'minor_include_confirmed'
+MINOR_INCLUDE_CONFIRMED_LABEL = "すべてのファイルに適用する"
+MINOR_INCLUDE_CONFIRMED_HELP = (
+    "このオプションを有効にすると（チェックすると）、「特定」した領域名は、アップロードした"
+    "すべてのファイルに対して有効な領域となります。デフォルトのチェックしない状態では、"
+    "ファイルごとに有効な領域（図面面積の5％以上の領域）以外は抽出対象になりません。")
+
+PX_PER_CHAR = 8       # 表の列幅 px = 表示幅（全角=2）×8 + 余白（Excelの文字数単位から換算）
+PX_PADDING = 28
+
+
+def _chars_to_px(chars):
+    return int(chars * PX_PER_CHAR + PX_PADDING)
+
+
+def sheet_select_width(names):
+    """シート選択 selectbox の幅 px（最長のシート名に合わせる。既定の全幅だと
+    長すぎてメニューと認識されない、2026-10-17 ユーザー指摘）。"""
+    return max(160, _chars_to_px(max((display_width(n) for n in names), default=0)) + 36)
+
+
+def preview_column_config(df):
+    """プレビュー表の列設定 `({列名: Column}, 表の幅px)` を返す。各列はデータ長に合わせ
+    （Excel出力と同じ `autofit_width`）、カンマ区切りで図番を複数並べる列は固定幅にする
+    （長さに合わせると見づらくなるため）。"""
+    config = {}
+    total = 0
+    for col in df.columns:
+        values = df[col].tolist()
+        if '図番' in str(col) and any(',' in str(v) for v in values if v is not None and v == v):
+            chars = DRAWING_LIST_COLUMN_WIDTH
+        else:
+            chars = autofit_width(str(col), values)
+        px = _chars_to_px(chars)
+        config[col] = st.column_config.Column(width=px)
+        total += px
+    return config, total
+
+
 CANDIDATE_COLUMN = '機器符号候補'
 CANDIDATE_BLANK = '（空欄）'
 _CANDIDATE_ORDER = ('DEF', 'CAN')
@@ -776,11 +833,14 @@ def _render_results_section(master_index_status=None):
                 preview_xl.sheet_names,
                 key="extract_preview_sheet",
                 on_change=_mark_extract_preview_expanded,
+                width=sheet_select_width(preview_xl.sheet_names),
             )
             preview_df = render_candidate_filter(
                 preview_xl.parse(preview_sheet),
                 key=f"extract_cand_filter_{preview_sheet}")
-            st.dataframe(preview_df, width='stretch', hide_index=True)
+            column_config, table_width = preview_column_config(preview_df)
+            st.dataframe(preview_df, width=table_width, hide_index=True,
+                         column_config=column_config)
 
         download_done = st.session_state.get('download_done', False)
 

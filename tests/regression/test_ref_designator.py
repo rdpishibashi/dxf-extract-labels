@@ -450,7 +450,7 @@ def test_build_all_regions_summary_includes_unconfirmed_region():
     # build_all_regions_summary() は未確定でも候補をカンマ区切りで載せる。
     rows = ref_designator.build_all_regions_summary(analysis, {}, 'a.dxf', [])
     assert len(rows) == 1
-    assert rows[0]['name'] == 'FX CHAMBER, CM DRV'
+    assert rows[0]['name'] == 'FX CHAMBER | CM DRV'   # 2026-10-17 OR区切りを ` | ` に変更（カンマはANDと誤読されるため）
 
 
 def test_build_all_regions_summary_confirmed_region_uses_chosen_name():

@@ -53,6 +53,13 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     ('R10', OTHER), ('M10', OTHER),   # OTHER_PATTERNS が先に判定される
     #   A+数字1桁
     ('A1', REGION_NAME), ('A9', REGION_NAME),
+    # 1-0. TB で始まるものはすべて機器符号候補（2026-10-17 ユーザー指定。端子台）。末尾 +/- だけは OTHER
+    ('TB', DESIGNATOR), ('TB01', DESIGNATOR), ('TB-1', DESIGNATOR), ('TB 1', DESIGNATOR),
+    ('ＴＢ０１', DESIGNATOR), ('TB10(2.2K)', DESIGNATOR), ('TB1+', OTHER), ('TB1-', OTHER),
+    # 括弧より前にひらがな・カタカナ・漢字を含むものは機器符号候補でも領域名でもない（2026-10-17 ユーザー指定）
+    ('TB取付板', OTHER), ('TB01あ', OTHER), ('DC PS3のみピン番号変更', OTHER), ('MOVE 設定', OTHER),
+    ('CP004 (日本語)', DESIGNATOR),   # 括弧内の日本語は判定に使わない
+    ('SENSOR ユニット', OTHER), ('ユニット', OTHER),   # カタカナも日本語（2026-10-17 ユーザー決定。以前は領域名候補）
     # 3. 英字のみ
     ('CTC', REGION_NAME),                                     # unit_names
     ('GND', OTHER), ('AGND', OTHER), ('MOTOR', OTHER), ('OPEN', OTHER),

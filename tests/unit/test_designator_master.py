@@ -261,6 +261,9 @@ def test_master_code_key_of_elb_cb_matches_plain_elb():
     # 候補パターンのみ一致する符号（一覧には無い）もキー自体は正常に取れる
     ('R10', 'R10'),
     ('R10(2.2K)', 'R10'),
+    # 「符号(別称)番号」形は別称を外して一覧側 master_code_key() と同じキーにする（2026-10-17）
+    ('ELB(CB)001', 'ELB001'), ('ＥＬＢ（ＣＢ）００１', 'ELB001'), ('ELB(CB) 251', 'ELB251'),
+    ('ELB(CB)001 (5A/30mA)', 'ELB001'), ('MCCB(CB)001', 'MCCB001'),
 ])
 def test_label_match_key(label, expected):
     """DXFラベルは `normalize_label()` → `_judgment_text()` の順で判定用

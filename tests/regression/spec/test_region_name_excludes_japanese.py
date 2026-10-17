@@ -21,6 +21,7 @@ _KW = dict(min_letters=3, exclude_lowercase=True, exclude_terms=('NOTE', '☆'),
 @pytest.mark.parametrize('label, valid', [
     ('DC PS3のみピン番号変更', False),       # ひらがな・漢字
     ('AWG24(シールド線)', False),            # 漢字（カタカナ混じり）
+    ('SYSTEM PANEL CLOSE signal use (信号使用)', False),   # 括弧内の日本語も候補にしない（2026-10-17）
     ('MOVE 設定', False),
     ('SYSTEM I/F BOX', True),
     ('MFFX', True),

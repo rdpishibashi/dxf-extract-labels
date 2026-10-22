@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import sys
 import time
@@ -17,6 +18,7 @@ from model.excel_output import (
     display_width, autofit_width, DRAWING_LIST_COLUMN_WIDTH,
 )
 from model import ref_designator
+from model import region_preview
 from model import terminal_detector
 from model import assembly_compare
 from model import designator_master
@@ -114,20 +116,20 @@ _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'region_selection_confirmed',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_')
+_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'ref_results_summary', 'terminal_results', 'extract_preview_expanded',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_EXTRACT_CLEAR_PREFIXES = ()
+_EXTRACT_CLEAR_PREFIXES = ('regprev_result_',)
 
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_')
+_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_')
 
 
 _temp_dxf_file = region_selection.temp_dxf_file
@@ -458,7 +460,32 @@ def _render_global_region_names_section(locked):
         allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option)
 
 
-def _render_region_confirmation_section(enable_region_detection, locked):
+REGION_CONFIRM_HEIGHT_PX = 600
+REGION_PREVIEW_HEIGHT_PX = 720
+REGION_PREVIEW_WARN_BYTES = 8 * 1024 * 1024
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def _render_region_base(dxf_bytes: bytes):
+    """元の図面全体のグレー SVG（DXFバイト列をキーにキャッシュ）。"""
+    return region_preview.render_base_svg(dxf_bytes)
+
+
+def _show_region_viewer(dxf_bytes, overlays, height_px):
+    """領域ビューアを描画する。失敗してもアプリ全体は止めない。"""
+    try:
+        base = _render_region_base(dxf_bytes)
+        html_text = region_preview.build_region_viewer_html(base, overlays, height_px)
+        if not base.cjk_font and not base.empty:
+            st.caption("⚠️ 日本語フォントが見つからないため、日本語の文字はプレビューに表示されません。")
+        if len(html_text) > REGION_PREVIEW_WARN_BYTES:
+            st.caption(f"⚠️ 図面が大きいため表示に時間がかかる場合があります（約 {len(html_text) / 1024 / 1024:.0f}MB）。")
+        components.html(html_text, height=height_px)
+    except Exception as e:
+        st.warning(f"プレビューを表示できませんでした: {e}")
+
+
+def _render_region_confirmation_section(enable_region_detection, locked, uploaded_files=()):
     """「領域の確認」セクション（本体は `region_selection.render_region_confirmation_section()`）。
     「領域選択を完了」が押される（`region_selection_confirmed` が True になる）
     までは表示しない（2026-07-30 ユーザー指定）。"""
@@ -468,8 +495,20 @@ def _render_region_confirmation_section(enable_region_detection, locked):
     if not (enable_region_detection and 'region_analyses' in st.session_state
             and st.session_state.get('region_selection_confirmed')):
         return
+    files = {uf.name: uf for uf in uploaded_files}
+
+    def _file_preview(fname, analysis, pending_regions):
+        """回路全体（グレー）の中で、選択が必要な領域を赤でハイライトする。"""
+        uf = files.get(fname)
+        if uf is None or not pending_regions:
+            return
+        if st.toggle("👁 図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
+            _show_region_viewer(
+                uf.getvalue(), region_preview.confirmation_overlays(pending_regions),
+                REGION_CONFIRM_HEIGHT_PX)
+
     region_selection.render_region_confirmation_section(
-        st.session_state['region_analyses'], locked)
+        st.session_state['region_analyses'], locked, file_preview=_file_preview)
 
 
 def _resolve_assembly_compare(results, compare_assembly_option, master_index=None):
@@ -783,7 +822,29 @@ def render_candidate_filter(df, key):
     return filter_by_candidate(df, selected or [])
 
 
-def _render_results_section(master_index_status=None):
+def _render_region_preview(uploaded_files):
+    """「領域プレビュー」: ファイルごとに、図面上の領域名を選んで表示する（領域モードのみ）。"""
+    full = st.session_state.get('extract_results_full') or {}
+    analyses = st.session_state.get('region_analyses') or {}
+    files = {uf.name: uf for uf in uploaded_files}
+    with st.expander("領域プレビュー", expanded=False):
+        st.caption("ファイルごとに「表示」を ON にすると、図面全体（グレー）の上に領域を重ねて表示します。"
+                   "表示する領域は図面の左のチェックボックスで選べます。")
+        for fname, entry in full.items():
+            rows = (entry or {}).get('region_rows') or []
+            analysis = analyses.get(fname) or {}
+            overlays = region_preview.preview_overlays(analysis, rows) if rows else []
+            col_name, col_toggle = st.columns([5, 1])
+            if not overlays or fname not in files:
+                col_name.write(f"`{fname}`　領域なし")
+                continue
+            n_target = sum(1 for o in overlays if o.style == "target")
+            col_name.write(f"`{fname}`　特定 {n_target}／検出 {len(overlays)} 領域")
+            if col_toggle.toggle("表示", key=f"regprev_result_{fname}"):
+                _show_region_viewer(files[fname].getvalue(), overlays, REGION_PREVIEW_HEIGHT_PX)
+
+
+def _render_results_section(master_index_status=None, uploaded_files=()):
     """抽出結果（統計・ダウンロードボタン・再抽出ボタン）を表示する。
 
     v3.0.0で「機器符号（候補）以外も抽出」「図面番号・タイトル・サブタイトルを
@@ -841,6 +902,9 @@ def _render_results_section(master_index_status=None):
             column_config, table_width = preview_column_config(preview_df)
             st.dataframe(preview_df, width=table_width, hide_index=True,
                          column_config=column_config)
+
+        if is_region_mode:
+            _render_region_preview(uploaded_files)
 
         download_done = st.session_state.get('download_done', False)
 
@@ -911,7 +975,7 @@ def app():
 
     _render_global_region_names_section(locked)
 
-    _render_region_confirmation_section(opts['enable_region_detection'], locked)
+    _render_region_confirmation_section(opts['enable_region_detection'], locked, uploaded_files)
 
     if not locked and (
         not opts['enable_region_detection']
@@ -920,7 +984,7 @@ def app():
         _handle_extract_button(uploaded_files, region_cfg, opts, master_index=master_index)
 
     _render_type_judgment_section(master_index=master_index)
-    _render_results_section(master_index_status=master_index_status)
+    _render_results_section(master_index_status=master_index_status, uploaded_files=uploaded_files)
 
 
 if __name__ == "__main__":

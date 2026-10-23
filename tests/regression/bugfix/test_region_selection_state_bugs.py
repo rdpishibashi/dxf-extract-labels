@@ -20,6 +20,8 @@ sys.path.insert(0, PROJECT_ROOT)
 import streamlit as st  # noqa: E402
 
 from model.ref_designator import unnamed_region_labels  # noqa: E402
+from model import region_choices as rc  # noqa: E402
+from view import region_confirm_viewer as rcv  # noqa: E402
 from view import region_selection as rs  # noqa: E402
 
 SQ = [(0, 0), (10, 0), (10, 10), (0, 10)]
@@ -59,7 +61,7 @@ def test_chosen_candidate_survives_unchecking_another_candidate(state):
     """(1) BBB を選んだまま AAA を外しても、採用は BBB のまま。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='BBB')
+    rcv.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='BBB')
     assert rs.gather_name_selections('f', analysis) == {('f', 0): ['BBB']}
 
     state['grc_AAA'] = False
@@ -67,14 +69,14 @@ def test_chosen_candidate_survives_unchecking_another_candidate(state):
     _init(reg, analysis)  # 「領域の確認」の描画
     assert rs.gather_name_selections('f', analysis) == {('f', 0): ['BBB']}
     # 添字も新しい並び（BBB, CCC）に振り直されている
-    assert state['rc_f_0_0'] is True and state['rc_f_0_1'] is False
+    assert rc.get_value(state, 'f', 0, 0) is True and rc.get_value(state, 'f', 0, 1) is False
 
 
 def test_chosen_candidate_removed_falls_back_to_default(state):
     """(1') 選んでいた候補そのものを外すと、残った候補の既定（先頭）になる。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'cand', checked, idx=2, text='CCC')
+    rcv.apply_viewer_choice('f', reg, 'cand', checked, idx=2, text='CCC')
     state['grc_CCC'] = False
     _init(reg, analysis)
     assert rs.gather_name_selections('f', analysis) == {('f', 0): ['AAA']}
@@ -84,11 +86,11 @@ def test_none_choice_is_kept_when_candidates_change(state):
     """「領域選択しない」を選んでいれば、候補が変わっても実候補を勝手に選ばない。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'none', checked)
+    rcv.apply_viewer_choice('f', reg, 'none', checked)
     state['grc_AAA'] = False
     _init(reg, analysis)
-    assert not any(state.get(f'rc_f_0_{i}') for i in range(3))
-    assert state['rc_f_0_none'] is True
+    assert not any(rc.get_value(state, 'f', 0, i) for i in range(3))
+    assert rc.get_value(state, 'f', 0, 'none') is True
 
 
 @pytest.mark.parametrize('override', ['typed', 'skip'])
@@ -98,31 +100,29 @@ def test_unspecified_region_ignores_typed_name_and_skip_mark(state, override):
     analysis = {'regions': [reg], 'labels': LABELS}
     state['grc_AAA'] = False
     if override == 'typed':
-        state['rc_f_0_typed'] = True
-        state['rc_f_0_typedtext'] = 'ccc'
+        rc.set_value(state, 'f', 0, 'typed', True)
+        rc.set_value(state, 'f', 0, 'typedtext', 'ccc')
     else:
-        state['rc_f_0_skip'] = True
+        rc.set_value(state, 'f', 0, 'skip', True)
     assert rs.gather_name_selections('f', analysis) == {}
 
 
 def test_excluded_unnamed_region_is_inactive_in_viewer_not_adopted(state):
     """(3) 除外した名称なし領域は、viewer では「除外」の灰色（inactive）で、採用（unnamed）に入らない。"""
-    import app
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
     label = unnamed_region_labels(analysis)[0]
     state['grc_' + label] = True
     state['gre_' + label] = True
-    assert app._unnamed_regions(analysis) == []
-    assert [(r['id'], note) for r, _name, note in app._inactive_regions(analysis)] == [(0, '除外')]
+    assert rcv.unnamed_regions(analysis) == []
+    assert [(r['id'], note) for r, _name, note in rcv.inactive_regions(analysis)] == [(0, '除外')]
     assert rs.gather_name_selections('f', analysis) == {}
 
 
 def test_unnamed_region_stays_adopted_when_not_excluded(state):
-    import app
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
-    got = app._unnamed_regions(analysis)
+    got = rcv.unnamed_regions(analysis)
     assert [(r['id'], on) for r, _label, on in got] == [(0, True)]
-    assert app._inactive_regions(analysis) == []
+    assert rcv.inactive_regions(analysis) == []
 
 
 def test_excluded_unnamed_region_does_not_make_file_need_confirmation(state):
@@ -130,14 +130,14 @@ def test_excluded_unnamed_region_does_not_make_file_need_confirmation(state):
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
     label = unnamed_region_labels(analysis)[0]
     state['gre_' + label] = True
-    assert rs.region_confirmation_targets({'f': analysis}, set(), include_unnamed=True) == []
+    assert rs.region_confirmation_targets({'f': analysis}, set()) == []
+    assert rcv.needs_choice(analysis, [], set()) is False
     state['gre_' + label] = False
-    assert [t[0] for t in rs.region_confirmation_targets(
-        {'f': analysis}, set(), include_unnamed=True)] == ['f']
+    assert rcv.needs_choice(analysis, [], set()) is True
 
 
-@pytest.mark.parametrize('key,expected', [('rc_a.dxf_1_none', 0), ('rc_a.dxf_1_skip', 1)])
-def test_viewer_off_summary_counts_skip_mark_not_propagated_none(key, expected):
+@pytest.mark.parametrize('flag,expected', [('none', 0), ('skip', 1)])
+def test_viewer_off_summary_counts_skip_mark_not_propagated_none(flag, expected):
     """(4) 「図面を表示」OFF の件数: 確定領域の採用しない印は `_skip`。伝播で立つ `_none` は数えない。"""
     from streamlit.testing.v1 import AppTest
     analysis = {'regions': [_reg(1, [(1.0, 'A')])], 'labels': [], 'frames': [1]}
@@ -146,10 +146,11 @@ import sys
 sys.path.insert(0, {PROJECT_ROOT!r})
 import streamlit as st
 from app import _render_region_confirmation_section
+from model import region_choices as rc
 st.session_state['region_analyses'] = {{'a.dxf': {analysis!r}}}
 st.session_state['region_selection_confirmed'] = True
 st.session_state['grc_A'] = True
-st.session_state[{key!r}] = True
+rc.set_value(st.session_state, 'a.dxf', 1, {flag!r}, True)
 class _UF:
     name = 'a.dxf'
     def getvalue(self): return b''
@@ -179,14 +180,14 @@ def test_confirmed_region_returns_to_typed_name_after_none_is_cleared(state):
         r = data['regions'][0]
         return r['state'], r['note'], r['name']
 
-    rs.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='m1 drv')
+    rcv.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='m1 drv')
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     assert shown() == ('decided', '', 'M1 DRV')
 
-    rs.apply_viewer_choice('f', reg, 'editnone', checked)
+    rcv.apply_viewer_choice('f', reg, 'editnone', checked)
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
     assert shown()[:2] == ('unnamed_off', '領域選択しない')
 
-    rs.apply_viewer_choice('f', reg, 'editnoneoff', checked)
+    rcv.apply_viewer_choice('f', reg, 'editnoneoff', checked)
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     assert shown() == ('decided', '', 'M1 DRV')

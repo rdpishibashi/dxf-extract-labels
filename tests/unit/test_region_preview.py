@@ -16,6 +16,7 @@ from ezdxf.fonts import font_manager as ezdxf_font_manager
 from ezdxf.fonts import fonts as ezdxf_fonts
 
 from model import region_preview as rp
+from view import region_confirm_viewer as rcv
 from view import region_selection
 
 
@@ -54,11 +55,6 @@ def test_empty_dxf_is_empty_without_error():
     assert base.empty
 
 
-def test_shared_hook_defaults_to_none():
-    params = inspect.signature(region_selection.render_region_confirmation_section).parameters
-    assert params["file_preview"].default is None
-
-
 @pytest.fixture
 def no_system_fonts(monkeypatch):
     manager = ezdxf_fonts.font_manager
@@ -82,8 +78,9 @@ def test_renders_japanese_text_without_system_fonts(no_system_fonts):
     assert not base.empty
 
 
-def test_select_all_is_opt_in_and_viewer_has_fullscreen_button():
-    """「すべての領域名を特定にする」は DXF-extract-labels だけが有効にし、viewer に全画面ボタンがある。"""
+def test_table_hook_is_opt_in_and_viewer_has_fullscreen_button():
+    """「抽出領域の選択」の表の上のフック（DXF-extract-labels が「すべての領域名を特定にする」ボタンに使う）は
+    既定で何も出さず、viewer に全画面ボタンがある。"""
     params = inspect.signature(region_selection.render_global_region_names_section).parameters
-    assert params["show_select_all"].default is False
-    assert 'data-act="fs"' in rp.CONFIRM_JS
+    assert params["above_table"].default is None
+    assert 'data-act="fs"' in rcv.CONFIRM_JS

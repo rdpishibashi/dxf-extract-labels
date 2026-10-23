@@ -14,6 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 import streamlit as st  # noqa: E402
+from model import region_choices as rc  # noqa: E402
 import app  # noqa: E402
 
 
@@ -46,11 +47,11 @@ def _set_analyses(regions_by_file):
 
 
 def _set_checkbox(fname, reg_id, idx, value):
-    st.session_state[f"rc_{fname}_{reg_id}_{idx}"] = value
+    rc.set_value(st.session_state, fname, reg_id, idx, value)
 
 
 def _get_checkbox(fname, reg_id, idx):
-    return st.session_state.get(f"rc_{fname}_{reg_id}_{idx}")
+    return rc.get_value(st.session_state, fname, reg_id, idx)
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ def test_on_change_none_turns_on_none_when_other_region_left_with_nothing_select
 
     assert _get_checkbox('f.dxf', 1, 0) is False
     assert _get_checkbox('f.dxf', 1, 1) is False
-    assert st.session_state.get('rc_f.dxf_1_none') is True  # Bの「選択しない」がON
+    assert rc.get_value(st.session_state, 'f.dxf', 1, 'none') is True  # Bの「選択しない」がON
 
 
 def test_on_change_none_does_not_turn_on_none_when_other_candidate_remains_selected():
@@ -132,7 +133,7 @@ def test_on_change_none_does_not_turn_on_none_when_other_candidate_remains_selec
 
     assert _get_checkbox('f.dxf', 1, 0) is False
     assert _get_checkbox('f.dxf', 1, 1) is True  # 無関係な選択は維持
-    assert st.session_state.get('rc_f.dxf_1_none') is not True  # 何か選ばれているのでONにしない
+    assert rc.get_value(st.session_state, 'f.dxf', 1, 'none') is not True  # 何か選ばれているのでONにしない
 
 
 def test_on_change_none_propagates_across_files():
@@ -176,8 +177,8 @@ def test_on_change_none_includes_single_candidate_regions():
     assert _get_checkbox('f.dxf', 0, 0) is False
     assert _get_checkbox('f.dxf', 1, 0) is False  # 候補1件のみでも OFF になる
     assert _get_checkbox('f.dxf', 2, 0) is False
-    assert st.session_state.get('rc_f.dxf_1_none') is True  # 全滅なので選択しないもON
-    assert st.session_state.get('rc_f.dxf_2_none') is True
+    assert rc.get_value(st.session_state, 'f.dxf', 1, 'none') is True  # 全滅なので選択しないもON
+    assert rc.get_value(st.session_state, 'f.dxf', 2, 'none') is True
 
 
 def test_on_change_none_noop_when_not_checked():
@@ -207,6 +208,6 @@ def test_on_change_radio_still_propagates_on_and_clears_none():
     app._on_change_radio('f.dxf', 0, 0, 2, 'X', {'X', 'Y', 'Z'})
 
     assert _get_checkbox('f.dxf', 0, 1) is False       # 同一領域の他候補はOFF
-    assert st.session_state.get('rc_f.dxf_0_none') is False  # 選択しないが解除される
+    assert rc.get_value(st.session_state, 'f.dxf', 0, 'none') is False  # 選択しないが解除される
     assert _get_checkbox('f.dxf', 1, 0) is True        # 他領域のXがON
     assert _get_checkbox('f.dxf', 1, 1) is False        # 他領域のZはOFF

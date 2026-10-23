@@ -348,3 +348,66 @@ def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
     assert data['choices'] == {}
     assert data['labelNames'] == ['CN CS', 'M1 DRV']
     assert 'list="rp-dl"' in rp.CONFIRM_JS
+
+
+def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(state):
+    """確定済み・無名の領域の「（領域選択しない）」は採用しない印（['']）。入力名とは排他で、
+    外すと自動の名称に戻る。同じ候補を持つ他の確定領域には伝播しない。"""
+    st.session_state['grc_CN CS'] = True
+    labels = [('M1 DRV', 5, 5), ('CN CS', 6, 6)]
+    a, b = _reg(1, [(1.0, 'CN CS')]), _reg(2, [(1.0, 'CN CS')])
+    analysis = {'regions': [a, b], 'labels': labels}
+    checked = {'CN CS'}
+
+    rs.apply_viewer_choice('f', a, 'editnone', checked)
+    sel = rs.gather_name_selections('f', analysis)
+    assert sel[('f', 1)] == [''] and sel[('f', 2)] == ['CN CS']
+
+    rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')  # 入力すると「選択しない」は外れる
+    assert st.session_state['rc_f_1_none'] is False
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
+    rs.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」を選ぶと入力名は無効
+    assert st.session_state['rc_f_1_typed'] is False
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
+
+    rs.apply_viewer_choice('f', a, 'editnoneoff', checked)
+    rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')
+    rs.apply_viewer_choice('f', a, 'typedoff', checked)  # 入力欄を空にする＝自動の名称に戻る
+    assert st.session_state['rc_f_1_typedtext'] == ''
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['CN CS']
+
+
+def test_viewer_data_marks_none_region_gray(state):
+    import ezdxf, io
+    doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+    dec = _reg(1, [(1.0, 'CN CS')])
+    st.session_state['rc_f_1_none'] = True
+    data = rp.build_confirmation_data(
+        base, 'f', {'labels': [('CN CS', 6, 6)]}, [], [(dec, 'CN CS')], st.session_state, {'CN CS'}, False,
+        rs.match_typed_region_name, lambda r, c: [])
+    reg = data['regions'][0]
+    assert (reg['state'], reg['note'], reg['name']) == ('unnamed_off', '領域選択しない', 'CN CS')
+    assert data['choices']['1']['none'] is True
+
+
+def test_app_confirmation_wraps_every_file_in_expander_with_status_suffix():
+    """全ファイルをファイル名のABC順の開閉枠に入れ、「（確定のみ）」「（選択の必要あり）」を付ける。"""
+    two = {'regions': [dict(_reg(0, [(1.0, 'A'), (2.0, 'B')]), name_candidates=[(1.0, 'A'), (2.0, 'B')])],
+           'labels': [], 'frames': [1]}
+    one = {'regions': [_reg(0, [(1.0, 'C')])], 'labels': [], 'frames': [1]}
+    script = f'''
+import sys
+sys.path.insert(0, {PROJECT_ROOT!r})
+import streamlit as st
+from app import _render_region_confirmation_section
+st.session_state['region_analyses'] = {{'b.dxf': {two!r}, 'a.dxf': {one!r}}}
+st.session_state['region_selection_confirmed'] = True
+for n in ('A', 'B', 'C'):
+    st.session_state['grc_' + n] = True
+_render_region_confirmation_section(enable_region_detection=True, locked=False)
+'''
+    at = AppTest.from_string(script, default_timeout=20).run()
+    assert at.exception.len == 0
+    assert [e.label for e in at.expander] == ['a.dxf（確定のみ）', 'b.dxf（選択の必要あり）']

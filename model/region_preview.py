@@ -265,8 +265,12 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
     def editable_choice(r):
         typedtext = state.get(f"rc_{fname}_{r['id']}_typedtext", "") or ""
         used, matched = override(r)
-        return {"cands": [], "none": False, "typed": used, "typedtext": typedtext,
+        return {"cands": [], "none": bool(state.get(f"rc_{fname}_{r['id']}_none", False)),
+                "typed": used, "typedtext": typedtext,
                 "typedMatch": matched if used else None, "editable": True}
+
+    def is_none(r):
+        return bool(state.get(f"rc_{fname}_{r['id']}_none", False))
 
     for r, name in decided:
         corners = _poly_of(r)
@@ -275,13 +279,16 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         pts = svg_pts(corners)
         used, matched = override(r)
         shown_state, shown_name = "decided", name
+        note = ""
         if used:  # 入力した領域名が優先（一致しなければ未選択）
             shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
+        elif is_none(r):
+            shown_state, note = "unnamed_off", "領域選択しない"
         regions.append({
-            "key": f"d{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name,
+            "key": f"d{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name, "note": note,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
             "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
-            "geoms": geoms(shown_name) if shown_state == "decided" else [], "editable": True,
+            "geoms": geoms(shown_name) if shown_state == "decided" or note else [], "editable": True,
         })
         choices[str(r["id"])] = editable_choice(r)
     for r, label, adopted in unnamed:
@@ -291,14 +298,18 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         pts = svg_pts(corners)
         used, matched = override(r)
         shown_state, shown_name = ("unnamed" if adopted else "unnamed_off"), label
+        note = "" if adopted else "特定OFF"
         if used:
             shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
+            note = ""
+        elif is_none(r):
+            shown_state, note = "unnamed_off", "領域選択しない"
         regions.append({
             "key": f"u{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
             "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
             "geoms": geoms(shown_name) if used and matched else [], "editable": True,
-            "note": "" if (adopted or used) else "特定OFF",
+            "note": note,
         })
         choices[str(r["id"])] = editable_choice(r)
     for r, name, note in inactive:
@@ -456,8 +467,14 @@ export default function(component) {
       if (ch.typed) return;
       ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true;
     } else if (kind === 'typedoff') {
-      if (!ch.typed) return;
-      ch.typed = false;
+      if (!ch.typed && !ch.typedtext) return;
+      ch.typed = false; ch.typedtext = '';
+    } else if (kind === 'editnone') {
+      if (ch.none) return;
+      ch.none = true; ch.typed = false;
+    } else if (kind === 'editnoneoff') {
+      if (!ch.none) return;
+      ch.none = false;
     } else if (kind === 'typedtext') {
       ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedtext = typedText;
     }
@@ -513,14 +530,27 @@ export default function(component) {
     // 「領域」には確定した領域だけを出す（要選択の領域は「抽出領域の選択」の中で表示を切り替える）
     let h = '<datalist id="rp-dl">' + (d.labelNames || []).map((n) => '<option value="' + esc(n) + '">').join('') + '</datalist>';
     h += '<h4>領域</h4>';
+    const dis = d.locked ? ' dis' : '';
+    const msg = (ch) => ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
+                                      : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
     d.regions.filter((r) => r.state !== 'pending').forEach((r) => {
       const col = regColor(r, C);
-      h += '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
+      h += '<div class="rp-reg"><label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
            '<span class="rp-sw" style="background:' + col + '"></span><span>' + esc(r.label) +
-           (r.state !== 'pending' ? '　' + esc(r.name) + (r.note ? '（' + esc(r.note) + '）' : '') : '') + '</span></label>';
+           '　' + esc(r.name) + (r.note ? '（' + esc(r.note) + '）' : '') + '</span></label>';
+      const ch = d.choices[String(r.id)];
+      if (ch && r.editable) {
+        // 確定済み・無名の領域: 直下で名称を入力し直す／領域選択しない。入力欄を空にすると自動の名称に戻る
+        h += '<h4>領域名を入力</h4>' +
+             '<input type="text" list="rp-dl" data-ex="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
+             'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
+        if (ch.typed) h += msg(ch);
+        h += '<label class="' + dis.trim() + '"><input type="checkbox" data-en="' + r.id + '" ' + (ch.none ? 'checked ' : '') +
+             (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
+      }
+      h += '</div>';
     });
     h += '<h4>抽出領域の選択</h4>';
-    const dis = d.locked ? ' dis' : '';
     d.regions.filter((r) => r.state === 'pending').forEach((r) => {
       const ch = d.choices[String(r.id)];
       h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>' +
@@ -534,20 +564,6 @@ export default function(component) {
            (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
       h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
            (d.locked ? 'disabled' : '') + '><span>領域名を入力</span></label>';
-      h += '<input type="text" list="rp-dl" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
-           'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
-      if (ch.typed) {
-        h += ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
-                           : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
-      }
-      h += '</div>';
-    });
-    // 確定した領域・無名領域: 「領域名を入力」で名称を変更できる
-    d.regions.filter((r) => r.state !== 'pending' && d.choices[String(r.id)]).forEach((r) => {
-      const ch = d.choices[String(r.id)];
-      h += '<div class="rp-reg"><b style="color:' + regColor(r, C) + '">' + esc(r.label) + '　' + esc(r.name) + '</b>';
-      h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
-           (d.locked ? 'disabled' : '') + '><span>領域名を入力（この領域の名称を変更）</span></label>';
       h += '<input type="text" list="rp-dl" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
            'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
       if (ch.typed) {
@@ -585,6 +601,15 @@ export default function(component) {
         return;
       }
       choose(rid, 'typed');
+    }));
+    S.side.querySelectorAll('input[data-ex]').forEach((el) => el.addEventListener('change', () => {
+      const rid = Number(el.getAttribute('data-ex'));
+      if (el.value.trim() === '') { choose(rid, 'typedoff', undefined, '', ''); return; }
+      choose(rid, 'typedtext', undefined, '', el.value);
+    }));
+    S.side.querySelectorAll('input[data-en]').forEach((el) => el.addEventListener('change', () => {
+      const rid = Number(el.getAttribute('data-en'));
+      choose(rid, el.checked ? 'editnone' : 'editnoneoff');
     }));
     S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => {
       choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);

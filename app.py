@@ -582,18 +582,20 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
         uf = files.get(fname)
         if uf is None or not analysis.get('regions'):
             return False
-        if not st.toggle("図面で領域を確認", value=False, key=f"regprev_confirm_{fname}",
+        if not st.toggle("図面を表示して領域を確認", value=False, key=f"regprev_confirm_{fname}",
                          on_change=_only_this_viewer, args=(fname,)):
-            # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）。
-            # viewer で名称を変更した領域は、ページ上では編集できないので注記する
-            changed = [
-                f"図面{r['frame'] + 1} / 領域{r['id'] + 1}"
-                for r in analysis.get('regions', [])
-                if st.session_state.get(f"rc_{fname}_{r['id']}_typed")
-                and r['id'] not in {p['id'] for p in pending_regions}]
-            if changed:
-                st.caption("図面の viewer で領域名を入力して変更した領域: " + "、".join(changed))
-            return False
+            # OFF: 選択・入力はすべて図面（viewer）の中で行う。ここでは状況だけを示す
+            pending_ids = {r['id'] for r in pending_regions}
+            n_changed = sum(
+                1 for r in analysis.get('regions', [])
+                if r['id'] not in pending_ids
+                and (st.session_state.get(f"rc_{fname}_{r['id']}_typed")
+                     or st.session_state.get(f"rc_{fname}_{r['id']}_none")))
+            st.caption(
+                f"検出領域 {len(analysis.get('regions', []))} 個"
+                f"（要選択 {len(pending_regions)} 個・図面で名称を変更または選択しない {n_changed} 個）。"
+                "選択・名称の入力は、図面を表示して行います。")
+            return True
         _show_region_confirm_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)
         return True  # ON: 選択は viewer の中で行う
 

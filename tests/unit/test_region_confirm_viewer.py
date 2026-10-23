@@ -408,7 +408,11 @@ st.session_state['region_analyses'] = {{'b.dxf': {two!r}, 'a.dxf': {one!r}, 'c.d
 st.session_state['region_selection_confirmed'] = True
 for n in ('A', 'B', 'C'):
     st.session_state['grc_' + n] = True
-_render_region_confirmation_section(enable_region_detection=True, locked=False)
+class _UF:
+    def __init__(self, name): self.name = name
+    def getvalue(self): return b''
+_render_region_confirmation_section(enable_region_detection=True, locked=False,
+                                    uploaded_files=[_UF('a.dxf'), _UF('b.dxf'), _UF('c.dxf')])
 '''
     at = AppTest.from_string(script, default_timeout=20).run()
     assert at.exception.len == 0

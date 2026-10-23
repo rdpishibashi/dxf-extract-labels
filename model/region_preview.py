@@ -480,29 +480,52 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         return [dict(label_geom(base, lab), text=lab[0]) for lab in resolve_labels(text, labels)]
 
     regions, choices = [], {}
-    for reg in decided:
-        r, name = reg
+
+    def override(r):
+        """確定済み・無名の領域に「領域名を入力」を使っているときの (使用中か, 一致したラベル or None)。"""
+        k = f"rc_{fname}_{r['id']}_typed"
+        if not state.get(k, False):
+            return False, None
+        return True, match_fn(state.get(f"rc_{fname}_{r['id']}_typedtext", "") or "", labels)
+
+    def editable_choice(r):
+        typedtext = state.get(f"rc_{fname}_{r['id']}_typedtext", "") or ""
+        used, matched = override(r)
+        return {"cands": [], "none": False, "typed": used, "typedtext": typedtext,
+                "typedMatch": matched if used else None, "editable": True}
+
+    for r, name in decided:
         corners = _poly_of(r)
         if not corners:
             continue
         pts = svg_pts(corners)
+        used, matched = override(r)
+        shown_state, shown_name = "decided", name
+        if used:  # 入力した領域名が優先（一致しなければ未選択）
+            shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
         regions.append({
-            "key": f"d{r['id']}", "id": r["id"], "state": "decided", "name": name,
+            "key": f"d{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
             "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
-            "geoms": geoms(name),
+            "geoms": geoms(shown_name) if shown_state == "decided" else [], "editable": True,
         })
+        choices[str(r["id"])] = editable_choice(r)
     for r, label, adopted in unnamed:
         corners = _poly_of(r)
         if not corners:
             continue
         pts = svg_pts(corners)
+        used, matched = override(r)
+        shown_state, shown_name = ("unnamed" if adopted else "unnamed_off"), label
+        if used:
+            shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
         regions.append({
-            "key": f"u{r['id']}", "id": r["id"], "state": "unnamed" if adopted else "unnamed_off", "name": label,
+            "key": f"u{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
             "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
-            "geoms": [],
+            "geoms": geoms(shown_name) if used and matched else [], "editable": True,
         })
+        choices[str(r["id"])] = editable_choice(r)
     for r in pending:
         corners = _poly_of(r)
         if not corners:
@@ -645,6 +668,9 @@ export default function(component) {
     } else if (kind === 'typed') {
       if (ch.typed) return;
       ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true;
+    } else if (kind === 'typedoff') {
+      if (!ch.typed) return;
+      ch.typed = false;
     } else if (kind === 'typedtext') {
       ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedtext = typedText;
     }
@@ -697,8 +723,9 @@ export default function(component) {
 
     // --- 左パネル ---
     const scroll = S.side.scrollTop;
+    // 「領域」には確定した領域だけを出す（要選択の領域は「抽出領域の選択」の中で表示を切り替える）
     let h = '<h4>領域</h4>';
-    d.regions.forEach((r) => {
+    d.regions.filter((r) => r.state !== 'pending').forEach((r) => {
       const col = regColor(r, C);
       h += '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
            '<span class="rp-sw" style="background:' + col + '"></span><span>' + esc(r.label) +
@@ -708,7 +735,8 @@ export default function(component) {
     const dis = d.locked ? ' dis' : '';
     d.regions.filter((r) => r.state === 'pending').forEach((r) => {
       const ch = d.choices[String(r.id)];
-      h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>';
+      h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>' +
+           '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '><span>図面に表示</span></label>';
       ch.cands.forEach((c) => {
         h += '<label class="' + dis.trim() + '"><input type="checkbox" data-c="' + r.id + ':' + c.idx + '" ' +
              (c.selected ? 'checked ' : '') + (d.locked ? 'disabled' : '') + '><span class="rp-sw" style="background:' +
@@ -718,6 +746,20 @@ export default function(component) {
            (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
       h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
            (d.locked ? 'disabled' : '') + '><span>領域名を入力</span></label>';
+      h += '<input type="text" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
+           'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
+      if (ch.typed) {
+        h += ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
+                           : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
+      }
+      h += '</div>';
+    });
+    // 確定した領域・無名領域: 「領域名を入力」で名称を変更できる
+    d.regions.filter((r) => r.state !== 'pending' && d.choices[String(r.id)]).forEach((r) => {
+      const ch = d.choices[String(r.id)];
+      h += '<div class="rp-reg"><b style="color:' + regColor(r, C) + '">' + esc(r.label) + '　' + esc(r.name) + '</b>';
+      h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
+           (d.locked ? 'disabled' : '') + '><span>領域名を入力（この領域の名称を変更）</span></label>';
       h += '<input type="text" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
            'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
       if (ch.typed) {
@@ -747,8 +789,14 @@ export default function(component) {
       choose(Number(el.getAttribute('data-n')), 'none');
     }));
     S.side.querySelectorAll('input[data-t]').forEach((el) => el.addEventListener('change', () => {
-      if (!el.checked) { render(); return; }
-      choose(Number(el.getAttribute('data-t')), 'typed');
+      const rid = Number(el.getAttribute('data-t'));
+      if (!el.checked) {
+        // 確定した領域は「領域名を入力」を外すと元の名称に戻る。要選択の領域は他の選択肢を選ぶ
+        const r = S.data.regions.find((x) => x.id === rid);
+        if (r && r.editable) choose(rid, 'typedoff'); else render();
+        return;
+      }
+      choose(rid, 'typed');
     }));
     S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => {
       choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);

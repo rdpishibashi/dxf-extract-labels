@@ -514,6 +514,9 @@ def _decided_regions(analysis, pending_regions):
 def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
     """「領域の確認」の viewer。viewer 内の選択を正本（`rc_…`）へ反映する。"""
     checked = region_selection.global_checked_region_names()
+    # 確定済み・無名の領域も「領域名を入力」で名称を変更できる（状態の正本を初期化）
+    for reg, *_rest in _decided_regions(analysis, pending_regions) + _unnamed_regions(analysis):
+        region_selection.ensure_typed_defaults(fname, reg['id'])
     try:
         base = _render_region_base(dxf_bytes)
         data = region_preview.build_confirmation_data(
@@ -531,7 +534,7 @@ def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, loc
     seq_key = f"regprev_seq_{fname}"
     if choice and choice.get('seq') != st.session_state.get(seq_key) and not locked:
         st.session_state[seq_key] = choice.get('seq')
-        reg = next((r for r in pending_regions if r['id'] == choice.get('region')), None)
+        reg = next((r for r in analysis.get('regions', []) if r['id'] == choice.get('region')), None)
         if reg is not None:
             region_selection.apply_viewer_choice(
                 fname, reg, choice.get('kind'), checked, idx=choice.get('idx'),
@@ -571,7 +574,16 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
         if uf is None or not (pending_regions or unnamed_region_labels(analysis)):
             return False
         if not st.toggle("図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
-            return False  # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）
+            # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）。
+            # viewer で名称を変更した領域は、ページ上では編集できないので注記する
+            changed = [
+                f"図面{r['frame'] + 1} / 領域{r['id'] + 1}"
+                for r in analysis.get('regions', [])
+                if st.session_state.get(f"rc_{fname}_{r['id']}_typed")
+                and r['id'] not in {p['id'] for p in pending_regions}]
+            if changed:
+                st.caption("図面の viewer で領域名を入力して変更した領域: " + "、".join(changed))
+            return False
         _show_region_confirm_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)
         return True  # ON: 選択は viewer の中で行う
 

@@ -55,11 +55,11 @@ def test_typed_name_follows_last_input_and_mismatch_means_unselected(state):
     st.session_state['rc_f_1_typedtext'] = 'rack2'
     assert rs.gather_name_selections('f', analysis) == {('f', 1): ['RACK2']}
     st.session_state['rc_f_1_typedtext'] = 'zzz'
-    assert rs.gather_name_selections('f', analysis) == {}
+    assert rs.gather_name_selections('f', analysis) == {('f', 1): ['']}  # 不一致＝未選択（採用しない印）
     st.session_state['rc_f_1_typedtext'] = 'ab1'
     assert rs.gather_name_selections('f', analysis) == {('f', 1): ['ＡＢ１']}
     st.session_state['rc_f_1_typedtext'] = ''
-    assert rs.gather_name_selections('f', analysis) == {}
+    assert rs.gather_name_selections('f', analysis) == {('f', 1): ['']}
 
 
 def test_typed_is_exclusive_with_candidates_and_none(state):
@@ -291,3 +291,43 @@ def test_build_confirmation_data_includes_unnamed_regions(state):
         rs.match_typed_region_name, lambda r, c: [],
         unnamed=[(un_on, 'no name 1', True), (un_off, 'no name 2', False)])
     assert {r['key']: r['state'] for r in data['regions']} == {'u5': 'unnamed', 'u6': 'unnamed_off'}
+
+
+def test_typed_override_applies_to_decided_and_unnamed_regions(state):
+    """確定済み（候補1件で自動決定）・無名の領域も、「領域名を入力」で名称を変更できる。
+    一致しなければ未選択（['']＝採用しない印。自動決定の名称には戻らない）。"""
+    st.session_state['grc_CN CS'] = True
+    labels = [('M1 DRV', 5, 5), ('CN CS', 6, 6)]
+    decided = _reg(1, [(1.0, 'CN CS')])
+    unnamed = _reg(2, [])
+    analysis = {'regions': [decided, unnamed], 'labels': labels}
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['CN CS']  # 変更前
+
+    st.session_state.update({'rc_f_1_typed': True, 'rc_f_1_typedtext': 'm1 drv'})
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
+    st.session_state['rc_f_1_typedtext'] = 'xxx'
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']  # 不一致は未選択
+
+    st.session_state.update({'rc_f_2_typed': True, 'rc_f_2_typedtext': 'm1 drv'})
+    assert rs.gather_name_selections('f', analysis)[('f', 2)] == ['M1 DRV']  # 無名領域にも名前を付けられる
+
+    rs.apply_viewer_choice('f', decided, 'typedoff', {'CN CS'})  # 外すと元の自動決定に戻る
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['CN CS']
+
+
+def test_viewer_data_lists_only_confirmed_regions_as_editable(state):
+    import ezdxf, io
+    doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+    far = [(50, 50), (60, 50), (60, 60), (50, 60)]
+    dec, un = _reg(1, [(1.0, 'CN CS')]), _reg(2, [], poly=far)
+    st.session_state.update({'rc_f_1_typed': True, 'rc_f_1_typedtext': 'm1 drv'})
+    data = rp.build_confirmation_data(
+        base, 'f', {'labels': [('M1 DRV', 5, 5), ('CN CS', 6, 6)]}, [], [(dec, 'CN CS')], st.session_state,
+        {'CN CS'}, False, rs.match_typed_region_name, lambda r, c: [], unnamed=[(un, 'no name 2', True)])
+    by_key = {r['key']: r for r in data['regions']}
+    assert by_key['d1']['name'] == 'M1 DRV' and by_key['d1']['state'] == 'decided'  # 入力名が優先
+    assert by_key['d1']['editable'] and by_key['u2']['editable']
+    assert data['choices']['1']['typed'] is True and data['choices']['1']['typedMatch'] == 'M1 DRV'
+    assert data['choices']['2']['typed'] is False

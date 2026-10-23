@@ -51,6 +51,10 @@ STYLE_COLORS: Dict[str, Tuple[str, str]] = {
 }
 
 
+# `BaseRender` の項目を変えたら上げる（app.py の cache_data のキーに含める）
+BASE_RENDER_VERSION = 2
+
+
 @dataclass
 class BaseRender:
     inner_svg: str = ""
@@ -195,7 +199,7 @@ def label_geom(base: BaseRender, label) -> dict:
     {x, y: SVG 座標, anchor: 'start'|'middle'|'end', base: 'hanging'|'central'|'text-after-edge',
      size: 文字の高さ(SVG単位。不明なら None), rot: SVG での回転角度}"""
     text, x, y = label
-    anchor, vpos, height, rot = base.labels.get((text, round(x, 1), round(y, 1)),
+    anchor, vpos, height, rot = getattr(base, "labels", {}).get((text, round(x, 1), round(y, 1)),
                                                 ("middle", "middle", 0.0, 0.0))
     sx, sy = _to_svg(base.matrix, x, y)
     ux, uy = _to_svg(base.matrix, x + 1.0, y)

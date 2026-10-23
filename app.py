@@ -470,8 +470,10 @@ REGION_PREVIEW_WARN_BYTES = 8 * 1024 * 1024
 
 
 @st.cache_data(show_spinner=False, max_entries=20)
-def _render_region_base(dxf_bytes: bytes):
-    """元の図面全体の白 SVG（DXFバイト列をキーにキャッシュ）。"""
+def _render_region_base(dxf_bytes: bytes, version: int = region_preview.BASE_RENDER_VERSION):
+    """元の図面全体の白 SVG（DXFバイト列と `BaseRender` の版をキーにキャッシュ）。
+    `BaseRender` の項目を変えたら版を上げる（古い形のキャッシュが残って AttributeError に
+    なるのを防ぐ。実行中のアプリはコードを更新してもキャッシュが残るため）。"""
     return region_preview.render_base_svg(dxf_bytes)
 
 
@@ -568,7 +570,7 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
         uf = files.get(fname)
         if uf is None or not (pending_regions or unnamed_region_labels(analysis)):
             return False
-        if not st.toggle("👁 図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
+        if not st.toggle("図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
             return False  # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）
         _show_region_confirm_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)
         return True  # ON: 選択は viewer の中で行う

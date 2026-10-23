@@ -28,6 +28,8 @@ from ezdxf.fonts import font_manager as ezdxf_font_manager
 from ezdxf.fonts import fonts as ezdxf_fonts
 from ezdxf.math import Matrix44, Vec3
 
+from model import region_choices as rc
+
 SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG_NS)
 
@@ -238,7 +240,7 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
     """viewer 部品に渡す data（JSON 化できる dict）を作る。streamlit 非依存。
 
     pending: 選択が必要な領域（reg dict のリスト）／decided: `[(reg, 確定した名称), ...]`
-    state: 選択状態の正本（`st.session_state` 互換の dict。キー `rc_<fname>_<id>_…`）
+    state: 選択状態の正本（`st.session_state` 互換の dict。キー `rc_<fname>_<id>` のレコード。`model/region_choices.py`）
     unnamed: 名称が無い領域 `[(reg, 表示名, 採用するか), ...]`（採用する＝赤、しない＝灰。ラベルは元の図面に無いので多角形の左上）
     candidates_fn(reg, checked_names) -> [(距離, 文字列), ...]（共有側の `pending_candidates_for_region`）
     inactive: 抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」「特定OFF」。灰色で表示し、名称は変更できない）
@@ -257,20 +259,19 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
 
     def override(r):
         """確定済み・無名の領域に「領域名を入力」を使っているときの (使用中か, 一致したラベル or None)。"""
-        k = f"rc_{fname}_{r['id']}_typed"
-        if not state.get(k, False):
+        if not rc.get_value(state, fname, r['id'], 'typed', False):
             return False, None
-        return True, match_fn(state.get(f"rc_{fname}_{r['id']}_typedtext", "") or "", labels)
+        return True, match_fn(rc.get_value(state, fname, r['id'], 'typedtext', "") or "", labels)
 
     def editable_choice(r):
-        typedtext = state.get(f"rc_{fname}_{r['id']}_typedtext", "") or ""
+        typedtext = rc.get_value(state, fname, r['id'], 'typedtext', "") or ""
         used, matched = override(r)
-        return {"cands": [], "none": bool(state.get(f"rc_{fname}_{r['id']}_skip", False)),
+        return {"cands": [], "none": bool(rc.get_value(state, fname, r['id'], 'skip', False)),
                 "typed": used, "typedtext": typedtext,
                 "typedMatch": matched if used else None, "editable": True}
 
     def is_none(r):
-        return bool(state.get(f"rc_{fname}_{r['id']}_skip", False))
+        return bool(rc.get_value(state, fname, r['id'], 'skip', False))
 
     for r, name in decided:
         corners = _poly_of(r)
@@ -328,24 +329,24 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         if not corners:
             continue
         rid = r["id"]
-        k = lambda suffix: f"rc_{fname}_{rid}_{suffix}"
+        val = lambda suffix, default=None: rc.get_value(state, fname, rid, suffix, default)
         pts = svg_pts(corners)
         cands = []
         for i, (d, t) in enumerate(candidates_fn(r, checked_names)):
             cands.append({
                 "idx": i, "text": t, "dist": round(float(d), 1),
-                "selected": bool(state.get(k(i), False)),
+                "selected": bool(val(i, False)),
                 "geoms": geoms(t),
             })
-        typedtext = state.get(k("typedtext"), "") or ""
+        typedtext = val("typedtext", "") or ""
         regions.append({
             "key": f"p{rid}", "id": rid, "state": "pending", "name": "",
             "label": f"図面{r['frame'] + 1} / 領域{rid + 1}（{r['area_pct']:.0f}%）",
             "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
         })
         choices[str(rid)] = {
-            "cands": cands, "none": bool(state.get(k("none"), False)),
-            "typed": bool(state.get(k("typed"), False)), "typedtext": typedtext,
+            "cands": cands, "none": bool(val("none", False)),
+            "typed": bool(val("typed", False)), "typedtext": typedtext,
             "typedMatch": match_fn(typedtext, labels) if typedtext else None,
         }
     return {

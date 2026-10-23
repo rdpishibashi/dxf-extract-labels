@@ -18,35 +18,34 @@ DXF-label-comparison にバイト一致のコピーがあり、同プロジェ�
     表示しないため、常に空）
   - `region_list_editor`: 「領域一覧」表のウィジェット状態（key用ver・元データ・
     最後に書いたチェック状態）。チェック操作で表を作り直さないための固定用
-  - `rc_<ファイルキー>_<領域id>_<i>` / `rc_<ファイルキー>_<領域id>_none`:
-    「領域の確認」の選択状態の**正本**（widget key ではない。ページ上のチェックボックスは
-    `rcw_…` で、毎回この正本から写す。viewer ON のときにチェックボックスを描かない回があっても
-    Streamlit に消されないようにするため）。`_typed`（「領域名を入力」を選んだか）・
-    `_typedtext`（入力文字列）も同じ正本
+  - `rc_<ファイルキー>_<領域id>`: 「領域の確認」の選択状態の**正本**（1領域1レコードの dict。形と
+    遷移は `model/region_choices.py`）。widget key ではない: ページ上のチェックボックスは
+    `rcw_…` で、毎回この正本から写す（viewer ON のときにチェックボックスを描かない回があっても
+    Streamlit に消されないようにするため）。「領域名を入力」の選択と入力文字列も同じ正本
 """
 import contextlib
 import os
 import time
-import unicodedata
 
 import pandas as pd
 import streamlit as st
 
+from model import region_choices as rc
 from model.common_utils import save_uploadedfile, normalize_width
 from model.region_detector import (
-    DEFAULT_REGION_CONFIG, regions_overlap,
+    DEFAULT_REGION_CONFIG,
     pending_candidates_for_region,
 )
 from model.extraction_pipeline import detect_file_regions, extract_file_data
 from model.region_decisions import (
-    DECIDED, EXCLUDED, OTHER_FRAME, PENDING, UNNAMED, UNSPECIFIED,
+    DECIDED, OTHER_FRAME, PENDING, UNNAMED,
     classify_regions, region_excluded, resolve_by_other_frames,
 )
 
 # 「領域一覧」セクションの見出し（2026-10-17 ユーザー指定で改称。コード中の「領域一覧」は同じ
 # セクションを指す。Excel のシート名 `領域一覧` は別物で変えない）
 SECTION_TITLE = '抽出領域の選択'
-ANALYSES_KEY = 'region_analyses'
+ANALYSES_KEY = rc.ANALYSES_KEY
 CONFIRMED_KEY = 'region_selection_confirmed'
 SELECTION_KEY_PREFIXES = ('rc_', 'grc_', 'gre_')
 # 「領域一覧」表の状態（grc_ 接頭辞の外に置く: global_checked_region_names() に混入させない）
@@ -201,394 +200,80 @@ def unconditional_region_names(analyses):
 
 
 def gather_name_selections(fname, analysis):
-    """この図面の領域名選択を集める。領域の分類（`classify_regions()`）に、「領域の確認」での
-    個別の上書きを重ねる。
-
-    - 除外: 名称を決めない。除外領域のラベルは `ref_designator.filter_labels_outside_excluded()`
-      が出力から取り除く。
-    - 特定OFF（UNSPECIFIED）: 何も返さない。「領域の確認」の入力名・採用しない印が残っていても
-      無視する（「抽出領域の選択」で候補を外した以上、その領域は名称を採用しない）。
-    - 「（領域選択しない）」（`_skip`。要選択でない領域用）: 採用しない印（`['']`）。入力名より優先
-      （入力名は保持され、「領域選択しない」を外すと入力名に戻る）。
-    - 「領域名を入力」（`_typed`）: 枠内のラベルと完全一致したときだけ採用し、不一致は未選択
-      （`['']`）。確定済み・無名の領域の名称変更も同じ。
-    - 名称なし: 「特定」がOFFのときだけ `['']`。ONなら `build_named_regions()` が自動で "no name" にする。
-    - 確定・別の図面枠で決まった名称: その名称。
-    - 要選択: 「領域の確認」で選ばれた候補（無ければ何も返さない）。
-
-    候補の選択は、最後に初期化したときの候補の文字列（`rc_…_cands`）で解釈する。
-    チェック済み候補が増減して番号がずれても、選んだ名称は変わらない。
-    """
-    name_selections = {}
-    decisions = classify_file_regions(analysis)
-    for reg in analysis.get('regions', []):
-        d = decisions[reg['id']]
-        rid = reg['id']
-        if d.status in (EXCLUDED, UNSPECIFIED):
-            continue
-        if d.status != PENDING and st.session_state.get(_rc_key(fname, rid, 'skip')):
-            name_selections[(fname, rid)] = ['']  # 入力名があっても採用しない
-            continue
-        if st.session_state.get(_rc_key(fname, rid, 'typed')):
-            matched = match_typed_region_name(
-                st.session_state.get(_rc_key(fname, rid, 'typedtext'), ''),
-                analysis.get('labels', []))
-            name_selections[(fname, rid)] = [matched] if matched else ['']
-            continue
-        if d.status == UNNAMED:
-            if not d.adopted:
-                name_selections[(fname, rid)] = ['']
-            continue
-        if d.status in (DECIDED, OTHER_FRAME):
-            name_selections[(fname, rid)] = [d.name]
-            continue
-        chosen = _chosen_candidates(fname, rid, d.candidates)
-        if chosen:
-            name_selections[(fname, rid)] = chosen
-    return name_selections
+    """この図面の領域名選択を集める（本体は `model/region_choices.resolve_name_selections()`）。
+    領域の分類はセッションの「特定」「除外」から作る。戻り値は {(ファイルキー, 領域id): 名称のリスト}。"""
+    return rc.resolve_name_selections(
+        st.session_state, fname, analysis, classify_file_regions(analysis))
 
 
-def _chosen_candidates(fname, reg_id, cands):
-    """要選択の領域で選ばれている候補の文字列のリスト。選択状態 `rc_…_<i>` の添字は、最後に
-    初期化したときの候補（`rc_…_cands`）に対するもの。スナップショットが無ければ現在の候補。"""
-    snap = st.session_state.get(_rc_key(fname, reg_id, 'cands'))
-    current = [t for _d, t in cands]
-    if snap is None:
-        snap = tuple(current)
-    return [t for i, t in enumerate(snap)
-            if st.session_state.get(_rc_key(fname, reg_id, i)) and t in current]
-
-
-def normalize_typed_name(text):
-    """「領域名を入力」の照合用の正規化: NFKC（全角→半角）・前後の空白除去・英大文字化。"""
-    return unicodedata.normalize('NFKC', text or '').strip().upper()
-
-
-def match_typed_region_name(text, labels):
-    """入力された領域名を、図面枠内のラベル `labels`（`(text, x, y)` のリスト）と照合する。
-
-    `normalize_typed_name()` した文字列どうしが**完全一致**する最初のラベルの
-    **元の文字列**を返す。入力が空・一致するラベルが無ければ None（＝未選択）。"""
-    key = normalize_typed_name(text)
-    if not key:
-        return None
-    for label in labels:
-        if normalize_typed_name(label[0]) == key:
-            return label[0]
-    return None
-
-
-def _rc_key(fname, reg_id, suffix):
-    return f"rc_{fname}_{reg_id}_{suffix}"
+# 選択状態の読み書きと遷移の本体は `model/region_choices.py`。以下は `st.session_state` を渡す
+# だけの薄いラッパー（呼び出し側の名前と引数を保つ）
+normalize_typed_name = rc.normalize_typed_name
+match_typed_region_name = rc.match_typed_region_name
 
 
 def sync_choice_snapshot(fname, reg, cands, analyses, checked_names):
-    """候補の選択 `rc_…_<i>` の添字 `i` は、その領域に提示する候補（「抽出領域の選択」でチェック済みの
-    もの）の並びに対する番号。最後に添字を振ったときの候補の文字列を `rc_…_cands` に持ち、
-    候補が増減していたら、選んでいた名称を新しい並びへ引き継ぐ（選んでいた名称が無くなったら
-    既定の候補。「領域選択しない」「領域名を入力」は維持）。`rc_…_<i>` を現在の並びの添字で
-    読み書きする前に呼ぶ。スナップショットが無い（初期化前の）領域では何もしない。"""
-    rid = reg['id']
-    current = tuple(t for _d, t in cands)
-    snap = st.session_state.get(_rc_key(fname, rid, 'cands'))
-    if snap is None or snap == current:
-        return
-    selected = {snap[i] for i in range(len(snap))
-                if st.session_state.get(_rc_key(fname, rid, i))}
-    for i in range(len(snap)):
-        st.session_state.pop(_rc_key(fname, rid, i), None)
-    carried = [t in selected for t in current]
-    if (current and not any(carried)
-            and not st.session_state.get(_rc_key(fname, rid, 'none'))
-            and not st.session_state.get(_rc_key(fname, rid, 'typed'))):
-        carried[compute_default_candidate_index(
-            fname, reg, cands, analyses, checked_names)] = True
-    for j, on in enumerate(carried):
-        st.session_state[_rc_key(fname, rid, j)] = on
-    st.session_state[_rc_key(fname, rid, 'cands')] = current
+    rc.sync_choice_snapshot(st.session_state, fname, reg, cands, analyses, checked_names)
 
 
 def ensure_choice_defaults(fname, reg, cands, analyses, checked_names):
-    """この領域の選択状態（正本 `rc_…`）が未設定なら既定値で初期化する。
-    viewer ON/OFF のどちらの経路でも、領域を**表示順に**呼ぶこと（既定の候補は
-    他領域の選択状態に依存するため）。候補が変わっていれば選択を引き継ぐ
-    （`sync_choice_snapshot()`）。"""
-    rid = reg['id']
-    sync_choice_snapshot(fname, reg, cands, analyses, checked_names)
-    if st.session_state.get(_rc_key(fname, rid, 'cands')) is None:
-        default_idx = compute_default_candidate_index(fname, reg, cands, analyses, checked_names)
-        for i in range(len(cands)):
-            st.session_state.setdefault(_rc_key(fname, rid, i), i == default_idx)
-    st.session_state[_rc_key(fname, rid, 'cands')] = tuple(t for _d, t in cands)
-    st.session_state.setdefault(_rc_key(fname, rid, 'none'), False)
-    st.session_state.setdefault(_rc_key(fname, rid, 'typed'), False)
-    st.session_state.setdefault(_rc_key(fname, rid, 'typedtext'), '')
+    rc.ensure_choice_defaults(st.session_state, fname, reg, cands, analyses, checked_names)
 
 
 def ensure_typed_defaults(fname, reg_id):
-    """「領域名を入力」の状態（正本）を未設定なら初期化する（確定済み・無名の領域の名称変更用）。"""
-    st.session_state.setdefault(_rc_key(fname, reg_id, 'typed'), False)
-    st.session_state.setdefault(_rc_key(fname, reg_id, 'typedtext'), '')
-    st.session_state.setdefault(_rc_key(fname, reg_id, 'skip'), False)
+    rc.ensure_typed_defaults(st.session_state, fname, reg_id)
 
 
 def on_change_typed(fname, reg_id, n_cands):
-    """「領域名を入力」を選んだとき、同一領域の候補・「領域選択しない」を OFF にする
-    （他領域には伝播しない）。"""
-    if not st.session_state.get(_rc_key(fname, reg_id, 'typed'), False):
-        return
-    st.session_state[_rc_key(fname, reg_id, 'skip')] = False
-    for j in range(n_cands):
-        st.session_state[_rc_key(fname, reg_id, j)] = False
-    st.session_state[_rc_key(fname, reg_id, 'none')] = False
+    rc.on_change_typed(st.session_state, fname, reg_id, n_cands)
 
 
-def _sync_widget_to_canonical(wkey, key):
-    st.session_state[key] = st.session_state.get(wkey, False)
+def apply_viewer_choice(fname, reg, kind, checked_names, idx=None, text='', typed_text=None):
+    rc.apply_viewer_choice(
+        st.session_state, fname, reg, kind, checked_names, idx=idx, text=text, typed_text=typed_text)
+
+
+def on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names):
+    rc.on_change_radio(
+        st.session_state, fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names)
+
+
+def on_change_none(fname, reg_id, n_cands, checked_names):
+    rc.on_change_none(st.session_state, fname, reg_id, n_cands, checked_names)
+
+
+def compute_default_candidate_index(fname, reg, cands, analyses, checked_names):
+    return rc.compute_default_candidate_index(
+        st.session_state, fname, reg, cands, analyses, checked_names)
+
+
+def _sync_widget_to_canonical(wkey, fname, reg_id, suffix):
+    """ページ上のチェックボックス（widget key `wkey`）の値を、選択状態へ写す。"""
+    rc.set_value(st.session_state, fname, reg_id, suffix, st.session_state.get(wkey, False))
 
 
 def on_widget_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names):
-    """ページ上の候補チェックボックス（`rcw_…`）の変更を正本へ写してから既存の挙動を行う。"""
-    suffix = clicked_idx
-    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_{suffix}", _rc_key(fname, reg_id, suffix))
+    """ページ上の候補チェックボックス（`rcw_…`）の変更を選択状態へ写してから既存の挙動を行う。"""
+    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_{clicked_idx}", fname, reg_id, clicked_idx)
     on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names)
 
 
 def on_widget_none(fname, reg_id, n_cands, checked_names):
-    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_none", _rc_key(fname, reg_id, 'none'))
+    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_none", fname, reg_id, 'none')
     on_change_none(fname, reg_id, n_cands, checked_names)
 
 
 def on_widget_typed(fname, reg_id, n_cands):
-    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_typed", _rc_key(fname, reg_id, 'typed'))
+    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_typed", fname, reg_id, 'typed')
     on_change_typed(fname, reg_id, n_cands)
 
 
 def on_widget_typedtext(fname, reg_id, n_cands):
     """入力欄の変更（何度でも入力し直せる）。入力した時点で「領域名を入力」を選んだ扱いにする。"""
-    st.session_state[_rc_key(fname, reg_id, 'typedtext')] = st.session_state.get(
-        f"rcwt_{fname}_{reg_id}", '')
-    st.session_state[_rc_key(fname, reg_id, 'typed')] = True
+    rc.set_value(st.session_state, fname, reg_id, 'typedtext',
+                 st.session_state.get(f"rcwt_{fname}_{reg_id}", ''))
+    rc.set_value(st.session_state, fname, reg_id, 'typed', True)
     on_change_typed(fname, reg_id, n_cands)
-
-
-def apply_viewer_choice(fname, reg, kind, checked_names, idx=None, text='', typed_text=None):
-    """viewer（ブラウザ内）での選択を正本へ反映する。ページ上のチェックボックスと同じ
-    コールバックを通すので、他領域への伝播・排他は同じ挙動になる。
-
-    kind: 'cand'（候補 idx を選ぶ）／'none'（領域選択しない）／'typed'（領域名を入力を選ぶ）／
-    'typedtext'（入力文字列を更新。選んだ扱いにする）"""
-    cands = pending_candidates_for_region(reg, checked_names)
-    reg_id = reg['id']
-    if kind == 'cand':
-        st.session_state[_rc_key(fname, reg_id, idx)] = True
-        on_change_radio(fname, reg_id, idx, len(cands), text, checked_names)
-    elif kind == 'none':
-        st.session_state[_rc_key(fname, reg_id, 'none')] = True
-        on_change_none(fname, reg_id, len(cands), checked_names)
-    elif kind == 'typed':
-        st.session_state[_rc_key(fname, reg_id, 'typed')] = True
-        on_change_typed(fname, reg_id, len(cands))
-    elif kind == 'typedoff':  # 確定済み・無名の領域で入力欄を空にした＝自動の名称に戻す
-        st.session_state[_rc_key(fname, reg_id, 'typed')] = False
-        st.session_state[_rc_key(fname, reg_id, 'typedtext')] = ''
-    elif kind == 'editnone':
-        # 確定済み・無名の領域の「（領域選択しない）」。要選択の領域の `none` は他領域へ伝播して
-        # 立つことがあるので、別のキー `skip` に持つ（伝播されない）。入力名（`typed`）は保持し、
-        # 「領域選択しない」の間だけ採用されない（外すと入力名に戻る）
-        st.session_state[_rc_key(fname, reg_id, 'skip')] = True
-    elif kind == 'editnoneoff':
-        st.session_state[_rc_key(fname, reg_id, 'skip')] = False
-    elif kind == 'typedtext':
-        st.session_state[_rc_key(fname, reg_id, 'typedtext')] = typed_text or ''
-        st.session_state[_rc_key(fname, reg_id, 'typed')] = True
-        on_change_typed(fname, reg_id, len(cands))
-
-
-def on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names):
-    """領域名チェックボックスをラジオボタン的に動作させるコールバック。
-
-    `checked_names` は「領域一覧」でのチェック済み名称集合。他領域の候補は
-    `pending_candidates_for_region()` で同じ集合に絞り込んでから走査する
-    （`rc_<fname>_<reg_id>_<i>` のインデックスが実際の描画と対応するように
-    するため、2026-07-30）。
-
-    チェックが ON になったとき、(1) 同一領域の他チェックボックスを OFF にし、
-    (2) 同じ名称候補を持つ他領域（候補が2件以上＝選択肢ありの領域のみ）にも
-    同じ名称を選択状態として伝播する。チェックボックスは初回生成時にしか
-    デフォルト値を設定できない（st.session_state 既存キーは上書きされない）ため、
-    生成後にユーザーが選択を変更したときの伝播はこのコールバックで明示的に行う。
-
-    ただし、同一ファイル内で互いに重なり（完全な内包も部分的な重複も含む）が
-    ある領域（例: `EE6313-546-01E.dxf` の `B CHAMBER`〈外側〉と
-    `BAKE HEATER UNIT RX`〈内側、完全内包〉）は、まったく別の物理位置を指す
-    別個の領域であり、同期してはならない（v1.5.11、ユーザー報告: デフォルトでない
-    候補を手動選択すると、重なりのある別領域も同じ名称に同期されてしまう。
-    当初は内包のみを対象としていたが、部分的な重複も対象にすべきとの指摘により
-    `regions_overlap()` に一般化）。同期は元々 MPD RACK2 のような、空間的に分離
-    した（重ならない）複数ピースが同じ名称を共有するケースを想定したもの。
-    """
-    ck = f"rc_{fname}_{reg_id}_{clicked_idx}"
-    if not st.session_state.get(ck, False):
-        return
-    for j in range(n_cands):
-        if j != clicked_idx:
-            st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
-    st.session_state[f"rc_{fname}_{reg_id}_none"] = False  # 実候補を選んだら「領域選択しない」を解除
-    st.session_state[f"rc_{fname}_{reg_id}_typed"] = False  # 「領域名を入力」も解除
-
-    analyses = st.session_state.get(ANALYSES_KEY, {})
-    clicked_region = next(
-        (r for r in analyses.get(fname, {}).get('regions', []) if r['id'] == reg_id), None)
-    clicked_polygon = clicked_region['polygon'] if clicked_region else None
-
-    for fn2, an2 in analyses.items():
-        for r2 in an2.get('regions', []):
-            if fn2 == fname and r2['id'] == reg_id:
-                continue
-            if st.session_state.get(f"rc_{fn2}_{r2['id']}_typed"):
-                continue  # 「領域名を入力」を選んだ領域には伝播しない
-            cands2 = pending_candidates_for_region(r2, checked_names)
-            if len(cands2) <= 1:
-                continue  # 選択肢なし（自動確定）の領域は対象外
-            if not any(t2 == clicked_text for _d2, t2 in cands2):
-                continue  # この名称を候補に持たない領域には影響しない
-            if (fn2 == fname and clicked_polygon
-                    and regions_overlap(clicked_polygon, r2['polygon'])):
-                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
-            sync_choice_snapshot(fn2, r2, cands2, analyses, checked_names)
-            for j2, (_d2, t2) in enumerate(cands2):
-                st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = (t2 == clicked_text)
-
-
-def on_change_none(fname, reg_id, n_cands, checked_names):
-    """「領域選択しない」チェックボックスをラジオボタン的に動作させるコールバック。
-
-    `checked_names` は「領域一覧」でのチェック済み名称集合（他領域の候補の
-    絞り込みに使う。理由は `on_change_radio()` の docstring 参照）。
-
-    ON になったとき、(1) 同一領域の名称候補チェックボックスを全て OFF にする、
-    (2) この領域自身の候補テキストと一致するチェックボックスを、他領域
-    （候補を1つでも持ち、かつ同一ファイル内で重なりのある領域を除く）でも
-    OFF にする、(3) (2) の結果その他領域の候補が全て OFF になった場合は、
-    その領域自身の「領域選択しない」も ON にする（2026-07-26 ユーザー指摘）。
-
-    旧実装は (2)(3) を行わず「この領域だけの個別判断」としていた（「選択しない」は
-    実在する名称候補ではないため、同名候補を持つ他領域まで一律「選択しない」
-    にする理由がない、という理由）。しかし「選択しない」を選んだ以上この領域の
-    候補群はどれも採用されなくなるにもかかわらず、`on_change_radio()` の (2)
-    によって以前 ON 側へ同期された他領域の同名チェックボックスがそのまま
-    残っていると、「この領域では不採用と決めた名称が、別領域では採用済みの
-    まま」という矛盾した状態になる。ON化の伝播（`on_change_radio`）と対称的に
-    OFF化も伝播させることで解消する。ON化と異なり「クリックされた1候補」では
-    なく「この領域の候補すべて」が対象になる点に注意（この領域自身がどの候補
-    にも紐付かないことを選んだため）。
-
-    **候補1件のみ（自動確定）の領域も対象に含める**: `on_change_radio()` の
-    (2) は「候補が2件以上＝選択肢ありの領域のみ」を同期対象とし、候補1件のみの
-    領域（ユーザーが能動的に選んだわけではない自動確定）は除外している。だが
-    この OFF 伝播ではその除外を適用しない。実例（2026-07-26 ユーザー報告、
-    `DE5027-563-03A.dxf`）: 候補1件のみの領域が複数（領域21-24が候補
-    `NXSAF FX1`、領域25-29が候補`SX13 FX`）連続しており、そのうち1つで
-    「選択しない」を選んでも、候補1件のみの除外により兄弟領域に伝播せず
-    「選択しない」も同期しなかった。ON伝播（能動的な選択と紛れることを防ぐ
-    ための除外）と異なり、この OFF 伝播は「今まさに選ばれた選択しないという
-    能動的な判断」を伝えるものであり、伝播先が候補1件だったかどうかは無関係
-    （むしろ「同じ孤立候補を持つ領域群を一貫させる」というこの機能の目的そのもの
-    に合致する）。
-
-    さらに (3): OFF化の結果、他領域の候補が1つも選択されていない状態になると、
-    「どの候補も選んでいない」のに「領域選択しない」も OFF という、実質的に
-    未決定なまま宙に浮いた状態になる（ユーザー指摘: 「何も選択されていない
-    領域は『領域選択しない』を ON にする必要がある」）。この領域自身の候補
-    チェックボックスが（今回の伝播とは無関係な既存の OFF 状態も含めて）全て
-    OFF になっていれば、その領域の「領域選択しない」を ON にして状態を明確化
-    する。
-    """
-    ck = f"rc_{fname}_{reg_id}_none"
-    if not st.session_state.get(ck, False):
-        return
-    for j in range(n_cands):
-        st.session_state[f"rc_{fname}_{reg_id}_{j}"] = False
-    st.session_state[f"rc_{fname}_{reg_id}_typed"] = False  # 「領域名を入力」も解除
-
-    analyses = st.session_state.get(ANALYSES_KEY, {})
-    clicked_region = next(
-        (r for r in analyses.get(fname, {}).get('regions', []) if r['id'] == reg_id), None)
-    if not clicked_region:
-        return
-    clicked_texts = {t for _d, t in pending_candidates_for_region(clicked_region, checked_names)}
-    clicked_polygon = clicked_region['polygon']
-
-    for fn2, an2 in analyses.items():
-        for r2 in an2.get('regions', []):
-            if fn2 == fname and r2['id'] == reg_id:
-                continue
-            if st.session_state.get(f"rc_{fn2}_{r2['id']}_typed"):
-                continue  # 「領域名を入力」を選んだ領域には伝播しない
-            cands2 = pending_candidates_for_region(r2, checked_names)
-            if not any(t2 in clicked_texts for _d2, t2 in cands2):
-                continue  # この領域の候補を1つも持たない他領域には影響しない
-                          # （候補0件・候補1件のみ＝自動確定の領域も対象に含める。
-                          # docstring「候補1件のみ（自動確定）の領域も対象に含める」参照）
-            if (fn2 == fname and regions_overlap(clicked_polygon, r2['polygon'])):
-                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
-            sync_choice_snapshot(fn2, r2, cands2, analyses, checked_names)
-            for j2, (_d2, t2) in enumerate(cands2):
-                if t2 in clicked_texts:
-                    st.session_state[f"rc_{fn2}_{r2['id']}_{j2}"] = False
-            if not any(st.session_state.get(f"rc_{fn2}_{r2['id']}_{j2}", False)
-                       for j2 in range(len(cands2))):
-                st.session_state[f"rc_{fn2}_{r2['id']}_none"] = True
-
-
-def compute_default_candidate_index(fname, reg, cands, analyses, checked_names):
-    """他の図面/領域で選択済みの名称があれば、それに一致する候補のインデックスを
-    デフォルトとして返す（無ければ0）。
-
-    `cands` は呼び出し元がこの領域用に描画する候補リスト（`pending_candidates_for_region()`
-    で「領域一覧」チェック済みのものに絞り込み済み）。他領域を走査する際も
-    同じ絞り込みを適用しないと、`rc_<fname>_<reg_id>_<i>` のインデックス `i` が
-    実際に描画されたチェックボックスと対応しなくなる（2026-07-30）。
-
-    候補が1件のみ（選択肢なし・自動確定）の領域は同期対象から除外する
-    （ユーザーが能動的に選んだわけではない確定のため、隣接領域の候補にも同じ
-    ラベルが上がる場合に誤って引き継ぐのを防ぐ）。
-
-    この領域自身の最有力候補が Tier1/2（下端/上端最近傍。回転図面では右端/左端）
-    の確信度の高い候補である場合は、他領域からの同期で上書きしない（v1.5.9）。
-    同期は元々「この領域自身に強い候補が無く（Tier3）、他の領域で選ばれた同名
-    候補を引き継ぐべき」ケース（例: MPD RACK2 のような複数ピース合算）のために
-    設けたもので、隣接・入れ子の領域がそれぞれ独自の Tier1/2 候補を持つ場合に
-    互いの選択を上書きしてしまう不具合があった（ユーザー報告: EE6313-546-01E.dxf
-    の図面1/領域1,2 が同じ選択に同期されるが、本来は領域1=B CHAMBER、
-    領域2=BAKE HEATER UNIT RX で別々が正しい）。
-
-    同一ファイル内で互いに重なり（完全な内包も部分的な重複も含む）がある領域
-    同士は、別個の領域として扱い同期しない（v1.5.11、ユーザー報告: デフォルト
-    でない候補を手動選択すると、重なりのある別領域も同じ名称に同期されてしまう。
-    当初は内包のみを対象としていたが、部分的な重複も対象にすべきとの指摘により
-    `regions_overlap()` に一般化）。
-    """
-    if reg.get('default_name_tier') in (1, 2):
-        return 0
-    selected_elsewhere = set()
-    for fn2, an2 in analyses.items():
-        for r2 in an2.get('regions', []):
-            if fn2 == fname and r2['id'] == reg['id']:
-                continue
-            cands2 = pending_candidates_for_region(r2, checked_names)
-            if len(cands2) <= 1:
-                continue  # 選択肢なし（自動確定）の領域はスキップ
-            if fn2 == fname and regions_overlap(reg['polygon'], r2['polygon']):
-                continue  # 重なり（内包/部分重複）のある領域同士は同期しない
-            for j, (_d2, t2) in enumerate(cands2):
-                if st.session_state.get(f"rc_{fn2}_{r2['id']}_{j}", False):
-                    selected_elsewhere.add(t2)
-    for i, (_d, t) in enumerate(cands):
-        if t in selected_elsewhere:
-            return i
-    return 0
 
 
 def render_corners_popover(corners):
@@ -1036,7 +721,7 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
         # チェックボックスの widget key は `rcw_…`。毎回、正本 `rc_…` から写す
         for i, (d, t) in enumerate(cands):
             wkey = f"rcw_{fname}_{reg['id']}_{i}"
-            st.session_state[wkey] = st.session_state[_rc_key(fname, reg['id'], i)]
+            st.session_state[wkey] = rc.get_value(st.session_state, fname, reg['id'], i, False)
             st.checkbox(
                 f"　{t}　（境界線からの距離 {d:.0f}）",
                 key=wkey,
@@ -1049,7 +734,7 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
         # 既定は未チェック（従来通りいずれかの候補が既定選択される）で、
         # ユーザーが明示的に選んだときだけこの領域を無名扱いにする。
         wkey_none = f"rcw_{fname}_{reg['id']}_none"
-        st.session_state[wkey_none] = st.session_state[_rc_key(fname, reg['id'], 'none')]
+        st.session_state[wkey_none] = rc.get_value(st.session_state, fname, reg['id'], 'none', False)
         st.checkbox(
             "　（領域選択しない）",
             key=wkey_none,
@@ -1060,7 +745,7 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
 
         if allow_typed_name:
             wkey_typed = f"rcw_{fname}_{reg['id']}_typed"
-            st.session_state[wkey_typed] = st.session_state[_rc_key(fname, reg['id'], 'typed')]
+            st.session_state[wkey_typed] = rc.get_value(st.session_state, fname, reg['id'], 'typed', False)
             st.checkbox(
                 "　領域名を入力",
                 key=wkey_typed,
@@ -1069,7 +754,7 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
                 disabled=locked,
             )
             wkey_text = f"rcwt_{fname}_{reg['id']}"
-            st.session_state[wkey_text] = st.session_state[_rc_key(fname, reg['id'], 'typedtext')]
+            st.session_state[wkey_text] = rc.get_value(st.session_state, fname, reg['id'], 'typedtext', '')
             st.text_input(
                 "領域名を入力", key=wkey_text, label_visibility="collapsed",
                 placeholder="図面枠内のラベルと完全に一致する領域名（全角・小文字も可）",
@@ -1077,9 +762,9 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
                 args=(fname, reg['id'], len(cands)),
                 disabled=locked,
             )
-            if st.session_state[_rc_key(fname, reg['id'], 'typed')]:
+            if rc.get_value(st.session_state, fname, reg['id'], 'typed', False):
                 matched = match_typed_region_name(
-                    st.session_state[_rc_key(fname, reg['id'], 'typedtext')],
+                    rc.get_value(st.session_state, fname, reg['id'], 'typedtext', ''),
                     analysis.get('labels', []))
                 if matched:
                     st.caption(f"　採用: {matched}")

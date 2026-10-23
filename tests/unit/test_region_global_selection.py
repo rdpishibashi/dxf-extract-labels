@@ -37,6 +37,7 @@ from model.region_detector import (  # noqa: E402
 )
 
 import streamlit as st  # noqa: E402
+from model import region_choices as rc  # noqa: E402
 import app  # noqa: E402
 from view import region_selection  # noqa: E402
 
@@ -239,7 +240,7 @@ def test_gather_name_selections_falls_back_to_checkbox_ui_when_multiple_checked(
     チェックボックス状態（rc_<fname>_<reg_id>_<i>）から集める。インデックス
     `i` は `pending_candidates_for_region()` で絞り込んだ後の並び順に対応する。"""
     _set_global_checked('RACK1', 'RACK2')
-    st.session_state['rc_a.dxf_2_1'] = True  # 絞り込み後index1（'RACK2'）をチェック
+    rc.set_value(st.session_state, 'a.dxf', 2, 1, True)  # 絞り込み後index1（'RACK2'）をチェック
     analysis = {'regions': [_region(2, [(1.0, 'RACK1'), (2.0, 'RACK2')])]}
     result = app._gather_name_selections('a.dxf', analysis)
     assert result == {('a.dxf', 2): ['RACK2']}
@@ -249,7 +250,7 @@ def test_gather_name_selections_checkbox_ui_index_matches_filtered_list():
     """候補3件のうち2件だけチェックされている場合、絞り込み後のリストの
     先頭（index0）が実際にはどの候補になるかを確認する回帰テスト。"""
     _set_global_checked('RACK1', 'RACK3')  # RACK2は未チェック→選択肢から除外
-    st.session_state['rc_a.dxf_9_0'] = True  # 絞り込み後index0（'RACK1'）をチェック
+    rc.set_value(st.session_state, 'a.dxf', 9, 0, True)  # 絞り込み後index0（'RACK1'）をチェック
     analysis = {'regions': [
         _region(9, [(1.0, 'RACK1'), (2.0, 'RACK2'), (3.0, 'RACK3')]),
     ]}
@@ -270,7 +271,7 @@ def test_gather_name_selections_mixed_regions_in_one_file():
     「フォールバックUI（2件以上一致）」「未チェックで除外」「候補0件」が
     混在していても、それぞれ正しく処理される。"""
     _set_global_checked('SYSTEM I/F BOX', 'RACK1', 'RACK2')
-    st.session_state['rc_a.dxf_10_0'] = True  # フォールバックUIで絞り込み後index0選択
+    rc.set_value(st.session_state, 'a.dxf', 10, 0, True)  # フォールバックUIで絞り込み後index0選択
     analysis = {'regions': [
         _region(0, [(1.0, 'SYSTEM I/F BOX'), (2.0, 'OTHER')]),  # グローバル決定(1件一致)
         _region(1, [(1.0, 'CTC')]),                              # 候補1件・未チェック→除外

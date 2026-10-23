@@ -20,6 +20,7 @@ from model.excel_output import (
     display_width, autofit_width, DRAWING_LIST_COLUMN_WIDTH,
 )
 from model import ref_designator
+from model import region_choices
 from model import region_decisions
 from model import region_preview
 from model import terminal_detector
@@ -592,8 +593,8 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
                 1 for rid, d in decisions.items()
                 if d.status in (region_decisions.DECIDED, region_decisions.OTHER_FRAME,
                                 region_decisions.UNNAMED)
-                and (st.session_state.get(f"rc_{fname}_{rid}_typed")
-                     or st.session_state.get(f"rc_{fname}_{rid}_skip")))
+                and (region_choices.get_value(st.session_state, fname, rid, 'typed')
+                     or region_choices.get_value(st.session_state, fname, rid, 'skip')))
             st.caption(
                 f"検出領域 {len(analysis.get('regions', []))} 個"
                 f"（要選択 {len(pending_regions)} 個・図面で名称を変更または選択しない {n_changed} 個）。"

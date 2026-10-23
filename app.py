@@ -20,6 +20,7 @@ from model.excel_output import (
     display_width, autofit_width, DRAWING_LIST_COLUMN_WIDTH,
 )
 from model import ref_designator
+from model import region_decisions
 from model import region_preview
 from model import terminal_detector
 from model import assembly_compare
@@ -491,64 +492,57 @@ def _REGION_CONFIRM_VIEWER(**kwargs):
     return _get_region_confirm_viewer(sig)(**kwargs)
 
 
-def _unnamed_regions(analysis):
-    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`（「抽出領域の選択」の `no name N` と同じ表示名）。"""
-    labels = unnamed_region_labels(analysis)
+def _regions_with_status(analysis, decisions, *statuses):
     by_id = {r['id']: r for r in analysis.get('regions', [])}
-    return [(by_id[rid], label, bool(st.session_state.get(f"grc_{label}", True)))
-            for rid, label in labels.items() if rid in by_id]
+    return [(by_id[rid], d) for rid, d in decisions.items()
+            if d.status in statuses and rid in by_id]
 
 
-def _decided_regions(analysis, pending_regions):
+def _unnamed_regions(analysis, decisions=None):
+    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`（「抽出領域の選択」の `no name N` と同じ表示名）。
+    「除外」した領域は含めない。"""
+    decisions = decisions or region_selection.classify_file_regions(analysis)
+    return [(reg, d.name, d.adopted)
+            for reg, d in _regions_with_status(analysis, decisions, region_decisions.UNNAMED)]
+
+
+def _decided_regions(analysis, pending_regions=None, decisions=None):
     """要選択ではないが名称が確定している領域 `[(reg, 名称), ...]`（viewer の赤表示用）。"""
-    checked = region_selection.global_checked_region_names()
-    excluded = region_selection.global_excluded_region_names()
-    pending_ids = {r['id'] for r in pending_regions}
-    out = []
-    for reg in analysis.get('regions', []):
-        if reg['id'] in pending_ids or region_selection._region_excluded(reg, excluded):
-            continue
-        name = resolve_globally_decided_name(reg, checked)
-        if name is None:
-            name = region_selection.resolve_by_other_frames(reg, analysis, checked, excluded)
-        if name is not None:
-            out.append((reg, name))
-    return out
+    decisions = decisions or region_selection.classify_file_regions(analysis)
+    return [(reg, d.name) for reg, d in _regions_with_status(
+        analysis, decisions, region_decisions.DECIDED, region_decisions.OTHER_FRAME)]
 
 
-def _inactive_regions(analysis, pending_regions, decided, unnamed):
-    """抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」または名称候補を1つも特定していない領域。
-    viewer では灰色で表示する）。"""
-    excluded = region_selection.global_excluded_region_names()
-    shown = ({r['id'] for r in pending_regions} | {r['id'] for r, _n in decided}
-             | {r['id'] for r, *_rest in unnamed})
+def _inactive_regions(analysis, decisions=None):
+    """抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」、または名称候補を1つも特定していない
+    領域。viewer では灰色で表示する）。"""
+    decisions = decisions or region_selection.classify_file_regions(analysis)
+    labels = unnamed_region_labels(analysis)
     out = []
-    for reg in analysis.get('regions', []):
-        if reg['id'] in shown:
-            continue
+    for reg, d in _regions_with_status(
+            analysis, decisions, region_decisions.EXCLUDED, region_decisions.UNSPECIFIED):
         cands = reg.get('name_candidates', [])
-        name = cands[0][1] if cands else "（名称なし）"
-        note = "除外" if region_selection._region_excluded(reg, excluded) else "特定OFF"
-        out.append((reg, name, note))
+        name = cands[0][1] if cands else labels.get(reg['id'], "（名称なし）")
+        out.append((reg, name, "除外" if d.status == region_decisions.EXCLUDED else "特定OFF"))
     return out
 
 
 def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
     """「領域の確認」の viewer。viewer 内の選択を正本（`rc_…`）へ反映する。"""
     checked = region_selection.global_checked_region_names()
+    decisions = region_selection.classify_file_regions(analysis)
+    decided = _decided_regions(analysis, decisions=decisions)
+    unnamed = _unnamed_regions(analysis, decisions)
     # 確定済み・無名の領域も「領域名を入力」で名称を変更できる（状態の正本を初期化）
-    for reg, *_rest in _decided_regions(analysis, pending_regions) + _unnamed_regions(analysis):
+    for reg, *_rest in decided + unnamed:
         region_selection.ensure_typed_defaults(fname, reg['id'])
     try:
         base = _render_region_base(dxf_bytes)
-        decided = _decided_regions(analysis, pending_regions)
-        unnamed = _unnamed_regions(analysis)
         data = region_preview.build_confirmation_data(
             base, fname, analysis, pending_regions, decided,
             st.session_state, checked, locked,
             region_selection.match_typed_region_name, pending_candidates_for_region,
-            unnamed=unnamed,
-            inactive=_inactive_regions(analysis, pending_regions, decided, unnamed))
+            unnamed=unnamed, inactive=_inactive_regions(analysis, decisions))
         res = _REGION_CONFIRM_VIEWER(
             key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
             on_choice_change=lambda: None)
@@ -593,12 +587,13 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
         if not st.toggle("図面を表示して領域を確認", value=False, key=f"regprev_confirm_{fname}",
                          on_change=_only_this_viewer, args=(fname,)):
             # OFF: 選択・入力はすべて図面（viewer）の中で行う。ここでは状況だけを示す
-            pending_ids = {r['id'] for r in pending_regions}
+            decisions = region_selection.classify_file_regions(analysis)
             n_changed = sum(
-                1 for r in analysis.get('regions', [])
-                if r['id'] not in pending_ids
-                and (st.session_state.get(f"rc_{fname}_{r['id']}_typed")
-                     or st.session_state.get(f"rc_{fname}_{r['id']}_none")))
+                1 for rid, d in decisions.items()
+                if d.status in (region_decisions.DECIDED, region_decisions.OTHER_FRAME,
+                                region_decisions.UNNAMED)
+                and (st.session_state.get(f"rc_{fname}_{rid}_typed")
+                     or st.session_state.get(f"rc_{fname}_{rid}_skip")))
             st.caption(
                 f"検出領域 {len(analysis.get('regions', []))} 個"
                 f"（要選択 {len(pending_regions)} 個・図面で名称を変更または選択しない {n_changed} 個）。"

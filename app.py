@@ -474,13 +474,21 @@ def _render_region_base(dxf_bytes: bytes, version: int = region_preview.BASE_REN
     return region_preview.render_base_svg(dxf_bytes)
 
 
-# 「領域の確認」の双方向 viewer（選択を Streamlit へ返す。モジュールで1回だけ登録する）
-_REGION_CONFIRM_VIEWER = st.components.v2.component(
-    "region_confirm_viewer",
-    html=region_preview.CONFIRM_HTML,
-    css=region_preview.CONFIRM_CSS,
-    js=region_preview.CONFIRM_JS,
-)
+# 「領域の確認」の双方向 viewer（選択を Streamlit へ返す）。app.py は再実行のたびに読み込まれ、
+# 同名の再登録は警告になるので、部品の定義（HTML/CSS/JS）が変わったときだけ登録し直す。
+@st.cache_resource(show_spinner=False)
+def _get_region_confirm_viewer(definition_sig):
+    return st.components.v2.component(
+        "region_confirm_viewer",
+        html=region_preview.CONFIRM_HTML,
+        css=region_preview.CONFIRM_CSS,
+        js=region_preview.CONFIRM_JS,
+    )
+
+
+def _REGION_CONFIRM_VIEWER(**kwargs):
+    sig = hash((region_preview.CONFIRM_HTML, region_preview.CONFIRM_CSS, region_preview.CONFIRM_JS))
+    return _get_region_confirm_viewer(sig)(**kwargs)
 
 
 def _unnamed_regions(analysis):

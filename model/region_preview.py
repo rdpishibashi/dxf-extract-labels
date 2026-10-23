@@ -541,7 +541,12 @@ export default function(component) {
                                       : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
     d.regions.filter((r) => r.state !== 'pending').forEach((r) => {
       const col = regColor(r, C);
-      h += '<div class="rp-reg"><label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
+      const ch0 = d.choices[String(r.id)];
+      const editable = !!(ch0 && r.editable);
+      // 確定済み・無名の領域の行のチェックは「採用する」（外す＝「（領域選択しない）」と同じ）。それ以外（除外など）は図面への表示切り替え
+      const on = editable ? !(ch0.none || (ch0.typed && !ch0.typedMatch)) : !S.hidden[r.key];
+      h += '<div class="rp-reg"><label><input type="checkbox" ' + (editable ? 'data-adopt="' + r.id + '" ' + (d.locked ? 'disabled ' : '')
+           : 'data-vis="' + r.key + '" ') + (on ? 'checked' : '') + '>' +
            '<span class="rp-sw" style="background:' + col + '"></span><span>' + esc(r.label) +
            '　' + esc(r.name) + (r.note ? '（' + esc(r.note) + '）' : '') + '</span></label>';
       const ch = d.choices[String(r.id)];
@@ -615,6 +620,12 @@ export default function(component) {
     const commitTx = (el) => choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);
     S.side.querySelectorAll('input[data-ex]').forEach((el) => el.addEventListener('change', () => commitEx(el)));
     S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => commitTx(el)));
+    S.side.querySelectorAll('input[data-adopt]').forEach((el) => el.addEventListener('change', () => {
+      const rid = Number(el.getAttribute('data-adopt'));
+      const c = S.data.choices[String(rid)];
+      if (!el.checked) { choose(rid, 'editnone'); return; }
+      choose(rid, c.none ? 'editnoneoff' : 'typedoff');  // 入力名が不一致で未選択だった場合は自動の名称に戻す
+    }));
     S.side.querySelectorAll('input[data-en]').forEach((el) => el.addEventListener('change', () => {
       const rid = Number(el.getAttribute('data-en'));
       choose(rid, el.checked ? 'editnone' : 'editnoneoff');

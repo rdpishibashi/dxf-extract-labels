@@ -347,7 +347,7 @@ def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
         'x3': ('unnamed_off', '除外', False), 'x4': ('unnamed_off', '特定OFF', False)}
     assert data['choices'] == {}
     assert data['labelNames'] == ['CN CS', 'M1 DRV']
-    assert 'list="rp-dl"' in rp.CONFIRM_JS
+    assert 'data-sg' in rp.CONFIRM_JS and "normalize('NFKC')" in rp.CONFIRM_JS
 
 
 def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(state):
@@ -364,7 +364,7 @@ def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(sta
     assert sel[('f', 1)] == [''] and sel[('f', 2)] == ['CN CS']
 
     rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')  # 入力すると「選択しない」は外れる
-    assert st.session_state['rc_f_1_none'] is False
+    assert st.session_state['rc_f_1_skip'] is False
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     rs.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」を選ぶと入力名は無効
     assert st.session_state['rc_f_1_typed'] is False
@@ -383,7 +383,7 @@ def test_viewer_data_marks_none_region_gray(state):
     buf = io.StringIO(); doc.write(buf)
     base = rp.render_base_svg(buf.getvalue().encode())
     dec = _reg(1, [(1.0, 'CN CS')])
-    st.session_state['rc_f_1_none'] = True
+    st.session_state['rc_f_1_skip'] = True
     data = rp.build_confirmation_data(
         base, 'f', {'labels': [('CN CS', 6, 6)]}, [], [(dec, 'CN CS')], st.session_state, {'CN CS'}, False,
         rs.match_typed_region_name, lambda r, c: [])
@@ -419,3 +419,21 @@ _render_region_confirmation_section(enable_region_detection=True, locked=False,
     assert len(at.get('popover')) >= 2  # 📐 と ⚠️行き止まり枝（開閉枠の中なのでポップオーバー）
     assert [e.label for e in at.expander] == [
         'a.dxf（確定のみ）', 'b.dxf（選択の必要あり）', 'c.dxf（選択の必要あり）']  # 名称なし領域も選択の必要あり
+
+
+def test_none_propagated_from_pending_region_does_not_skip_confirmed_regions(state):
+    """不具合再発防止（2026-10-23）: 要選択の領域で「領域選択しない」を選ぶと、同じ候補を持つ確定済み領域の
+    内部状態 `_none` が True になる（既存の伝播）。これを確定領域の「採用しない」と読み違えて、
+    確定のみの図面で一部の領域だけが「領域選択しない」の灰色になった。確定領域の採用しない印は別キー（_skip）。"""
+    st.session_state['grc_A'] = st.session_state['grc_B'] = True
+    far = [(50, 50), (60, 50), (60, 60), (50, 60)]
+    pending = _reg(0, [(1.0, 'A'), (2.0, 'B')])
+    decided = _reg(1, [(1.0, 'A')], poly=far)
+    analysis = {'regions': [pending, decided], 'labels': []}
+    st.session_state[rs.ANALYSES_KEY] = {'f': analysis}
+    checked = {'A', 'B'}
+    rs.ensure_choice_defaults('f', pending, rs.pending_candidates_for_region(pending, checked),
+                              {'f': analysis}, checked)
+    rs.apply_viewer_choice('f', pending, 'none', checked)
+    assert st.session_state.get('rc_f_1_none') is True  # 既存の伝播（内部状態）
+    assert rs.gather_name_selections('f', analysis).get(('f', 1)) == ['A']  # 確定領域は採用されたまま

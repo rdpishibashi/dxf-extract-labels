@@ -265,12 +265,12 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
     def editable_choice(r):
         typedtext = state.get(f"rc_{fname}_{r['id']}_typedtext", "") or ""
         used, matched = override(r)
-        return {"cands": [], "none": bool(state.get(f"rc_{fname}_{r['id']}_none", False)),
+        return {"cands": [], "none": bool(state.get(f"rc_{fname}_{r['id']}_skip", False)),
                 "typed": used, "typedtext": typedtext,
                 "typedMatch": matched if used else None, "editable": True}
 
     def is_none(r):
-        return bool(state.get(f"rc_{fname}_{r['id']}_none", False))
+        return bool(state.get(f"rc_{fname}_{r['id']}_skip", False))
 
     for r, name in decided:
         corners = _poly_of(r)
@@ -378,6 +378,7 @@ CONFIRM_CSS = """
 .rp-side input[type=text]{width:100%;box-sizing:border-box;background:#111;color:#eee;
   border:1px solid #555;border-radius:3px;padding:3px 5px;font-size:12px}
 .rp-msg{font-size:11px;margin:2px 0 0 18px}
+.rp-sg button{display:block;width:100%;text-align:left;margin:1px 0;font-size:12px}
 .rp-stage{flex:1;min-width:0;position:relative}
 .rp-cv{width:100%;height:100%;display:block;cursor:grab;touch-action:none;background:#000}
 .rp-cv.drag{cursor:grabbing}
@@ -465,7 +466,7 @@ export default function(component) {
       ch.cands.forEach((c) => { c.selected = false; }); ch.none = true; ch.typed = false;
     } else if (kind === 'typed') {
       if (ch.typed) return;
-      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true;
+      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedMatch = matchName(ch.typedtext);
     } else if (kind === 'typedoff') {
       if (!ch.typed && !ch.typedtext) return;
       ch.typed = false; ch.typedtext = '';
@@ -476,12 +477,18 @@ export default function(component) {
       if (!ch.none) return;
       ch.none = false;
     } else if (kind === 'typedtext') {
-      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedtext = typedText;
+      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedtext = typedText; ch.typedMatch = matchName(typedText);
     }
     send({ region: rid, kind, idx: idx === undefined ? null : idx, text: text || '', typed_text: typedText === undefined ? null : typedText });
     S.render();
   };
 
+  const norm = (t) => String(t || '').normalize('NFKC').trim().toUpperCase();
+  const matchName = (t) => { const k = norm(t); return k ? ((S.data.labelNames || []).find((n) => norm(n) === k) || null) : null; };
+  const isHidden = (r) => {
+    if (r.state === 'pending') { const c = S.data.choices[String(r.id)]; return !!(c && c.none); }  // 「領域選択しない」なら図面に出さない
+    return !!S.hidden[r.key];
+  };
   const regColor = (r, C) => r.state === 'decided' || r.state === 'unnamed' ? C.decided : (r.state === 'unnamed_off' ? C.off : C.pending);
   const geomText = (g, col) => {
     const size = g.size;
@@ -504,7 +511,7 @@ export default function(component) {
     // --- 図面上の重ね表示 ---
     let ov = '';
     d.regions.forEach((r) => {
-      if (S.hidden[r.key]) return;
+      if (isHidden(r)) return;
       const col = regColor(r, C);
       ov += '<polygon points="' + r.points.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' ') +
             '" fill="' + col + '" stroke="' + col + '"/>';
@@ -515,7 +522,7 @@ export default function(component) {
       }
     });
     d.regions.forEach((r) => {
-      if (r.state !== 'pending' || S.hidden[r.key]) return;
+      if (r.state !== 'pending' || isHidden(r)) return;
       const ch = d.choices[String(r.id)];
       (ch ? ch.cands : []).forEach((c) => {
         const col = c.selected ? C.candSel : C.candOther;
@@ -528,8 +535,7 @@ export default function(component) {
     // --- 左パネル ---
     const scroll = S.side.scrollTop;
     // 「領域」には確定した領域だけを出す（要選択の領域は「抽出領域の選択」の中で表示を切り替える）
-    let h = '<datalist id="rp-dl">' + (d.labelNames || []).map((n) => '<option value="' + esc(n) + '">').join('') + '</datalist>';
-    h += '<h4>領域</h4>';
+    let h = '<h4>領域</h4>';
     const dis = d.locked ? ' dis' : '';
     const msg = (ch) => ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
                                       : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
@@ -542,8 +548,8 @@ export default function(component) {
       if (ch && r.editable) {
         // 確定済み・無名の領域: 直下で名称を入力し直す／領域選択しない。入力欄を空にすると自動の名称に戻る
         h += '<h4>領域名を入力</h4>' +
-             '<input type="text" list="rp-dl" data-ex="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
-             'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
+             '<input type="text" data-ex="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
+             'placeholder="図面枠内のラベルと完全一致（全角・小文字可）"><div class="rp-sg" data-sg="e' + r.id + '"></div>';
         if (ch.typed) h += msg(ch);
         h += '<label class="' + dis.trim() + '"><input type="checkbox" data-en="' + r.id + '" ' + (ch.none ? 'checked ' : '') +
              (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
@@ -553,8 +559,7 @@ export default function(component) {
     h += '<h4>抽出領域の選択</h4>';
     d.regions.filter((r) => r.state === 'pending').forEach((r) => {
       const ch = d.choices[String(r.id)];
-      h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>' +
-           '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '><span>図面に表示</span></label>';
+      h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>';
       ch.cands.forEach((c) => {
         h += '<label class="' + dis.trim() + '"><input type="checkbox" data-c="' + r.id + ':' + c.idx + '" ' +
              (c.selected ? 'checked ' : '') + (d.locked ? 'disabled' : '') + '><span class="rp-sw" style="background:' +
@@ -564,8 +569,8 @@ export default function(component) {
            (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
       h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
            (d.locked ? 'disabled' : '') + '><span>領域名を入力</span></label>';
-      h += '<input type="text" list="rp-dl" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
-           'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
+      h += '<input type="text" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
+           'placeholder="図面枠内のラベルと完全一致（全角・小文字可）"><div class="rp-sg" data-sg="t' + r.id + '"></div>';
       if (ch.typed) {
         h += ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
                            : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
@@ -602,18 +607,33 @@ export default function(component) {
       }
       choose(rid, 'typed');
     }));
-    S.side.querySelectorAll('input[data-ex]').forEach((el) => el.addEventListener('change', () => {
+    const commitEx = (el) => {
       const rid = Number(el.getAttribute('data-ex'));
       if (el.value.trim() === '') { choose(rid, 'typedoff', undefined, '', ''); return; }
       choose(rid, 'typedtext', undefined, '', el.value);
-    }));
+    };
+    const commitTx = (el) => choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);
+    S.side.querySelectorAll('input[data-ex]').forEach((el) => el.addEventListener('change', () => commitEx(el)));
+    S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => commitTx(el)));
     S.side.querySelectorAll('input[data-en]').forEach((el) => el.addEventListener('change', () => {
       const rid = Number(el.getAttribute('data-en'));
       choose(rid, el.checked ? 'editnone' : 'editnoneoff');
     }));
-    S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => {
-      choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);
-    }));
+    // 入力補完: 全角・半角・大小文字を区別せず、含まれるラベルを候補に出す（クリックで入力）
+    S.side.querySelectorAll('input[data-ex], input[data-tx]').forEach((el) => {
+      const isEx = el.hasAttribute('data-ex');
+      const box = S.side.querySelector('[data-sg="' + (isEx ? 'e' : 't') + el.getAttribute(isEx ? 'data-ex' : 'data-tx') + '"]');
+      el.addEventListener('input', () => {
+        const k = norm(el.value);
+        const hit = k ? (S.data.labelNames || []).filter((n) => norm(n).includes(k)).slice(0, 8) : [];
+        box.innerHTML = hit.map((n) => '<button type="button" data-pick="' + esc(n) + '">' + esc(n) + '</button>').join('');
+        box.querySelectorAll('button').forEach((b) => b.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          el.value = b.getAttribute('data-pick'); box.innerHTML = '';
+          if (isEx) commitEx(el); else commitTx(el);
+        }));
+      });
+    });
     S.side.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => {
       const act = b.getAttribute('data-act');
       if (act === 'fit') { S.vb = S.vb0.slice(); S.apply(); return; }

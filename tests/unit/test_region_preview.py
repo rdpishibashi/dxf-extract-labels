@@ -127,3 +127,11 @@ def test_renders_japanese_text_without_system_fonts(no_system_fonts):
     base = rp.render_base_svg(_dxf_bytes(with_text=True))
     assert base.cjk_font == rp.BUNDLED_FONT_NAME
     assert not base.empty
+
+
+def test_select_all_is_opt_in_and_viewer_has_fullscreen_button():
+    """「すべての領域名を特定にする」は DXF-extract-labels だけが有効にし、viewer に全画面ボタンがある。"""
+    params = inspect.signature(region_selection.render_global_region_names_section).parameters
+    assert params["show_select_all"].default is False
+    base = rp.render_base_svg(_dxf_bytes())
+    assert 'id="fs"' in rp.build_region_viewer_html(base, [], 600)

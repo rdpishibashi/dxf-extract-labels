@@ -231,6 +231,16 @@ _VIEWER_JS = """
   svg.addEventListener('pointerup',end);svg.addEventListener('pointercancel',end);
   svg.addEventListener('dblclick',reset);
   document.getElementById('fit').addEventListener('click',reset);
+  var wrap=document.getElementById('wrap'),fs=document.getElementById('fs');
+  fs.addEventListener('click',function(){
+    var note=document.getElementById('fsnote');note.textContent='';
+    if(document.fullscreenElement){document.exitFullscreen();return;}
+    var p=wrap.requestFullscreen?wrap.requestFullscreen():null;
+    if(!p){note.textContent='この環境では全画面にできません';return;}
+    p.catch(function(){note.textContent='この環境では全画面にできません';});});
+  document.addEventListener('fullscreenchange',function(){
+    fs.textContent=document.fullscreenElement?'全画面を終了':'全画面';
+    wrap.style.height=document.fullscreenElement?'100vh':wrap.getAttribute('data-h');});
 
   var boxes=Array.prototype.slice.call(document.querySelectorAll('input[data-ov]'));
   function show(key,on){
@@ -293,13 +303,13 @@ def build_region_viewer_html(base: BaseRender, overlays: List[RegionOverlay], he
     font_note = "" if base.cjk_font else "日本語フォントが見つからないため、日本語の文字は表示されません。"
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>{_VIEWER_CSS}</style></head>
-<body><div id="wrap" style="height:{height_px}px">
+<body><div id="wrap" data-h="{height_px}px" style="height:{height_px}px">
 <div id="side">
 <h4>表示プリセット</h4>
 <button data-preset="target">特定のみ</button><button data-preset="all">すべて</button><button data-preset="none">なし</button>
 <h4>領域</h4>{"".join(rows)}
 <h4>凡例</h4><div style="line-height:1.6;color:#aaa">{legend}</div>
-<h4>操作</h4><button id="fit">全体表示</button>
+<h4>操作</h4><button id="fit">全体表示</button><button id="fs">全画面</button><div id="fsnote" style="color:#e8a"></div>
 <div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>
 <div style="color:#e8a;margin-top:8px">{html.escape(font_note)}</div>
 </div>

@@ -457,7 +457,8 @@ def _render_global_region_names_section(locked):
 
     region_selection.render_global_region_names_section(
         collect_unique_region_candidate_names(analyses) + unnamed, locked,
-        allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option)
+        allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option,
+        show_select_all=True)
 
 
 REGION_CONFIRM_HEIGHT_PX = 600

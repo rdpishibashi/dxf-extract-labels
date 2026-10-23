@@ -64,6 +64,27 @@ _render_region_confirmation_section(enable_region_detection=True, locked={locked
 '''
 
 
+_CONFIRM_SHARED_SCRIPT_TEMPLATE = '''
+import sys
+sys.path.insert(0, {project_root!r})
+import streamlit as st
+from view import region_selection
+st.session_state['region_analyses'] = {analyses}
+region_selection.render_region_confirmation_section(st.session_state['region_analyses'], {locked})
+'''
+
+
+def _run_confirmation_shared(analyses, locked=False):
+    """共有関数を既定オプション（show_all=False）で実行する。DXF-label-comparison・HostPL-comparer と
+    同じ「選択の必要なファイルだけを表示する」契約の検証用（DXF-extract-labels の app.py は
+    2026-10-23 から show_all=True で全ファイルを表示するため、app 経由では検証できない）。"""
+    script = _CONFIRM_SHARED_SCRIPT_TEMPLATE.format(
+        project_root=PROJECT_ROOT, analyses=repr(analyses), locked=locked)
+    at = AppTest.from_string(script)
+    at.run()
+    return at
+
+
 def _run_confirmation(analyses, locked=False):
     # Python の repr() で埋め込む（json.dumps() だと None が 'null' になり
     # 埋め込み先のPythonソースとして不正になるため）。
@@ -107,18 +128,30 @@ def test_other_error_still_shown_in_confirmation():
 def test_confirmation_unaffected_when_no_error():
     """エラーが無く、要選択の領域も無いファイルは従来どおり非表示のまま
     （既存仕様への回帰が無いことの担保）。"""
-    at = _run_confirmation({
+    at = _run_confirmation_shared({
         'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
     })
     assert at.exception.len == 0
     assert at.markdown.len == 0
 
 
+def test_app_confirmation_shows_every_file_with_regions_detected_message():
+    """DXF-extract-labels の app は全ファイルを「領域の確認」に出す（2026-10-23 ユーザー決定。
+    確定のみのファイルも図面上で確認・名称変更できるようにするため）。選択不要を示す案内文は出さない。"""
+    at = _run_confirmation({
+        'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
+    })
+    assert at.exception.len == 0
+    assert at.subheader.len == 1
+    assert any('clean.dxf' in str(m.value) for m in at.markdown)
+    assert not any('選択の必要' in str(c.value) for c in at.caption)
+
+
 def test_confirmation_section_fully_hidden_when_no_targets():
     """表示対象ファイルが1件も無い場合（＝全領域が「領域一覧」で決定済み）、
     「領域の確認」の見出し・キャプション・「すべての領域が…決定済みです。」の
     いずれも描画しない（2026-09-10、セクション自体の空表示を抑制）。"""
-    at = _run_confirmation({
+    at = _run_confirmation_shared({
         'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
     })
     assert at.exception.len == 0
@@ -131,7 +164,7 @@ def test_confirmation_section_fully_hidden_when_no_targets():
 def test_confirmation_section_fully_hidden_when_no_targets_and_locked():
     """結果表示中（`locked=True`、振り返り専用状態）でも、表示対象ファイルが
     1件も無ければ同様に何も描画しない（組み合わせ表の状態A確認）。"""
-    at = _run_confirmation({
+    at = _run_confirmation_shared({
         'clean.dxf': {'error': None, 'regions': [], 'frames': [(0, 100, 0, 100)]},
     }, locked=True)
     assert at.exception.len == 0

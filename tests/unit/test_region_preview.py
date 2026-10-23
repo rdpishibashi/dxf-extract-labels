@@ -6,7 +6,6 @@
 import inspect
 import io
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -48,57 +47,11 @@ def test_overlay_svg_coordinates_inside_viewbox_with_y_flip():
     assert y1 < y0  # SVG は y 下向き
 
 
-def test_confirmation_overlays_all_target_checked_with_label():
-    ovs = rp.confirmation_overlays([_reg(2, RECT, frame=1, area_pct=29.6)])
-    assert len(ovs) == 1
-    assert (ovs[0].style, ovs[0].checked) == ("target", True)
-    assert ovs[0].label == "図面2 / 領域3（30%）"
-
-
-def test_preview_overlays_mark_to_style_and_checked():
-    analysis = {"regions": [_reg(0, RECT), _reg(1, RECT), _reg(2, RECT)], "minor_regions": [_reg(7, RECT)]}
-    rows = [
-        {"id": 0, "name": "A", "area_pct": 10, "mark": "特定"},
-        {"id": 1, "name": "B", "area_pct": 10, "mark": ""},
-        {"id": 2, "name": "C", "area_pct": 10, "mark": "除外"},
-        {"id": 7, "name": "小", "area_pct": 2, "mark": "特定"},  # 小領域も引ける
-        {"id": 99, "name": "迷子", "area_pct": 1, "mark": "特定"},  # 多角形なし → 飛ばす
-    ]
-    got = {o.key: (o.style, o.checked) for o in rp.preview_overlays(analysis, rows)}
-    assert got == {"r0": ("target", True), "r1": ("other", False),
-                   "r2": ("excluded", False), "r7": ("target", True)}
-
-
-def test_same_name_in_multiple_frames_keeps_distinct_keys():
-    analysis = {"regions": [_reg(0, RECT, frame=0), _reg(1, RECT, frame=1)], "minor_regions": []}
-    rows = [{"id": 0, "name": "SAME", "area_pct": 5, "mark": "特定"},
-            {"id": 1, "name": "SAME", "area_pct": 5, "mark": "特定"}]
-    assert len({o.key for o in rp.preview_overlays(analysis, rows)}) == 2
-
-
-def test_html_is_self_contained_and_has_overlay_controls():
-    base = rp.render_base_svg(_dxf_bytes(with_text=True))
-    ovs = [rp.RegionOverlay("r0", "領域<A>", RECT, "target", True),
-           rp.RegionOverlay("r1", "B", RECT, "other", False)]
-    html_text = rp.build_region_viewer_html(base, ovs, 600)
-    assert "<script src" not in html_text
-    assert not re.findall(r'(?:src|href)="https?://', html_text)
-    assert html_text.count('data-ov="r0"') == 2  # チェックボックスと図面上のグループ
-    assert "領域&lt;A&gt;" in html_text  # エスケープされる
-    assert 'data-preset="target"' in html_text and 'data-preset="none"' in html_text
-
-
-def test_empty_overlays_still_draw_drawing():
-    base = rp.render_base_svg(_dxf_bytes())
-    assert "表示できる領域がありません" in rp.build_region_viewer_html(base, [], 600)
-
-
 def test_empty_dxf_is_empty_without_error():
     buf = io.StringIO()
     ezdxf.new("R2010").write(buf)
     base = rp.render_base_svg(buf.getvalue().encode("utf-8"))
     assert base.empty
-    assert "描画対象のエンティティがありません" in rp.build_region_viewer_html(base, [], 600)
 
 
 def test_shared_hook_defaults_to_none():
@@ -133,5 +86,4 @@ def test_select_all_is_opt_in_and_viewer_has_fullscreen_button():
     """「すべての領域名を特定にする」は DXF-extract-labels だけが有効にし、viewer に全画面ボタンがある。"""
     params = inspect.signature(region_selection.render_global_region_names_section).parameters
     assert params["show_select_all"].default is False
-    base = rp.render_base_svg(_dxf_bytes())
-    assert 'id="fs"' in rp.build_region_viewer_html(base, [], 600)
+    assert 'data-act="fs"' in rp.CONFIRM_JS

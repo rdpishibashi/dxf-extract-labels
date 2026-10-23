@@ -180,20 +180,6 @@ def test_label_geom_uses_original_anchor_size_and_position():
     assert rp.label_geom(base, ('NOPE', 1, 1))['anchor'] == 'middle'
 
 
-def test_preview_overlays_put_name_on_every_original_label():
-    analysis = {'regions': [_reg(0, [(1.0, 'A')])],
-                'labels': [('A', 5, 12), ('a', 70, 12), ('B', 9, 9)]}
-    rows = [{'id': 0, 'name': 'A', 'area_pct': 10, 'mark': '特定'}]
-    ov = rp.preview_overlays(analysis, rows)[0]
-    assert [l[1:] for l in ov.label_xys] == [(5, 12), (70, 12)]
-    # 名称が複数候補（' | '）や選択済み複数（', '）でも、最初に見つかった名称のラベルへ
-    rows = [{'id': 0, 'name': 'ZZZ | B', 'area_pct': 10, 'mark': ''}]
-    assert [l[0] for l in rp.preview_overlays(analysis, rows)[0].label_xys] == ['B']
-    # 該当ラベルが無い（no name 等）→ 空（多角形の左上に出す）
-    rows = [{'id': 0, 'name': 'no name 1', 'area_pct': 10, 'mark': '特定'}]
-    assert rp.preview_overlays(analysis, rows)[0].label_xys == []
-
-
 def test_build_confirmation_data_states_and_selection(state):
     import ezdxf, io
     doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
@@ -331,3 +317,34 @@ def test_viewer_data_lists_only_confirmed_regions_as_editable(state):
     assert by_key['d1']['editable'] and by_key['u2']['editable']
     assert data['choices']['1']['typed'] is True and data['choices']['1']['typedMatch'] == 'M1 DRV'
     assert data['choices']['2']['typed'] is False
+
+
+def test_confirmation_targets_include_all_files_only_when_requested():
+    """確定のみ・領域なしのファイルも、include_all=True のときだけ「領域の確認」の対象になる
+    （図面枠が見つからない既知の未対応ケースは常に対象外）。"""
+    decided = {'regions': [_reg(0, [(1.0, 'A')])], 'labels': [], 'frames': [1]}
+    empty = {'regions': [], 'labels': [], 'frames': [1]}
+    no_frame = {'regions': [], 'error': rs.FRAME_NOT_FOUND_ERROR_MARKER, 'frames': []}
+    analyses = {'a': decided, 'b': empty, 'c': no_frame}
+    assert rs.region_confirmation_targets(analyses, {'A'}) == []
+    assert [t[0] for t in rs.region_confirmation_targets(analyses, {'A'}, include_all=True)] == ['a', 'b']
+
+
+def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
+    """「除外」・特定OFF の領域は灰色で表示し、名称は変更できない。入力補完用に枠内のラベル名を渡す。"""
+    import ezdxf, io
+    doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+    far = [(50, 50), (60, 50), (60, 60), (50, 60)]
+    ex, off = _reg(3, [(1.0, 'EXC')]), _reg(4, [(1.0, 'OFF')], poly=far)
+    data = rp.build_confirmation_data(
+        base, 'f', {'labels': [('M1 DRV', 5, 5), ('CN CS', 6, 6), ('CN CS', 9, 9)]}, [], [], st.session_state,
+        set(), False, rs.match_typed_region_name, lambda r, c: [],
+        inactive=[(ex, 'EXC', '除外'), (off, 'OFF', '特定OFF')])
+    by_key = {r['key']: r for r in data['regions']}
+    assert {k: (r['state'], r['note'], r['editable']) for k, r in by_key.items()} == {
+        'x3': ('unnamed_off', '除外', False), 'x4': ('unnamed_off', '特定OFF', False)}
+    assert data['choices'] == {}
+    assert data['labelNames'] == ['CN CS', 'M1 DRV']
+    assert 'list="rp-dl"' in rp.CONFIRM_JS

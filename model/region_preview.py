@@ -19,7 +19,7 @@ DXF-diff-manager の model/dxf_preview.py（差分DXFのレイヤー選択ビュ
 import html
 import io
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -58,6 +58,10 @@ class BaseRender:
     matrix: Tuple[float, ...] = ()  # Matrix44 の 16 値（cache_data で保持できる形）
     cjk_font: Optional[str] = None
     empty: bool = False
+    # 元の図面のラベルの配置: {(文字列, round(x,1), round(y,1)): (anchor, vpos, 文字の高さ, 回転角度)}
+    # （`analysis['labels']` の座標と同じ。MTEXT/TEXT の挿入点は中央寄せ等の配置基準点のため、
+    # 重ね書きする文字を元の位置に合わせるのに使う）
+    labels: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -67,6 +71,7 @@ class RegionOverlay:
     corners: List[Tuple[float, float]]  # DXF（モデル空間）座標
     style: str = "target"  # 'target' | 'other' | 'excluded'
     checked: bool = True
+    label_xys: List[Tuple[str, float, float]] = field(default_factory=list)  # 元の図面の該当ラベル (text, x, y) すべて。無ければ多角形の左上
 
 
 def _register_bundled_font() -> None:
@@ -90,6 +95,46 @@ def find_cjk_font() -> Optional[str]:
     return None
 
 
+_MTEXT_ANCHOR = {1: ("start", "top"), 2: ("middle", "top"), 3: ("end", "top"),
+                 4: ("start", "middle"), 5: ("middle", "middle"), 6: ("end", "middle"),
+                 7: ("start", "bottom"), 8: ("middle", "bottom"), 9: ("end", "bottom")}
+_TEXT_H = {0: "start", 1: "middle", 2: "end", 3: "start", 4: "middle", 5: "start"}
+_TEXT_V = {0: "bottom", 1: "bottom", 2: "middle", 3: "top"}
+
+
+def _collect_label_info(doc) -> dict:
+    """`analyze_dxf_regions()` と同じ手順でラベル実体を集め、配置基準（anchor/vpos）・
+    文字の高さ・回転角を `analysis['labels']` と同じキーで返す。失敗しても空 dict
+    （その場合、文字は (x, y) を中央に置く）。"""
+    try:
+        import math
+        from model.extract_labels import extract_text_from_entity
+        from model.region_detector import DEFAULT_REGION_CONFIG, _collect_region_geometry
+        entities = _collect_region_geometry(doc, dict(DEFAULT_REGION_CONFIG), True)[3]
+    except Exception:
+        return {}
+    info = {}
+    for e in entities:
+        try:
+            _raw, text, (x, y) = extract_text_from_entity(e)
+            if not text:
+                continue
+            if e.dxftype() == 'MTEXT':
+                anchor, vpos = _MTEXT_ANCHOR.get(e.dxf.get('attachment_point', 1), ("start", "top"))
+                height = float(e.dxf.get('char_height', 0) or 0)
+                td = e.dxf.get('text_direction', None)
+                rot = math.degrees(math.atan2(td[1], td[0])) if td is not None else float(e.dxf.get('rotation', 0) or 0)
+            else:
+                anchor = _TEXT_H.get(e.dxf.get('halign', 0), "start")
+                vpos = _TEXT_V.get(e.dxf.get('valign', 0), "bottom")
+                height = float(e.dxf.get('height', 0) or 0)
+                rot = float(e.dxf.get('rotation', 0) or 0)
+            info.setdefault((text, round(x, 1), round(y, 1)), (anchor, vpos, height, rot))
+        except Exception:
+            continue
+    return info
+
+
 def render_base_svg(dxf_bytes: bytes) -> BaseRender:
     """元の図面全体（モデル空間）を白一色の SVG にする。dxf_bytes は変更しない。"""
     doc, _auditor = recover.read(io.BytesIO(dxf_bytes))
@@ -102,6 +147,7 @@ def render_base_svg(dxf_bytes: bytes) -> BaseRender:
 
     if len(doc.modelspace()) == 0:
         return BaseRender(cjk_font=cjk_font, empty=True)
+    label_info = _collect_label_info(doc)
 
     cfg = drawing_config.Configuration(
         background_policy=drawing_config.BackgroundPolicy.BLACK,
@@ -125,12 +171,54 @@ def render_base_svg(dxf_bytes: bytes) -> BaseRender:
         view_box=(vb[2], vb[3]),
         matrix=tuple(float(v) for v in backend.transformation_matrix),
         cjk_font=cjk_font,
+        labels=label_info,
     )
 
 
 def _to_svg(matrix: Tuple[float, ...], x: float, y: float) -> Tuple[float, float]:
     v = Matrix44(matrix).transform(Vec3(x, y, 0))
     return float(v.x), float(v.y)
+
+
+def resolve_labels(text, labels):
+    """`labels`（`(text, x, y)`）のうち、`text` と NFKC・大文字で一致する元ラベルをすべて返す。
+
+    同じ文字列が図面に複数あるのは領域が複数あるということなので、1件に絞らず
+    すべてハイライトする（2026-10-23 ユーザー決定）。"""
+    key = _norm(text)
+    return [lab for lab in labels if _norm(lab[0]) == key]
+
+
+def label_geom(base: BaseRender, label) -> dict:
+    """元ラベル `(text, x, y)` を、SVG 上で元の位置・大きさ・向きに重ねるための配置情報にする。
+
+    {x, y: SVG 座標, anchor: 'start'|'middle'|'end', base: 'hanging'|'central'|'text-after-edge',
+     size: 文字の高さ(SVG単位。不明なら None), rot: SVG での回転角度}"""
+    text, x, y = label
+    anchor, vpos, height, rot = base.labels.get((text, round(x, 1), round(y, 1)),
+                                                ("middle", "middle", 0.0, 0.0))
+    sx, sy = _to_svg(base.matrix, x, y)
+    ux, uy = _to_svg(base.matrix, x + 1.0, y)
+    scale = ((ux - sx) ** 2 + (uy - sy) ** 2) ** 0.5
+    return {
+        "x": sx, "y": sy, "anchor": anchor,
+        "base": {"top": "hanging", "middle": "central", "bottom": "text-after-edge"}.get(vpos, "central"),
+        # DXF の文字の高さは大文字の高さ。SVG の font-size（全体の高さ）は約 1.4 倍にすると元の見た目に近い
+        "size": (height * scale * 1.4) if height and scale else None,
+        "rot": -rot,  # SVG は y 下向き
+    }
+
+
+def label_text_svg(geom: dict, text: str, color: str) -> str:
+    """`label_geom()` の配置で色付き文字を作る（黒の縁取りで下の元の文字を隠す）。"""
+    size = geom.get("size")
+    style = f"font-size:{size:.2f}px;stroke-width:{size * 0.25:.2f}px" if size else ""
+    rot = f' transform="rotate({geom["rot"]:.2f} {geom["x"]:.2f} {geom["y"]:.2f})"' if geom.get("rot") else ""
+    return (
+        f'<text class="lb" x="{geom["x"]:.2f}" y="{geom["y"]:.2f}" fill="{color}" '
+        f'text-anchor="{geom["anchor"]}" dominant-baseline="{geom["base"]}"{rot} '
+        f'style="{style}">{html.escape(text)}</text>'
+    )
 
 
 def confirmation_overlays(pending_regions) -> List[RegionOverlay]:
@@ -169,12 +257,18 @@ def preview_overlays(analysis, region_rows) -> List[RegionOverlay]:
             continue
         style, checked = _MARK_STYLE.get(row.get('mark', ''), ("other", False))
         name = row.get('name') or f"領域{row['id'] + 1}"
+        label_xys = []
+        for part in [p.strip() for p in name.replace(' | ', ',').split(',') if p.strip()]:
+            label_xys = resolve_labels(part, analysis.get('labels', []))
+            if label_xys:
+                break
         overlays.append(RegionOverlay(
             key=f"r{row['id']}",
             label=f"{name}（{row.get('area_pct', 0):.0f}%）",
             corners=corners,
             style=style,
             checked=checked,
+            label_xys=label_xys,
         ))
     return overlays
 
@@ -268,13 +362,18 @@ def _overlay_svg(base: BaseRender, ov: RegionOverlay) -> str:
     if not pts:
         return ""
     points = " ".join(f"{x:.2f},{y:.2f}" for x, y in pts)
-    # ラベルは多角形の左上付近（SVG 座標で最小 y の頂点のうち最小 x）
-    tx, ty = min(pts, key=lambda p: (p[1], p[0]))
     dash = ' stroke-dasharray="6 4"' if ov.style == "excluded" else ""
+    if ov.label_xys:
+        # 元の図面の該当ラベルすべてに、元の位置・大きさで色付き文字を重ねる
+        name = ov.label.rsplit("（", 1)[0]
+        texts = "".join(label_text_svg(label_geom(base, lab), lab[0], color) for lab in ov.label_xys)
+    else:
+        # 該当ラベルが無い（no name 等）: 多角形の左上に表示する
+        tx, ty = min(pts, key=lambda p: (p[1], p[0]))
+        texts = f'<text x="{tx + 4:.2f}" y="{ty + 16:.2f}" fill="{color}">{html.escape(ov.label)}</text>'
     return (
         f'<g class="ov" data-ov="{html.escape(ov.key)}">'
-        f'<polygon points="{points}" fill="{color}" stroke="{color}"{dash}/>'
-        f'<text x="{tx + 4:.2f}" y="{ty + 16:.2f}" fill="{color}">{html.escape(ov.label)}</text></g>'
+        f'<polygon points="{points}" fill="{color}" stroke="{color}"{dash}/>{texts}</g>'
     )
 
 
@@ -330,6 +429,7 @@ COLOR_PENDING = "#ff9f1a"
 COLOR_CAND_SELECTED = "#ff9f1a"
 COLOR_CAND_OTHER = "#ffe600"
 COLOR_DECIDED = "#ff3030"
+COLOR_OFF = "#9a9a9a"  # 名称が無く「特定」OFF（採用しない）の領域
 
 
 def _norm(text):
@@ -352,30 +452,17 @@ def _dist_point_polygon(px, py, polygon) -> float:
     return best
 
 
-def nearest_label_position(text, polygon, labels):
-    """`labels`（`(text, x, y)`）のうち、`text` と NFKC・大文字で一致するものから、
-    多角形（DXF座標）の境界に最も近い1件の `(x, y)` を返す。無ければ None。"""
-    key = _norm(text)
-    best, best_d = None, float("inf")
-    for lab in labels:
-        if _norm(lab[0]) != key:
-            continue
-        d = _dist_point_polygon(lab[1], lab[2], polygon)
-        if d < best_d:
-            best, best_d = (lab[1], lab[2]), d
-    return best
-
-
 def _poly_of(reg):
     return [tuple(c) for c in (reg.get("corners") or reg.get("polygon") or [])]
 
 
 def build_confirmation_data(base, fname, analysis, pending, decided, state, checked_names,
-                            locked, match_fn, candidates_fn):
+                            locked, match_fn, candidates_fn, unnamed=()):
     """viewer 部品に渡す data（JSON 化できる dict）を作る。streamlit 非依存。
 
     pending: 選択が必要な領域（reg dict のリスト）／decided: `[(reg, 確定した名称), ...]`
     state: 選択状態の正本（`st.session_state` 互換の dict。キー `rc_<fname>_<id>_…`）
+    unnamed: 名称が無い領域 `[(reg, 表示名, 採用するか), ...]`（採用する＝赤、しない＝灰。ラベルは元の図面に無いので多角形の左上）
     candidates_fn(reg, checked_names) -> [(距離, 文字列), ...]（共有側の `pending_candidates_for_region`）
     match_fn(text, labels) -> 一致したラベル or None（共有側の `match_typed_region_name`）
     """
@@ -384,19 +471,33 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
     def svg_pts(corners):
         return [_to_svg(base.matrix, x, y) for x, y in corners]
 
+    def geoms(text):
+        # 同じ文字列のラベルが複数あるときはすべて（領域が複数あるということ）
+        return [dict(label_geom(base, lab), text=lab[0]) for lab in resolve_labels(text, labels)]
+
     regions, choices = [], {}
     for reg in decided:
         r, name = reg
         corners = _poly_of(r)
         if not corners:
             continue
-        pos = nearest_label_position(name, corners, labels)
         pts = svg_pts(corners)
-        anchor = _to_svg(base.matrix, *pos) if pos else min(pts, key=lambda p: (p[1], p[0]))
         regions.append({
             "key": f"d{r['id']}", "id": r["id"], "state": "decided", "name": name,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
-            "points": [list(p) for p in pts], "anchor": list(anchor),
+            "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
+            "geoms": geoms(name),
+        })
+    for r, label, adopted in unnamed:
+        corners = _poly_of(r)
+        if not corners:
+            continue
+        pts = svg_pts(corners)
+        regions.append({
+            "key": f"u{r['id']}", "id": r["id"], "state": "unnamed" if adopted else "unnamed_off", "name": label,
+            "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
+            "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
+            "geoms": [],
         })
     for r in pending:
         corners = _poly_of(r)
@@ -407,11 +508,10 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         pts = svg_pts(corners)
         cands = []
         for i, (d, t) in enumerate(candidates_fn(r, checked_names)):
-            pos = nearest_label_position(t, corners, labels)
             cands.append({
                 "idx": i, "text": t, "dist": round(float(d), 1),
                 "selected": bool(state.get(k(i), False)),
-                "pos": list(_to_svg(base.matrix, *pos)) if pos else None,
+                "geoms": geoms(t),
             })
         typedtext = state.get(k("typedtext"), "") or ""
         regions.append({
@@ -429,7 +529,7 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         "svg": base.inner_svg, "sig": f"{fname}:{len(base.inner_svg)}:{hash(base.inner_svg) & 0xffffffff}",
         "regions": regions, "choices": choices, "locked": bool(locked),
         "colors": {"pending": COLOR_PENDING, "candSel": COLOR_CAND_SELECTED,
-                   "candOther": COLOR_CAND_OTHER, "decided": COLOR_DECIDED},
+                   "candOther": COLOR_CAND_OTHER, "decided": COLOR_DECIDED, "off": COLOR_OFF},
         "hasFont": base.cjk_font is not None, "empty": base.empty,
     }
 
@@ -548,6 +648,15 @@ export default function(component) {
     S.render();
   };
 
+  const regColor = (r, C) => r.state === 'decided' || r.state === 'unnamed' ? C.decided : (r.state === 'unnamed_off' ? C.off : C.pending);
+  const geomText = (g, col) => {
+    const size = g.size;
+    const style = size ? 'font-size:' + size.toFixed(2) + 'px;stroke-width:' + (size * 0.25).toFixed(2) + 'px' : '';
+    const rot = g.rot ? ' transform="rotate(' + g.rot.toFixed(2) + ' ' + g.x.toFixed(2) + ' ' + g.y.toFixed(2) + ')"' : '';
+    return '<text x="' + g.x.toFixed(2) + '" y="' + g.y.toFixed(2) + '" fill="' + col + '" text-anchor="' + g.anchor +
+           '" dominant-baseline="' + g.base + '"' + rot + ' style="' + style + '">' + esc(g.text) + '</text>';
+  };
+
   const render = () => {
     const d = S.data, C = d.colors;
     if (d.empty) { S.wrap.innerHTML = '<div style="padding:16px;color:#aaa">描画対象のエンティティがありません</div>'; return; }
@@ -562,20 +671,21 @@ export default function(component) {
     let ov = '';
     d.regions.forEach((r) => {
       if (S.hidden[r.key]) return;
-      const col = r.state === 'decided' ? C.decided : C.pending;
+      const col = regColor(r, C);
       ov += '<polygon points="' + r.points.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' ') +
             '" fill="' + col + '" stroke="' + col + '"/>';
-      if (r.state === 'decided') {
-        ov += '<text x="' + (r.anchor[0] + 4) + '" y="' + (r.anchor[1] + 16) + '" fill="' + col + '">' + esc(r.name) + '</text>';
+      if (r.state !== 'pending') {
+        // 確定した領域の名称は元のラベルの位置に（同じ文字列が複数あればすべて）。無名領域は多角形の左上
+        if (r.geoms && r.geoms.length) r.geoms.forEach((g) => { ov += geomText(g, col); });
+        else ov += '<text x="' + (r.anchor[0] + 4) + '" y="' + (r.anchor[1] + 16) + '" fill="' + col + '">' + esc(r.name) + '</text>';
       }
     });
     d.regions.forEach((r) => {
       if (r.state !== 'pending' || S.hidden[r.key]) return;
       const ch = d.choices[String(r.id)];
       (ch ? ch.cands : []).forEach((c) => {
-        if (!c.pos) return;
         const col = c.selected ? C.candSel : C.candOther;
-        ov += '<text x="' + c.pos[0] + '" y="' + c.pos[1] + '" fill="' + col + '">' + esc(c.text) + '</text>';
+        (c.geoms || []).forEach((g) => { ov += geomText(g, col); });
       });
     });
     S.svg.querySelector('#rp-ov').innerHTML = ov;
@@ -585,10 +695,10 @@ export default function(component) {
     const scroll = S.side.scrollTop;
     let h = '<h4>領域</h4>';
     d.regions.forEach((r) => {
-      const col = r.state === 'decided' ? C.decided : C.pending;
+      const col = regColor(r, C);
       h += '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
            '<span class="rp-sw" style="background:' + col + '"></span><span>' + esc(r.label) +
-           (r.state === 'decided' ? '　' + esc(r.name) : '') + '</span></label>';
+           (r.state !== 'pending' ? '　' + esc(r.name) + (r.state === 'unnamed_off' ? '（特定OFF）' : '') : '') + '</span></label>';
     });
     h += '<h4>抽出領域の選択</h4>';
     const dis = d.locked ? ' dis' : '';

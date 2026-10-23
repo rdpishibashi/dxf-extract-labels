@@ -156,10 +156,42 @@ def test_typed_input_ui_can_be_retried_and_shows_result():
 # viewer 用データ
 # ---------------------------------------------------------------------------
 
-def test_nearest_label_position_picks_closest_same_text():
-    labels = [('RACK1', 80, 80), ('rack1', 5, 12), ('OTHER', 5, 5)]
-    assert rp.nearest_label_position('RACK1', SQUARE, labels) == (5, 12)  # 領域に近い方
-    assert rp.nearest_label_position('NONE', SQUARE, labels) is None
+def test_resolve_labels_returns_all_same_text_labels():
+    """同じ文字列が複数あるのは領域が複数あるということ。1件に絞らずすべて返す。"""
+    labels = [('RACK1', 80, 80), ('rack1', 5, 12), ('OTHER', 5, 5), ('ＲＡＣＫ１', 1, 1)]
+    assert [l[1:] for l in rp.resolve_labels('RACK1', labels)] == [(80, 80), (5, 12), (1, 1)]
+    assert rp.resolve_labels('NONE', labels) == []
+
+
+def test_label_geom_uses_original_anchor_size_and_position():
+    import ezdxf, io
+    doc = ezdxf.new('R2010')
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (100, 0), (100, 50), (0, 50)], close=True)
+    m = msp.add_mtext('SYSTEM BOX', dxfattribs={'insert': (20, 10), 'char_height': 2.5, 'attachment_point': 5})
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+    g = rp.label_geom(base, ('SYSTEM BOX', 20, 10))
+    assert (g['anchor'], g['base']) == ('middle', 'central')  # 挿入点が中央寄せの基準
+    assert g['size'] and g['size'] > 0
+    x, y = rp._to_svg(base.matrix, 20, 10)
+    assert (g['x'], g['y']) == (x, y)
+    # 情報の無いラベルは中央に置く
+    assert rp.label_geom(base, ('NOPE', 1, 1))['anchor'] == 'middle'
+
+
+def test_preview_overlays_put_name_on_every_original_label():
+    analysis = {'regions': [_reg(0, [(1.0, 'A')])],
+                'labels': [('A', 5, 12), ('a', 70, 12), ('B', 9, 9)]}
+    rows = [{'id': 0, 'name': 'A', 'area_pct': 10, 'mark': '特定'}]
+    ov = rp.preview_overlays(analysis, rows)[0]
+    assert [l[1:] for l in ov.label_xys] == [(5, 12), (70, 12)]
+    # 名称が複数候補（' | '）や選択済み複数（', '）でも、最初に見つかった名称のラベルへ
+    rows = [{'id': 0, 'name': 'ZZZ | B', 'area_pct': 10, 'mark': ''}]
+    assert [l[0] for l in rp.preview_overlays(analysis, rows)[0].label_xys] == ['B']
+    # 該当ラベルが無い（no name 等）→ 空（多角形の左上に出す）
+    rows = [{'id': 0, 'name': 'no name 1', 'area_pct': 10, 'mark': '特定'}]
+    assert rp.preview_overlays(analysis, rows)[0].label_xys == []
 
 
 def test_build_confirmation_data_states_and_selection(state):
@@ -179,7 +211,7 @@ def test_build_confirmation_data_states_and_selection(state):
     assert states == {'d2': 'decided', 'p1': 'pending'}
     cands = data['choices']['1']['cands']
     assert [c['selected'] for c in cands] == [False, True]
-    assert all(c['pos'] is not None for c in cands)
+    assert all(c['geoms'] for c in cands)  # 元のラベルの位置が付く
     assert data['colors']['decided'] == '#ff3030'
     import json; json.dumps(data)  # JSON 化できる
 
@@ -238,3 +270,24 @@ def test_viewer_call_passes_json_data_and_applies_returned_choice():
     at.run()
     assert at.session_state['rc_f.dxf_1_typed'] is True
     assert at.session_state['rc_f.dxf_1_typedtext'] == 'a'
+
+
+def test_confirmation_targets_include_unnamed_only_when_requested():
+    """名称の無い領域だけを持つファイルは、include_unnamed=True のときだけ「領域の確認」の対象になる。"""
+    analysis = {'regions': [_reg(0, [])], 'labels': [], 'frames': [1]}
+    assert rs.region_confirmation_targets({'f': analysis}, set()) == []
+    targets = rs.region_confirmation_targets({'f': analysis}, set(), include_unnamed=True)
+    assert [t[0] for t in targets] == ['f'] and targets[0][2] == []
+
+
+def test_build_confirmation_data_includes_unnamed_regions(state):
+    import ezdxf, io
+    doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+    un_on, un_off = _reg(5, []), _reg(6, [], poly=[(50, 50), (60, 50), (60, 60), (50, 60)])
+    data = rp.build_confirmation_data(
+        base, 'f', {'labels': []}, [], [], st.session_state, set(), False,
+        rs.match_typed_region_name, lambda r, c: [],
+        unnamed=[(un_on, 'no name 1', True), (un_off, 'no name 2', False)])
+    assert {r['key']: r['state'] for r in data['regions']} == {'u5': 'unnamed', 'u6': 'unnamed_off'}

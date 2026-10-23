@@ -484,6 +484,14 @@ _REGION_CONFIRM_VIEWER = st.components.v2.component(
 )
 
 
+def _unnamed_regions(analysis):
+    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`（「抽出領域の選択」の `no name N` と同じ表示名）。"""
+    labels = unnamed_region_labels(analysis)
+    by_id = {r['id']: r for r in analysis.get('regions', [])}
+    return [(by_id[rid], label, bool(st.session_state.get(f"grc_{label}", True)))
+            for rid, label in labels.items() if rid in by_id]
+
+
 def _decided_regions(analysis, pending_regions):
     """要選択ではないが名称が確定している領域 `[(reg, 名称), ...]`（viewer の赤表示用）。"""
     checked = region_selection.global_checked_region_names()
@@ -509,7 +517,8 @@ def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, loc
         data = region_preview.build_confirmation_data(
             base, fname, analysis, pending_regions, _decided_regions(analysis, pending_regions),
             st.session_state, checked, locked,
-            region_selection.match_typed_region_name, pending_candidates_for_region)
+            region_selection.match_typed_region_name, pending_candidates_for_region,
+            unnamed=_unnamed_regions(analysis))
         res = _REGION_CONFIRM_VIEWER(
             key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
             on_choice_change=lambda: None)
@@ -557,7 +566,7 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
     def _file_preview(fname, analysis, pending_regions):
         """回路全体（白）の中で、選択が必要な領域を赤でハイライトする。"""
         uf = files.get(fname)
-        if uf is None or not pending_regions:
+        if uf is None or not (pending_regions or unnamed_region_labels(analysis)):
             return False
         if not st.toggle("👁 図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
             return False  # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）
@@ -566,7 +575,7 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
 
     region_selection.render_region_confirmation_section(
         st.session_state['region_analyses'], locked, file_preview=_file_preview,
-        allow_typed_name=True)
+        allow_typed_name=True, show_unnamed=True)
 
 
 def _resolve_assembly_compare(results, compare_assembly_option, master_index=None):
@@ -894,10 +903,10 @@ def _render_region_preview(uploaded_files):
             overlays = region_preview.preview_overlays(analysis, rows) if rows else []
             col_name, col_toggle = st.columns([5, 1])
             if not overlays or fname not in files:
-                col_name.write(f"`{fname}`　領域なし")
+                col_name.write(f"{fname}　領域なし")
                 continue
             n_target = sum(1 for o in overlays if o.style == "target")
-            col_name.write(f"`{fname}`　特定 {n_target}／検出 {len(overlays)} 領域")
+            col_name.write(f"{fname}　特定 {n_target}／検出 {len(overlays)} 領域")
             if col_toggle.toggle("表示", key=f"regprev_result_{fname}"):
                 _show_region_viewer(files[fname].getvalue(), overlays, REGION_PREVIEW_HEIGHT_PX)
 

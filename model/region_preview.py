@@ -1,9 +1,9 @@
 """
 領域のブラウザ内プレビュー（モデル層。streamlit 非依存・DXF-extract-labels 専用）
 
-元の図面全体をグレー一色で描いた SVG に、検出した領域の多角形（DXF 座標）を
+元の図面全体を白一色で描いた SVG に、検出した領域の多角形（DXF 座標）を
 色付きの輪郭とラベルで重ねた、自己完結の HTML（inline SVG + 素の JS）を作る。
-DXF-viewer の Search Boundary（グレーの回路図に赤の境界）と同じ見せ方。
+DXF-viewer の Search Boundary（回路図に赤の境界）と同じ見せ方。
 
 DXF-diff-manager の model/dxf_preview.py（差分DXFのレイヤー選択ビューア）とは
 表示の単位が違う（レイヤーではなく領域名）ため、別モジュールとして持つ。
@@ -41,7 +41,7 @@ CJK_FONT_CANDIDATES = [
     "msgothic.ttc", "meiryo.ttc", "NotoSansCJK-Regular.ttc", "NotoSansCJKjp-Regular.otf",
 ]
 
-BASE_GRAY = "#7a7a7a"
+BASE_COLOR = "#ffffff"  # 図面全体の色（2026-10-23 ユーザー指定: グレーは見づらいため白）
 
 # 領域の見せ方: style -> (線色, 表示名)
 STYLE_COLORS: Dict[str, Tuple[str, str]] = {
@@ -91,7 +91,7 @@ def find_cjk_font() -> Optional[str]:
 
 
 def render_base_svg(dxf_bytes: bytes) -> BaseRender:
-    """元の図面全体（モデル空間）をグレー一色の SVG にする。dxf_bytes は変更しない。"""
+    """元の図面全体（モデル空間）を白一色の SVG にする。dxf_bytes は変更しない。"""
     doc, _auditor = recover.read(io.BytesIO(dxf_bytes))
     cjk_font = find_cjk_font()
     if cjk_font:
@@ -106,7 +106,7 @@ def render_base_svg(dxf_bytes: bytes) -> BaseRender:
     cfg = drawing_config.Configuration(
         background_policy=drawing_config.BackgroundPolicy.BLACK,
         color_policy=drawing_config.ColorPolicy.CUSTOM,
-        custom_fg_color=BASE_GRAY,
+        custom_fg_color=BASE_COLOR,
     )
     backend = svg.SVGBackend()
     Frontend(RenderContext(doc), backend, config=cfg).draw_layout(doc.modelspace())

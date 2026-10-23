@@ -467,7 +467,7 @@ REGION_PREVIEW_WARN_BYTES = 8 * 1024 * 1024
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def _render_region_base(dxf_bytes: bytes):
-    """元の図面全体のグレー SVG（DXFバイト列をキーにキャッシュ）。"""
+    """元の図面全体の白 SVG（DXFバイト列をキーにキャッシュ）。"""
     return region_preview.render_base_svg(dxf_bytes)
 
 
@@ -498,7 +498,7 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
     files = {uf.name: uf for uf in uploaded_files}
 
     def _file_preview(fname, analysis, pending_regions):
-        """回路全体（グレー）の中で、選択が必要な領域を赤でハイライトする。"""
+        """回路全体（白）の中で、選択が必要な領域を赤でハイライトする。"""
         uf = files.get(fname)
         if uf is None or not pending_regions:
             return
@@ -828,7 +828,7 @@ def _render_region_preview(uploaded_files):
     analyses = st.session_state.get('region_analyses') or {}
     files = {uf.name: uf for uf in uploaded_files}
     with st.expander("領域プレビュー", expanded=False):
-        st.caption("ファイルごとに「表示」を ON にすると、図面全体（グレー）の上に領域を重ねて表示します。"
+        st.caption("ファイルごとに「表示」を ON にすると、図面全体（白）の上に領域を重ねて表示します。"
                    "表示する領域は図面の左のチェックボックスで選べます。")
         for fname, entry in full.items():
             rows = (entry or {}).get('region_rows') or []

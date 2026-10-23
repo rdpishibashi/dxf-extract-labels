@@ -196,7 +196,7 @@ button:hover{background:#3a3a3a}
 #cv.drag{cursor:grabbing}
 #cv path{vector-effect:non-scaling-stroke;stroke-width:1px}
 #cv .ov polygon{vector-effect:non-scaling-stroke;stroke-width:2px;fill-opacity:.10}
-#cv .ov text{font-size:14px;paint-order:stroke;stroke:#000;stroke-width:3px;
+#cv .ov text{font-size:var(--fs,14px);paint-order:stroke;stroke:#000;stroke-width:calc(var(--fs,14px)*.25);
   stroke-linejoin:round;pointer-events:none}
 #note{position:absolute;right:8px;bottom:6px;color:#777;font-size:11px;pointer-events:none}
 """
@@ -207,7 +207,9 @@ _VIEWER_JS = """
   var svg=document.getElementById('cv');
   var vb0=svg.getAttribute('viewBox').split(' ').map(Number);
   var vb=vb0.slice();
-  function apply(){svg.setAttribute('viewBox',vb.join(' '));}
+  function apply(){svg.setAttribute('viewBox',vb.join(' '));
+    var r=svg.getBoundingClientRect();
+    if(r.width&&r.height)svg.style.setProperty('--fs',(Math.max(vb[2]/r.width,vb[3]/r.height)*13)+'px');}
   function reset(){vb=vb0.slice();apply();}
   function pt(e){var r=svg.getBoundingClientRect();
     var s=Math.max(vb[2]/r.width,vb[3]/r.height);
@@ -231,6 +233,7 @@ _VIEWER_JS = """
   svg.addEventListener('pointerup',end);svg.addEventListener('pointercancel',end);
   svg.addEventListener('dblclick',reset);
   document.getElementById('fit').addEventListener('click',reset);
+  apply();
   var wrap=document.getElementById('wrap'),fs=document.getElementById('fs');
   fs.addEventListener('click',function(){
     var note=document.getElementById('fsnote');note.textContent='';
@@ -317,3 +320,336 @@ def build_region_viewer_html(base: BaseRender, overlays: List[RegionOverlay], he
 <rect x="0" y="0" width="{w:g}" height="{h:g}" fill="#000"/>{body}</svg>
 <div id="note">線幅は拡大しても一定です</div></div>
 </div><script>{_VIEWER_JS}</script></body></html>"""
+
+
+# ============================================================
+# 「領域の確認」の双方向 viewer（st.components.v2 の部品。Streamlit 側で登録する）
+# ============================================================
+# 色: 選択が必要な領域＝橙／選択中の候補ラベル＝橙／それ以外の候補ラベル＝黄／確定した領域＝赤
+COLOR_PENDING = "#ff9f1a"
+COLOR_CAND_SELECTED = "#ff9f1a"
+COLOR_CAND_OTHER = "#ffe600"
+COLOR_DECIDED = "#ff3030"
+
+
+def _norm(text):
+    import unicodedata
+    return unicodedata.normalize("NFKC", text or "").strip().upper()
+
+
+def _dist_point_polygon(px, py, polygon) -> float:
+    """点から多角形の辺までの最短距離（内側でも辺までの距離。境界に近いラベルを選ぶため）。"""
+    best = float("inf")
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        dx, dy = x2 - x1, y2 - y1
+        L = dx * dx + dy * dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / L))
+        d = ((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2) ** 0.5
+        best = min(best, d)
+    return best
+
+
+def nearest_label_position(text, polygon, labels):
+    """`labels`（`(text, x, y)`）のうち、`text` と NFKC・大文字で一致するものから、
+    多角形（DXF座標）の境界に最も近い1件の `(x, y)` を返す。無ければ None。"""
+    key = _norm(text)
+    best, best_d = None, float("inf")
+    for lab in labels:
+        if _norm(lab[0]) != key:
+            continue
+        d = _dist_point_polygon(lab[1], lab[2], polygon)
+        if d < best_d:
+            best, best_d = (lab[1], lab[2]), d
+    return best
+
+
+def _poly_of(reg):
+    return [tuple(c) for c in (reg.get("corners") or reg.get("polygon") or [])]
+
+
+def build_confirmation_data(base, fname, analysis, pending, decided, state, checked_names,
+                            locked, match_fn, candidates_fn):
+    """viewer 部品に渡す data（JSON 化できる dict）を作る。streamlit 非依存。
+
+    pending: 選択が必要な領域（reg dict のリスト）／decided: `[(reg, 確定した名称), ...]`
+    state: 選択状態の正本（`st.session_state` 互換の dict。キー `rc_<fname>_<id>_…`）
+    candidates_fn(reg, checked_names) -> [(距離, 文字列), ...]（共有側の `pending_candidates_for_region`）
+    match_fn(text, labels) -> 一致したラベル or None（共有側の `match_typed_region_name`）
+    """
+    labels = analysis.get("labels", [])
+
+    def svg_pts(corners):
+        return [_to_svg(base.matrix, x, y) for x, y in corners]
+
+    regions, choices = [], {}
+    for reg in decided:
+        r, name = reg
+        corners = _poly_of(r)
+        if not corners:
+            continue
+        pos = nearest_label_position(name, corners, labels)
+        pts = svg_pts(corners)
+        anchor = _to_svg(base.matrix, *pos) if pos else min(pts, key=lambda p: (p[1], p[0]))
+        regions.append({
+            "key": f"d{r['id']}", "id": r["id"], "state": "decided", "name": name,
+            "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
+            "points": [list(p) for p in pts], "anchor": list(anchor),
+        })
+    for r in pending:
+        corners = _poly_of(r)
+        if not corners:
+            continue
+        rid = r["id"]
+        k = lambda suffix: f"rc_{fname}_{rid}_{suffix}"
+        pts = svg_pts(corners)
+        cands = []
+        for i, (d, t) in enumerate(candidates_fn(r, checked_names)):
+            pos = nearest_label_position(t, corners, labels)
+            cands.append({
+                "idx": i, "text": t, "dist": round(float(d), 1),
+                "selected": bool(state.get(k(i), False)),
+                "pos": list(_to_svg(base.matrix, *pos)) if pos else None,
+            })
+        typedtext = state.get(k("typedtext"), "") or ""
+        regions.append({
+            "key": f"p{rid}", "id": rid, "state": "pending", "name": "",
+            "label": f"図面{r['frame'] + 1} / 領域{rid + 1}（{r['area_pct']:.0f}%）",
+            "points": [list(p) for p in pts], "anchor": list(min(pts, key=lambda p: (p[1], p[0]))),
+        })
+        choices[str(rid)] = {
+            "cands": cands, "none": bool(state.get(k("none"), False)),
+            "typed": bool(state.get(k("typed"), False)), "typedtext": typedtext,
+            "typedMatch": match_fn(typedtext, labels) if typedtext else None,
+        }
+    return {
+        "fname": fname, "viewBox": [base.view_box[0], base.view_box[1]],
+        "svg": base.inner_svg, "sig": f"{fname}:{len(base.inner_svg)}:{hash(base.inner_svg) & 0xffffffff}",
+        "regions": regions, "choices": choices, "locked": bool(locked),
+        "colors": {"pending": COLOR_PENDING, "candSel": COLOR_CAND_SELECTED,
+                   "candOther": COLOR_CAND_OTHER, "decided": COLOR_DECIDED},
+        "hasFont": base.cjk_font is not None, "empty": base.empty,
+    }
+
+
+CONFIRM_HTML = '<div class="rp-wrap" id="rp-wrap"></div>'
+
+CONFIRM_CSS = """
+.rp-wrap{display:flex;height:100%;min-height:300px;background:#000;color:#ddd;
+  font-family:-apple-system,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;font-size:13px}
+.rp-side{width:300px;flex:none;padding:8px;box-sizing:border-box;overflow:auto;
+  background:#1c1c1c;border-right:1px solid #333}
+.rp-side h4{margin:8px 0 4px;font-size:12px;color:#aaa;font-weight:600}
+.rp-side label{display:flex;align-items:flex-start;gap:6px;margin:3px 0;cursor:pointer;line-height:1.3}
+.rp-side label.dis{opacity:.5;cursor:default}
+.rp-sw{display:inline-block;width:12px;height:12px;border:1px solid #666;flex:none;margin-top:2px}
+.rp-reg{border-top:1px solid #333;padding-top:4px;margin-top:6px}
+.rp-reg b{color:#ff9f1a}
+.rp-side button{background:#2d2d2d;color:#ddd;border:1px solid #555;border-radius:4px;
+  padding:3px 8px;margin:2px 2px 2px 0;cursor:pointer;font-size:12px}
+.rp-side button:hover{background:#3a3a3a}
+.rp-side input[type=text]{width:100%;box-sizing:border-box;background:#111;color:#eee;
+  border:1px solid #555;border-radius:3px;padding:3px 5px;font-size:12px}
+.rp-msg{font-size:11px;margin:2px 0 0 18px}
+.rp-stage{flex:1;min-width:0;position:relative}
+.rp-cv{width:100%;height:100%;display:block;cursor:grab;touch-action:none;background:#000}
+.rp-cv.drag{cursor:grabbing}
+.rp-cv path{vector-effect:non-scaling-stroke;stroke-width:1px}
+.rp-cv polygon{vector-effect:non-scaling-stroke;stroke-width:2px;fill-opacity:.10}
+.rp-cv text{font-size:var(--fs,14px);paint-order:stroke;stroke:#000;
+  stroke-width:calc(var(--fs,14px)*.3);stroke-linejoin:round;pointer-events:none}
+.rp-note{position:absolute;right:8px;bottom:6px;color:#777;font-size:11px;pointer-events:none}
+.rp-wrap:fullscreen{height:100vh}
+"""
+
+CONFIRM_JS = r"""
+export default function(component) {
+  const { data, parentElement, setTriggerValue } = component;
+  const NS = 'http://www.w3.org/2000/svg';
+  let S = parentElement.__rp;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  if (!S) {
+    S = parentElement.__rp = { counter: 0, sig: null, vb: null, vb0: null, hidden: {}, drag: null };
+    const wrap = parentElement.querySelector('#rp-wrap');
+    wrap.innerHTML =
+      '<div class="rp-side" id="rp-side"></div>' +
+      '<div class="rp-stage"><svg class="rp-cv" id="rp-cv" xmlns="' + NS + '" preserveAspectRatio="xMidYMid meet">' +
+      '<rect id="rp-bg" fill="#000"/><g id="rp-base"></g><g id="rp-ov"></g></svg>' +
+      '<div class="rp-note">線幅は拡大しても一定です</div></div>';
+    S.wrap = wrap;
+    S.svg = parentElement.querySelector('#rp-cv');
+    S.side = parentElement.querySelector('#rp-side');
+    const svg = S.svg;
+    const apply = () => {
+      svg.setAttribute('viewBox', S.vb.join(' '));
+      const r = svg.getBoundingClientRect();
+      if (r.width && r.height)
+        svg.style.setProperty('--fs', (Math.max(S.vb[2] / r.width, S.vb[3] / r.height) * 13) + 'px');
+    };
+    S.apply = apply;
+    const pt = (e) => {
+      const r = svg.getBoundingClientRect();
+      const s = Math.max(S.vb[2] / r.width, S.vb[3] / r.height);
+      const offx = (r.width - S.vb[2] / s) / 2, offy = (r.height - S.vb[3] / s) / 2;
+      return { x: S.vb[0] + (e.clientX - r.left - offx) * s, y: S.vb[1] + (e.clientY - r.top - offy) * s, s };
+    };
+    svg.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const p = pt(e), k = e.deltaY < 0 ? 0.8 : 1.25;
+      const nw = S.vb[2] * k, nh = S.vb[3] * k;
+      if (nw > S.vb0[2] * 20 || nw < S.vb0[2] / 2000) return;
+      S.vb = [p.x - (p.x - S.vb[0]) * k, p.y - (p.y - S.vb[1]) * k, nw, nh]; apply();
+    }, { passive: false });
+    svg.addEventListener('pointerdown', (e) => {
+      S.drag = { x: e.clientX, y: e.clientY, vb: S.vb.slice(), s: pt(e).s };
+      svg.setPointerCapture(e.pointerId); svg.classList.add('drag');
+    });
+    svg.addEventListener('pointermove', (e) => {
+      if (!S.drag) return;
+      S.vb = [S.drag.vb[0] - (e.clientX - S.drag.x) * S.drag.s, S.drag.vb[1] - (e.clientY - S.drag.y) * S.drag.s, S.drag.vb[2], S.drag.vb[3]];
+      apply();
+    });
+    const end = () => { S.drag = null; svg.classList.remove('drag'); };
+    svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+    svg.addEventListener('dblclick', () => { S.vb = S.vb0.slice(); apply(); });
+    document.addEventListener('fullscreenchange', () => { if (S.render) S.render(); });
+  }
+
+  S.data = data;
+  S.setTrigger = setTriggerValue;
+
+  const send = (payload) => {
+    S.counter += 1;
+    S.setTrigger('choice', Object.assign({ seq: Date.now() * 1000 + S.counter }, payload));
+  };
+
+  const choose = (rid, kind, idx, text, typedText) => {
+    const d = S.data;
+    if (d.locked) return;
+    const ch = d.choices[String(rid)];
+    if (!ch) return;
+    // その場で見た目を更新（Python 側の再実行を待たない）
+    if (kind === 'cand') {
+      if (ch.cands.some((c) => c.idx === idx && c.selected)) return;
+      ch.cands.forEach((c) => { c.selected = (c.idx === idx); }); ch.none = false; ch.typed = false;
+    } else if (kind === 'none') {
+      if (ch.none) return;
+      ch.cands.forEach((c) => { c.selected = false; }); ch.none = true; ch.typed = false;
+    } else if (kind === 'typed') {
+      if (ch.typed) return;
+      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true;
+    } else if (kind === 'typedtext') {
+      ch.cands.forEach((c) => { c.selected = false; }); ch.none = false; ch.typed = true; ch.typedtext = typedText;
+    }
+    send({ region: rid, kind, idx: idx === undefined ? null : idx, text: text || '', typed_text: typedText === undefined ? null : typedText });
+    S.render();
+  };
+
+  const render = () => {
+    const d = S.data, C = d.colors;
+    if (d.empty) { S.wrap.innerHTML = '<div style="padding:16px;color:#aaa">描画対象のエンティティがありません</div>'; return; }
+    if (S.sig !== d.sig) {
+      S.sig = d.sig;
+      S.vb0 = [0, 0, d.viewBox[0], d.viewBox[1]]; S.vb = S.vb0.slice();
+      S.svg.querySelector('#rp-bg').setAttribute('width', d.viewBox[0]);
+      S.svg.querySelector('#rp-bg').setAttribute('height', d.viewBox[1]);
+      S.svg.querySelector('#rp-base').innerHTML = d.svg;
+    }
+    // --- 図面上の重ね表示 ---
+    let ov = '';
+    d.regions.forEach((r) => {
+      if (S.hidden[r.key]) return;
+      const col = r.state === 'decided' ? C.decided : C.pending;
+      ov += '<polygon points="' + r.points.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' ') +
+            '" fill="' + col + '" stroke="' + col + '"/>';
+      if (r.state === 'decided') {
+        ov += '<text x="' + (r.anchor[0] + 4) + '" y="' + (r.anchor[1] + 16) + '" fill="' + col + '">' + esc(r.name) + '</text>';
+      }
+    });
+    d.regions.forEach((r) => {
+      if (r.state !== 'pending' || S.hidden[r.key]) return;
+      const ch = d.choices[String(r.id)];
+      (ch ? ch.cands : []).forEach((c) => {
+        if (!c.pos) return;
+        const col = c.selected ? C.candSel : C.candOther;
+        ov += '<text x="' + c.pos[0] + '" y="' + c.pos[1] + '" fill="' + col + '">' + esc(c.text) + '</text>';
+      });
+    });
+    S.svg.querySelector('#rp-ov').innerHTML = ov;
+    S.apply();
+
+    // --- 左パネル ---
+    const scroll = S.side.scrollTop;
+    let h = '<h4>領域</h4>';
+    d.regions.forEach((r) => {
+      const col = r.state === 'decided' ? C.decided : C.pending;
+      h += '<label><input type="checkbox" data-vis="' + r.key + '" ' + (S.hidden[r.key] ? '' : 'checked') + '>' +
+           '<span class="rp-sw" style="background:' + col + '"></span><span>' + esc(r.label) +
+           (r.state === 'decided' ? '　' + esc(r.name) : '') + '</span></label>';
+    });
+    h += '<h4>抽出領域の選択</h4>';
+    const dis = d.locked ? ' dis' : '';
+    d.regions.filter((r) => r.state === 'pending').forEach((r) => {
+      const ch = d.choices[String(r.id)];
+      h += '<div class="rp-reg"><b>' + esc(r.label) + '</b>';
+      ch.cands.forEach((c) => {
+        h += '<label class="' + dis.trim() + '"><input type="checkbox" data-c="' + r.id + ':' + c.idx + '" ' +
+             (c.selected ? 'checked ' : '') + (d.locked ? 'disabled' : '') + '><span class="rp-sw" style="background:' +
+             (c.selected ? C.candSel : C.candOther) + '"></span><span>' + esc(c.text) + '（距離 ' + c.dist + '）</span></label>';
+      });
+      h += '<label class="' + dis.trim() + '"><input type="checkbox" data-n="' + r.id + '" ' + (ch.none ? 'checked ' : '') +
+           (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
+      h += '<label class="' + dis.trim() + '"><input type="checkbox" data-t="' + r.id + '" ' + (ch.typed ? 'checked ' : '') +
+           (d.locked ? 'disabled' : '') + '><span>領域名を入力</span></label>';
+      h += '<input type="text" data-tx="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
+           'placeholder="図面枠内のラベルと完全一致（全角・小文字可）">';
+      if (ch.typed) {
+        h += ch.typedMatch ? '<div class="rp-msg" style="color:#7fdc7f">採用: ' + esc(ch.typedMatch) + '</div>'
+                           : '<div class="rp-msg" style="color:#e8a">一致するラベルなし（未選択になります）</div>';
+      }
+      h += '</div>';
+    });
+    h += '<h4>操作</h4><button data-act="fit">全体表示</button><button data-act="fs">' +
+         (document.fullscreenElement ? '全画面を終了' : '全画面') + '</button><div id="rp-fsnote" style="color:#e8a"></div>' +
+         '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
+         (d.hasFont ? '' : '<div style="color:#e8a;margin-top:8px">日本語フォントが見つからないため、日本語の文字は表示されません。</div>');
+    S.side.innerHTML = h;
+    S.side.scrollTop = scroll;
+
+    S.side.querySelectorAll('input[data-vis]').forEach((el) => el.addEventListener('change', () => {
+      S.hidden[el.getAttribute('data-vis')] = !el.checked; render();
+    }));
+    S.side.querySelectorAll('input[data-c]').forEach((el) => el.addEventListener('change', () => {
+      const [rid, idx] = el.getAttribute('data-c').split(':').map(Number);
+      const c = S.data.choices[String(rid)].cands.find((x) => x.idx === idx);
+      if (!el.checked) { render(); return; }
+      choose(rid, 'cand', idx, c.text);
+    }));
+    S.side.querySelectorAll('input[data-n]').forEach((el) => el.addEventListener('change', () => {
+      if (!el.checked) { render(); return; }
+      choose(Number(el.getAttribute('data-n')), 'none');
+    }));
+    S.side.querySelectorAll('input[data-t]').forEach((el) => el.addEventListener('change', () => {
+      if (!el.checked) { render(); return; }
+      choose(Number(el.getAttribute('data-t')), 'typed');
+    }));
+    S.side.querySelectorAll('input[data-tx]').forEach((el) => el.addEventListener('change', () => {
+      choose(Number(el.getAttribute('data-tx')), 'typedtext', undefined, '', el.value);
+    }));
+    S.side.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => {
+      const act = b.getAttribute('data-act');
+      if (act === 'fit') { S.vb = S.vb0.slice(); S.apply(); return; }
+      const note = S.side.querySelector('#rp-fsnote'); note.textContent = '';
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      const p = S.wrap.requestFullscreen ? S.wrap.requestFullscreen() : null;
+      if (!p) { note.textContent = 'この環境では全画面にできません'; return; }
+      p.catch(() => { note.textContent = 'この環境では全画面にできません'; });
+    }));
+  };
+  S.render = render;
+  render();
+}
+"""

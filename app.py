@@ -11,7 +11,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(current_dir, 'model')
 sys.path.insert(0, model_path)
 
-from model.region_detector import collect_unique_region_candidate_names
+from model.region_detector import (
+    collect_unique_region_candidate_names, resolve_globally_decided_name,
+    pending_candidates_for_region,
+)
 from model.ref_designator import unnamed_region_labels
 from model.excel_output import (
     create_ref_designator_excel_output, create_region_excel_output,
@@ -472,6 +475,59 @@ def _render_region_base(dxf_bytes: bytes):
     return region_preview.render_base_svg(dxf_bytes)
 
 
+# 「領域の確認」の双方向 viewer（選択を Streamlit へ返す。モジュールで1回だけ登録する）
+_REGION_CONFIRM_VIEWER = st.components.v2.component(
+    "region_confirm_viewer",
+    html=region_preview.CONFIRM_HTML,
+    css=region_preview.CONFIRM_CSS,
+    js=region_preview.CONFIRM_JS,
+)
+
+
+def _decided_regions(analysis, pending_regions):
+    """要選択ではないが名称が確定している領域 `[(reg, 名称), ...]`（viewer の赤表示用）。"""
+    checked = region_selection.global_checked_region_names()
+    excluded = region_selection.global_excluded_region_names()
+    pending_ids = {r['id'] for r in pending_regions}
+    out = []
+    for reg in analysis.get('regions', []):
+        if reg['id'] in pending_ids or region_selection._region_excluded(reg, excluded):
+            continue
+        name = resolve_globally_decided_name(reg, checked)
+        if name is None:
+            name = region_selection.resolve_by_other_frames(reg, analysis, checked, excluded)
+        if name is not None:
+            out.append((reg, name))
+    return out
+
+
+def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
+    """「領域の確認」の viewer。viewer 内の選択を正本（`rc_…`）へ反映する。"""
+    checked = region_selection.global_checked_region_names()
+    try:
+        base = _render_region_base(dxf_bytes)
+        data = region_preview.build_confirmation_data(
+            base, fname, analysis, pending_regions, _decided_regions(analysis, pending_regions),
+            st.session_state, checked, locked,
+            region_selection.match_typed_region_name, pending_candidates_for_region)
+        res = _REGION_CONFIRM_VIEWER(
+            key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
+            on_choice_change=lambda: None)
+    except Exception as e:
+        st.warning(f"プレビューを表示できませんでした: {e}")
+        return
+    choice = res.choice if hasattr(res, "choice") else None
+    seq_key = f"regprev_seq_{fname}"
+    if choice and choice.get('seq') != st.session_state.get(seq_key) and not locked:
+        st.session_state[seq_key] = choice.get('seq')
+        reg = next((r for r in pending_regions if r['id'] == choice.get('region')), None)
+        if reg is not None:
+            region_selection.apply_viewer_choice(
+                fname, reg, choice.get('kind'), checked, idx=choice.get('idx'),
+                text=choice.get('text', ''), typed_text=choice.get('typed_text'))
+            st.rerun()
+
+
 def _show_region_viewer(dxf_bytes, overlays, height_px):
     """領域ビューアを描画する。失敗してもアプリ全体は止めない。"""
     try:
@@ -502,14 +558,15 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
         """回路全体（白）の中で、選択が必要な領域を赤でハイライトする。"""
         uf = files.get(fname)
         if uf is None or not pending_regions:
-            return
-        if st.toggle("👁 図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
-            _show_region_viewer(
-                uf.getvalue(), region_preview.confirmation_overlays(pending_regions),
-                REGION_CONFIRM_HEIGHT_PX)
+            return False
+        if not st.toggle("👁 図面で領域を確認", value=False, key=f"regprev_confirm_{fname}"):
+            return False  # OFF: ページ上に選択肢を出す（選択状態は viewer と共通の正本）
+        _show_region_confirm_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)
+        return True  # ON: 選択は viewer の中で行う
 
     region_selection.render_region_confirmation_section(
-        st.session_state['region_analyses'], locked, file_preview=_file_preview)
+        st.session_state['region_analyses'], locked, file_preview=_file_preview,
+        allow_typed_name=True)
 
 
 def _resolve_assembly_compare(results, compare_assembly_option, master_index=None):

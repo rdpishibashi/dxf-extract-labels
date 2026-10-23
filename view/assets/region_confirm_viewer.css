@@ -1,0 +1,27 @@
+
+.rp-wrap{display:flex;height:100%;min-height:300px;background:#000;color:#ddd;
+  font-family:-apple-system,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;font-size:13px}
+.rp-side{width:300px;flex:none;padding:8px;box-sizing:border-box;overflow:auto;
+  background:#1c1c1c;border-right:1px solid #333}
+.rp-side h4{margin:8px 0 4px;font-size:12px;color:#aaa;font-weight:600}
+.rp-side label{display:flex;align-items:flex-start;gap:6px;margin:3px 0;cursor:pointer;line-height:1.3}
+.rp-side label.dis{opacity:.5;cursor:default}
+.rp-sw{display:inline-block;width:12px;height:12px;border:1px solid #666;flex:none;margin-top:2px}
+.rp-reg{border-top:1px solid #333;padding-top:4px;margin-top:6px}
+.rp-reg b{color:#ff9f1a}
+.rp-side button{background:#2d2d2d;color:#ddd;border:1px solid #555;border-radius:4px;
+  padding:3px 8px;margin:2px 2px 2px 0;cursor:pointer;font-size:12px}
+.rp-side button:hover{background:#3a3a3a}
+.rp-side input[type=text]{width:100%;box-sizing:border-box;background:#111;color:#eee;
+  border:1px solid #555;border-radius:3px;padding:3px 5px;font-size:12px}
+.rp-msg{font-size:11px;margin:2px 0 0 18px}
+.rp-sg button{display:block;width:100%;text-align:left;margin:1px 0;font-size:12px}
+.rp-stage{flex:1;min-width:0;position:relative}
+.rp-cv{width:100%;height:100%;display:block;cursor:grab;touch-action:none;background:#000}
+.rp-cv.drag{cursor:grabbing}
+.rp-cv path{vector-effect:non-scaling-stroke;stroke-width:1px}
+.rp-cv polygon{vector-effect:non-scaling-stroke;stroke-width:2px;fill-opacity:.10}
+.rp-cv text{font-size:var(--fs,14px);paint-order:stroke;stroke:#000;
+  stroke-width:calc(var(--fs,14px)*.3);stroke-linejoin:round;pointer-events:none}
+.rp-note{position:absolute;right:8px;bottom:6px;color:#777;font-size:11px;pointer-events:none}
+.rp-wrap:fullscreen{height:100vh}

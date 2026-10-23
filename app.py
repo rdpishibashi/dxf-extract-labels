@@ -10,23 +10,18 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(current_dir, 'model')
 sys.path.insert(0, model_path)
 
-from model.region_detector import (
-    collect_unique_region_candidate_names, resolve_globally_decided_name,
-    pending_candidates_for_region,
-)
+from model.region_detector import collect_unique_region_candidate_names
 from model.ref_designator import unnamed_region_labels
 from model.excel_output import (
     create_ref_designator_excel_output, create_region_excel_output,
     display_width, autofit_width, DRAWING_LIST_COLUMN_WIDTH,
 )
 from model import ref_designator
-from model import region_choices
-from model import region_decisions
-from model import region_preview
 from model import terminal_detector
 from model import assembly_compare
 from model import designator_master
 from config import region_detection_config
+from view import region_confirm_viewer
 from view import region_selection
 
 
@@ -459,111 +454,15 @@ def _render_global_region_names_section(locked):
         st.checkbox(MINOR_INCLUDE_CONFIRMED_LABEL, key=MINOR_INCLUDE_CONFIRMED_KEY,
                     disabled=locked, help=MINOR_INCLUDE_CONFIRMED_HELP)
 
+    names = collect_unique_region_candidate_names(analyses) + unnamed
     region_selection.render_global_region_names_section(
-        collect_unique_region_candidate_names(analyses) + unnamed, locked,
+        names, locked,
         allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option,
-        show_select_all=True)
-
-
-REGION_CONFIRM_HEIGHT_PX = 600
-
-
-@st.cache_data(show_spinner=False, max_entries=20)
-def _render_region_base(dxf_bytes: bytes, version: int = region_preview.BASE_RENDER_VERSION):
-    """元の図面全体の白 SVG（DXFバイト列と `BaseRender` の版をキーにキャッシュ）。
-    `BaseRender` の項目を変えたら版を上げる（古い形のキャッシュが残って AttributeError に
-    なるのを防ぐ。実行中のアプリはコードを更新してもキャッシュが残るため）。"""
-    return region_preview.render_base_svg(dxf_bytes)
-
-
-# 「領域の確認」の双方向 viewer（選択を Streamlit へ返す）。app.py は再実行のたびに読み込まれ、
-# 同名の再登録は警告になるので、部品の定義（HTML/CSS/JS）が変わったときだけ登録し直す。
-@st.cache_resource(show_spinner=False)
-def _get_region_confirm_viewer(definition_sig):
-    return st.components.v2.component(
-        "region_confirm_viewer",
-        html=region_preview.CONFIRM_HTML,
-        css=region_preview.CONFIRM_CSS,
-        js=region_preview.CONFIRM_JS,
-    )
-
-
-def _REGION_CONFIRM_VIEWER(**kwargs):
-    sig = hash((region_preview.CONFIRM_HTML, region_preview.CONFIRM_CSS, region_preview.CONFIRM_JS))
-    return _get_region_confirm_viewer(sig)(**kwargs)
-
-
-def _regions_with_status(analysis, decisions, *statuses):
-    by_id = {r['id']: r for r in analysis.get('regions', [])}
-    return [(by_id[rid], d) for rid, d in decisions.items()
-            if d.status in statuses and rid in by_id]
-
-
-def _unnamed_regions(analysis, decisions=None):
-    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`（「抽出領域の選択」の `no name N` と同じ表示名）。
-    「除外」した領域は含めない。"""
-    decisions = decisions or region_selection.classify_file_regions(analysis)
-    return [(reg, d.name, d.adopted)
-            for reg, d in _regions_with_status(analysis, decisions, region_decisions.UNNAMED)]
-
-
-def _decided_regions(analysis, pending_regions=None, decisions=None):
-    """要選択ではないが名称が確定している領域 `[(reg, 名称), ...]`（viewer の赤表示用）。"""
-    decisions = decisions or region_selection.classify_file_regions(analysis)
-    return [(reg, d.name) for reg, d in _regions_with_status(
-        analysis, decisions, region_decisions.DECIDED, region_decisions.OTHER_FRAME)]
-
-
-def _inactive_regions(analysis, decisions=None):
-    """抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」、または名称候補を1つも特定していない
-    領域。viewer では灰色で表示する）。"""
-    decisions = decisions or region_selection.classify_file_regions(analysis)
-    labels = unnamed_region_labels(analysis)
-    out = []
-    for reg, d in _regions_with_status(
-            analysis, decisions, region_decisions.EXCLUDED, region_decisions.UNSPECIFIED):
-        cands = reg.get('name_candidates', [])
-        name = cands[0][1] if cands else labels.get(reg['id'], "（名称なし）")
-        out.append((reg, name, "除外" if d.status == region_decisions.EXCLUDED else "特定OFF"))
-    return out
-
-
-def _show_region_confirm_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
-    """「領域の確認」の viewer。viewer 内の選択を正本（`rc_…`）へ反映する。"""
-    checked = region_selection.global_checked_region_names()
-    decisions = region_selection.classify_file_regions(analysis)
-    decided = _decided_regions(analysis, decisions=decisions)
-    unnamed = _unnamed_regions(analysis, decisions)
-    # 確定済み・無名の領域も「領域名を入力」で名称を変更できる（状態の正本を初期化）
-    for reg, *_rest in decided + unnamed:
-        region_selection.ensure_typed_defaults(fname, reg['id'])
-    try:
-        base = _render_region_base(dxf_bytes)
-        data = region_preview.build_confirmation_data(
-            base, fname, analysis, pending_regions, decided,
-            st.session_state, checked, locked,
-            region_selection.match_typed_region_name, pending_candidates_for_region,
-            unnamed=unnamed, inactive=_inactive_regions(analysis, decisions))
-        res = _REGION_CONFIRM_VIEWER(
-            key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
-            on_choice_change=lambda: None)
-    except Exception as e:
-        st.warning(f"プレビューを表示できませんでした: {e}")
-        return
-    choice = res.choice if hasattr(res, "choice") else None
-    seq_key = f"regprev_seq_{fname}"
-    if choice and choice.get('seq') != st.session_state.get(seq_key) and not locked:
-        st.session_state[seq_key] = choice.get('seq')
-        reg = next((r for r in analysis.get('regions', []) if r['id'] == choice.get('region')), None)
-        if reg is not None:
-            region_selection.apply_viewer_choice(
-                fname, reg, choice.get('kind'), checked, idx=choice.get('idx'),
-                text=choice.get('text', ''), typed_text=choice.get('typed_text'))
-            st.rerun()
+        above_table=lambda: region_confirm_viewer.render_select_all_button(names, locked))
 
 
 def _render_region_confirmation_section(enable_region_detection, locked, uploaded_files=()):
-    """「領域の確認」セクション（本体は `region_selection.render_region_confirmation_section()`）。
+    """「領域の確認」セクション（本体は `region_confirm_viewer.render_confirmation_section()`）。
     「領域選択を完了」が押される（`region_selection_confirmed` が True になる）
     までは表示しない（2026-07-30 ユーザー指定）。"""
     # ============================================================
@@ -572,40 +471,8 @@ def _render_region_confirmation_section(enable_region_detection, locked, uploade
     if not (enable_region_detection and 'region_analyses' in st.session_state
             and st.session_state.get('region_selection_confirmed')):
         return
-    files = {uf.name: uf for uf in uploaded_files}
-
-    def _only_this_viewer(fname):
-        """図面の描画は重いので、同時に開く viewer は1ファイルだけにする。"""
-        for other in files:
-            if other != fname:
-                st.session_state[f"regprev_confirm_{other}"] = False
-
-    def _file_preview(fname, analysis, pending_regions):
-        """回路全体（白）の中で、領域をハイライトする。"""
-        uf = files.get(fname)
-        if uf is None or not analysis.get('regions'):
-            return False
-        if not st.toggle("図面を表示して領域を確認", value=False, key=f"regprev_confirm_{fname}",
-                         on_change=_only_this_viewer, args=(fname,)):
-            # OFF: 選択・入力はすべて図面（viewer）の中で行う。ここでは状況だけを示す
-            decisions = region_selection.classify_file_regions(analysis)
-            n_changed = sum(
-                1 for rid, d in decisions.items()
-                if d.status in (region_decisions.DECIDED, region_decisions.OTHER_FRAME,
-                                region_decisions.UNNAMED)
-                and (region_choices.get_value(st.session_state, fname, rid, 'typed')
-                     or region_choices.get_value(st.session_state, fname, rid, 'skip')))
-            st.caption(
-                f"検出領域 {len(analysis.get('regions', []))} 個"
-                f"（要選択 {len(pending_regions)} 個・図面で名称を変更または選択しない {n_changed} 個）。"
-                "選択・名称の入力は、図面を表示して行います。")
-            return True
-        _show_region_confirm_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)
-        return True  # ON: 選択は viewer の中で行う
-
-    region_selection.render_region_confirmation_section(
-        st.session_state['region_analyses'], locked, file_preview=_file_preview,
-        allow_typed_name=True, show_unnamed=True, show_all=True)
+    region_confirm_viewer.render_confirmation_section(
+        st.session_state['region_analyses'], locked, uploaded_files)
 
 
 def _resolve_assembly_compare(results, compare_assembly_option, master_index=None):

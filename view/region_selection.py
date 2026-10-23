@@ -38,7 +38,7 @@ from model.region_detector import (
 )
 from model.extraction_pipeline import detect_file_regions, extract_file_data
 from model.region_decisions import (
-    DECIDED, OTHER_FRAME, PENDING, UNNAMED,
+    DECIDED, OTHER_FRAME, PENDING,
     classify_regions, region_excluded, resolve_by_other_frames,
 )
 
@@ -212,25 +212,8 @@ normalize_typed_name = rc.normalize_typed_name
 match_typed_region_name = rc.match_typed_region_name
 
 
-def sync_choice_snapshot(fname, reg, cands, analyses, checked_names):
-    rc.sync_choice_snapshot(st.session_state, fname, reg, cands, analyses, checked_names)
-
-
 def ensure_choice_defaults(fname, reg, cands, analyses, checked_names):
     rc.ensure_choice_defaults(st.session_state, fname, reg, cands, analyses, checked_names)
-
-
-def ensure_typed_defaults(fname, reg_id):
-    rc.ensure_typed_defaults(st.session_state, fname, reg_id)
-
-
-def on_change_typed(fname, reg_id, n_cands):
-    rc.on_change_typed(st.session_state, fname, reg_id, n_cands)
-
-
-def apply_viewer_choice(fname, reg, kind, checked_names, idx=None, text='', typed_text=None):
-    rc.apply_viewer_choice(
-        st.session_state, fname, reg, kind, checked_names, idx=idx, text=text, typed_text=typed_text)
 
 
 def on_change_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_names):
@@ -261,19 +244,6 @@ def on_widget_radio(fname, reg_id, clicked_idx, n_cands, clicked_text, checked_n
 def on_widget_none(fname, reg_id, n_cands, checked_names):
     _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_none", fname, reg_id, 'none')
     on_change_none(fname, reg_id, n_cands, checked_names)
-
-
-def on_widget_typed(fname, reg_id, n_cands):
-    _sync_widget_to_canonical(f"rcw_{fname}_{reg_id}_typed", fname, reg_id, 'typed')
-    on_change_typed(fname, reg_id, n_cands)
-
-
-def on_widget_typedtext(fname, reg_id, n_cands):
-    """入力欄の変更（何度でも入力し直せる）。入力した時点で「領域名を入力」を選んだ扱いにする。"""
-    rc.set_value(st.session_state, fname, reg_id, 'typedtext',
-                 st.session_state.get(f"rcwt_{fname}_{reg_id}", ''))
-    rc.set_value(st.session_state, fname, reg_id, 'typed', True)
-    on_change_typed(fname, reg_id, n_cands)
 
 
 def render_corners_popover(corners):
@@ -362,7 +332,7 @@ def region_list_dataframe(candidate_names, values, allow_exclude):
 
 
 def render_global_region_names_section(candidate_names, locked, action='抽出', allow_exclude=False,
-                                       default_on_names=(), side_widget=None, show_select_all=False):
+                                       default_on_names=(), side_widget=None, above_table=None):
     """「領域一覧」セクション: `candidate_names`（呼び出し側が決める名称候補の
     一覧。表示順のまま使う）を表(st.data_editor)で表示し、領域名ごとに「特定」
     （`allow_exclude=True` のときはさらに「除外」）をON/OFFさせる
@@ -391,8 +361,9 @@ def render_global_region_names_section(candidate_names, locked, action='抽出',
     `side_widget`（引数なしの呼び出し可能オブジェクト、既定 None）: 渡すと表の右側の列で呼び出す
     （表と並べて置きたいオプションウィジェット用。2026-10-17）。None なら表だけを幅いっぱいに置く従来表示。
 
-    `show_select_all`（既定 False。DXF-extract-labels のみ True）: 表の上に「すべての領域名を特定にする」
-    ボタンを出し、全領域名の「特定」を ON にする（「除外」は変えない。結果表示中は無効）。
+    `above_table`（引数なしの呼び出し可能オブジェクト、既定 None）: 渡すと表の上で呼び出す（キャプションの
+    後。呼び出し側のボタンなどを置く。ここで `grc_<名称>` を書き換えれば、表は外部からの変更として
+    作り直される）。
 
     `candidate_names` が空の場合は案内メッセージのみ表示する（面積条件〈config.py
     の area_ratio / group_area_ratio〉を満たす領域が1件も無かった、または
@@ -439,11 +410,8 @@ def render_global_region_names_section(candidate_names, locked, action='抽出',
 
     # 正本だけを更新する。表は `region_list_editor_state()` が「正本が前回書いた値と違う」
     # ことを検知して作り直す（外部クリアと同じ経路）
-    if show_select_all and st.button("すべての領域名を特定にする", key="grc_select_all_btn",
-                                     disabled=locked):
-        for name in candidate_names:
-            st.session_state[f"grc_{name}"] = True
-        invalidate_region_selection_confirmation()
+    if above_table is not None:
+        above_table()
 
     current = {
         name: (
@@ -513,7 +481,7 @@ def render_global_region_names_section(candidate_names, locked, action='抽出',
             st.rerun()
 
 
-def region_confirmation_targets(analyses, checked_names, include_unnamed=False, include_all=False):
+def region_confirmation_targets(analyses, checked_names):
     """「領域の確認」に表示すべきファイルを判定する（純粋関数）。
 
     表示対象は次のいずれか:
@@ -526,11 +494,8 @@ def region_confirmation_targets(analyses, checked_names, include_unnamed=False, 
     は対象から除く。「除外」指定された領域は要選択候補の数に関わらず対象から
     除く（v3.11.0新設。§4決定2「除外領域は領域の確認に表示しない」）。同じファイルの別の
     図面枠で決まった名称で決められる領域も除く（`resolve_by_other_frames()`、2026-10-17）。
-    `include_unnamed`（既定 False。DXF-extract-labels のみ True）: 要選択の領域が無くても、
-    名称の無い領域（`no name N`）を持つファイルを対象に含める（図面上で確認できるようにするため）。
-    `include_all`（既定 False。DXF-extract-labels のみ True）: 選択の必要が無い（確定のみ・領域なしの）
-    ファイルも含め、図面枠が検出できた全ファイルを対象にする（図面上で確認・名称変更できるようにするため）。
     戻り値はファイルキーでソートした `[(fname, analysis, pending_regions), ...]`。
+    （DXF-extract-labels の viewer 版は全ファイルを対象にする: `view/region_confirm_viewer.py`）
     """
     excluded_names = global_excluded_region_names()
     targets = []
@@ -541,20 +506,13 @@ def region_confirmation_targets(analyses, checked_names, include_unnamed=False, 
         decisions = classify_regions(analysis, checked_names, excluded_names)
         pending_regions = [
             r for r in analysis.get('regions', []) if decisions[r['id']].status == PENDING]
-        if not include_all and not err and not pending_regions and not (
-                include_unnamed and _unnamed_active_ids(decisions)):
+        if not err and not pending_regions:
             continue  # 個別選択が不要なファイルは表示しない
         targets.append((fname, analysis, pending_regions))
     return targets
 
 
-def _unnamed_active_ids(decisions):
-    """「除外」でない名称なし領域（`no name N`）の id 集合。除外した領域は確認の対象にしない。"""
-    return {rid for rid, d in decisions.items() if d.status == UNNAMED}
-
-
-def render_region_confirmation_section(analyses, locked, action='抽出', file_preview=None,
-                                       allow_typed_name=False, show_unnamed=False, show_all=False):
+def render_region_confirmation_section(analyses, locked, action='抽出'):
     """「領域の確認」セクション: 「領域一覧」でチェック済みの候補が2件以上
     残っている領域（＝どれを採用するか競合している領域）だけを対象に、
     チェック済み候補のみの名称候補チェックボックス群を表示する。チェック済み
@@ -568,96 +526,37 @@ def render_region_confirmation_section(analyses, locked, action='抽出', file_p
     は、見出し・キャプションを含めセクション自体を一切描画しない（2026-09-10
     ユーザー指定。何のアクションも取れない「空」の状態を見せないため）。
 
-    `file_preview(fname, analysis, pending_regions)`: 呼び出し側固有の図面表示
-    （DXF-extract-labels のみ使用。既定 None で従来どおり）。エラーの無いファイルごとに、
-    領域ごとの名称候補より前に呼ばれる。**真（truthy）を返したファイルは、ページ上の領域ごとの
-    ブロック（名称候補・📐・行き止まり枝）を描かない**（呼び出し側の viewer で同じ選択状態を
-    操作するため）。選択状態は viewer の有無にかかわらず正本 `rc_…` に持つ。
-
-    `allow_typed_name`（既定 False。DXF-extract-labels のみ True）: 選択肢に「領域名を入力」を
-    加える。`show_unnamed`（既定 False。DXF-extract-labels のみ True）: 名称の無い領域（`no name N`）だけを
-    持つファイルも表示対象にする（`file_preview` の viewer で確認できる）。入力は `match_typed_region_name()` で図面枠内のラベルと完全一致したときだけ採用し、
-    何度でも入力し直せる。`show_all`（既定 False。DXF-extract-labels のみ True）: 選択の必要が無いファイルも含め、
-    図面枠が検出できた全ファイルを表示する（選択が必要なファイルが先頭、確定のみのファイルは折りたたむ）。"""
+    DXF-extract-labels は図面上の viewer で選ぶ別の画面を使う（`view/region_confirm_viewer.py`）。
+    部品（`render_confirmation_file_header()`・`ensure_pending_defaults()`・
+    `render_pending_region_blocks()`）は両方が使う。"""
     checked_names = global_checked_region_names()
-    targets = region_confirmation_targets(
-        analyses, checked_names, include_unnamed=show_unnamed, include_all=show_all)
+    targets = region_confirmation_targets(analyses, checked_names)
     if not targets:
         return
 
     st.subheader("領域の確認")
-    if show_all:
-        st.caption(
-            "各ファイルを開き、図面で領域の確認・選択・名称の入力を行います。確定した領域の名称も、図面の「領域名を入力」で変更できます。"
-            f"「{SECTION_TITLE}」で除外した領域・特定をOFFにした領域は灰色で表示します。")
-    else:
-        st.caption(
-            f"「{SECTION_TITLE}」でチェックした領域の名称候補が2件以上ある（どれを採用する"
-            "か決めることができない）ファイルのみを表示しています。同じファイルの別の図面で"
-            "特定できた名称がある領域は、その名称を自動で採用するため表示しません。候補を1つも"
-            f"選択しなかった領域は{action}対象から除外され、ここには表示されません。"
-        )
-
-    def _needs_choice(item):
-        _f, a, pend = item
-        return bool(pend or (show_unnamed and _unnamed_active_ids(
-            classify_regions(a, checked_names, global_excluded_region_names()))))
-
-    if show_all:
-        n_choice = sum(1 for it in targets if _needs_choice(it))
-        if n_choice:
-            st.caption(f"選択の必要あり: {n_choice} ファイル")
-            if st.toggle("選択の必要ありのファイルのみ表示", value=False, key="regconfirm_only_action"):
-                targets = [it for it in targets if _needs_choice(it)]
+    st.caption(
+        f"「{SECTION_TITLE}」でチェックした領域の名称候補が2件以上ある（どれを採用する"
+        "か決めることができない）ファイルのみを表示しています。同じファイルの別の図面で"
+        "特定できた名称がある領域は、その名称を自動で採用するため表示しません。候補を1つも"
+        f"選択しなかった領域は{action}対象から除外され、ここには表示されません。"
+    )
 
     rendered_any = False
     for item in targets:
         fname, analysis, pending_regions = item
-        if show_all:
-            suffix = "（エラー）" if analysis.get('error') else (
-                "（選択の必要あり）" if _needs_choice(item) else "（確定のみ）")
-            container = st.expander(
-                f"{fname}{suffix}", expanded=bool(st.session_state.get(f"regprev_confirm_{fname}")))
-        else:
-            container = st.container()
-        if rendered_any and not show_all:
+        container = st.container()
+        if rendered_any:
             st.divider()
         rendered_any = True
         with container:
             _render_confirmation_file(
-                fname, analysis, pending_regions, analyses, checked_names, locked,
-                file_preview, allow_typed_name, show_all, show_unnamed)
+                fname, analysis, pending_regions, analyses, checked_names, locked)
 
 
-def render_region_info_rows(regions):
-    """選択の必要がある領域ごとに、📐（頂点の座標）と⚠️（行き止まり枝）をポップオーバーで出す。
-    開閉枠の中に置くため、エクスパンダーは使えない（入れ子不可）のでポップオーバーにする。"""
-    for reg in regions:
-        col_header, col_c, col_d = st.columns([6, 1, 2])
-        col_header.markdown(f"　**図面{reg['frame'] + 1} / 領域{reg['id'] + 1}**　面積 {reg['area_pct']:.0f}%")
-        with col_c:
-            render_corners_popover(reg.get('corners', []))
-        dangling = reg.get('dangling_edges', [])
-        if dangling:
-            with col_d, st.popover(f"⚠️ 行き止まり枝（{len(dangling)} 件）"):
-                st.caption(
-                    "この領域の境界探索から除外された、どこにも閉じていない線分（境界線と同じ線種 "
-                    "lineweight=25/color=2）です。手描きの作画ミスの可能性があるため、該当する handle "
-                    "を確認してください。")
-                lines = []
-                for br in dangling:
-                    att = br.get('attachment')
-                    lines.append(f"取り付け点 {f'({att[0]:.2f}, {att[1]:.2f})' if att else '(不明)'}:")
-                    for ent in br['entities']:
-                        (sx, sy), (ex, ey) = ent['start'], ent['end']
-                        lines.append(f"  handle {ent['handle'] or '(handle不明)'}: "
-                                     f"({sx:.2f}, {sy:.2f}) - ({ex:.2f}, {ey:.2f})")
-                st.code('\n'.join(lines))
-
-
-def _render_confirmation_file(fname, analysis, pending_regions, analyses, checked_names, locked,
-                              file_preview, allow_typed_name, show_all, show_unnamed=False):
-    """「領域の確認」の1ファイル分（`render_region_confirmation_section()` の本体の一部）。"""
+def render_confirmation_file_header(fname, analysis, pending_regions):
+    """「領域の確認」の1ファイルの見出し（ファイル名・図番/タイトル・図面枠/領域の件数）。
+    エラーがあれば警告を出して True を返す（呼び出し側は以降の描画を止める）。"""
     err = analysis.get('error')
     st.markdown(f"### {fname}")
     dn_parts = []
@@ -677,25 +576,31 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
     )
     if err:
         st.warning(err)
-        return
-    if show_all and not n_regions:
-        st.caption("領域は検出されませんでした。")
-        return
+        return True
+    return False
 
-    # 選択状態（正本）を表示順に初期化する。viewer ON/OFF のどちらでも先に行う
+
+def ensure_pending_defaults(fname, pending_regions, analyses, checked_names):
+    """要選択の領域の選択状態を、表示順に既定値で初期化する（`rc.ensure_choice_defaults()`。
+    ページ上の選択肢と viewer のどちらで選ぶ場合も、描画の前に行う）。"""
     for reg in pending_regions:
         ensure_choice_defaults(
             fname, reg, pending_candidates_for_region(reg, checked_names),
             analyses, checked_names)
 
-    if file_preview is not None and file_preview(fname, analysis, pending_regions):
-        if show_all:  # 開閉枠の中に、選択が必要な領域の📐・行き止まり枝を出す
-            unnamed_ids = _unnamed_active_ids(classify_file_regions(analysis)) if show_unnamed else set()
-            render_region_info_rows([
-                r for r in analysis.get('regions', [])
-                if r in pending_regions or r['id'] in unnamed_ids])
-        return  # 呼び出し側の viewer で選択する
 
+def _render_confirmation_file(fname, analysis, pending_regions, analyses, checked_names, locked):
+    """「領域の確認」の1ファイル分（`render_region_confirmation_section()` の本体の一部）。"""
+    if render_confirmation_file_header(fname, analysis, pending_regions):
+        return
+    # 選択状態を表示順に初期化する
+    ensure_pending_defaults(fname, pending_regions, analyses, checked_names)
+    render_pending_region_blocks(fname, pending_regions, checked_names, locked)
+
+
+def render_pending_region_blocks(fname, pending_regions, checked_names, locked):
+    """要選択の領域ごとに、ページ上の選択肢（📐・行き止まり枝・名称候補のチェックボックス・
+    「（領域選択しない）」）を出す。"""
     for reg_idx, reg in enumerate(pending_regions):
         if reg_idx > 0:
             st.divider()
@@ -718,7 +623,7 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
         # 選択肢自体に出さない。2026-07-30 ユーザー指定）。
         cands = pending_candidates_for_region(reg, checked_names)
 
-        # チェックボックスの widget key は `rcw_…`。毎回、正本 `rc_…` から写す
+        # チェックボックスの widget key は `rcw_…`。毎回、選択状態（正本 `rc_…`）から写す
         for i, (d, t) in enumerate(cands):
             wkey = f"rcw_{fname}_{reg['id']}_{i}"
             st.session_state[wkey] = rc.get_value(st.session_state, fname, reg['id'], i, False)
@@ -742,31 +647,3 @@ def _render_confirmation_file(fname, analysis, pending_regions, analyses, checke
             args=(fname, reg['id'], len(cands), checked_names),
             disabled=locked,
         )
-
-        if allow_typed_name:
-            wkey_typed = f"rcw_{fname}_{reg['id']}_typed"
-            st.session_state[wkey_typed] = rc.get_value(st.session_state, fname, reg['id'], 'typed', False)
-            st.checkbox(
-                "　領域名を入力",
-                key=wkey_typed,
-                on_change=on_widget_typed,
-                args=(fname, reg['id'], len(cands)),
-                disabled=locked,
-            )
-            wkey_text = f"rcwt_{fname}_{reg['id']}"
-            st.session_state[wkey_text] = rc.get_value(st.session_state, fname, reg['id'], 'typedtext', '')
-            st.text_input(
-                "領域名を入力", key=wkey_text, label_visibility="collapsed",
-                placeholder="図面枠内のラベルと完全に一致する領域名（全角・小文字も可）",
-                on_change=on_widget_typedtext,
-                args=(fname, reg['id'], len(cands)),
-                disabled=locked,
-            )
-            if rc.get_value(st.session_state, fname, reg['id'], 'typed', False):
-                matched = match_typed_region_name(
-                    rc.get_value(st.session_state, fname, reg['id'], 'typedtext', ''),
-                    analysis.get('labels', []))
-                if matched:
-                    st.caption(f"　採用: {matched}")
-                else:
-                    st.caption("　一致するラベルなし（この領域は未選択になります）")

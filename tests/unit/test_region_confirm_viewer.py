@@ -18,6 +18,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from model import region_preview as rp  # noqa: E402
 from model import region_choices as rc  # noqa: E402
+from view import region_confirm_viewer as rcv  # noqa: E402
 from view import region_selection as rs  # noqa: E402
 
 SQUARE = [(0, 0), (10, 0), (10, 10), (0, 10)]
@@ -83,15 +84,15 @@ def test_typed_is_exclusive_with_candidates_and_none(state):
     reg = st.session_state['region_analyses']['f']['regions'][0]
     rc.set_value(st.session_state, 'f', 1, 0, True)
 
-    rs.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='rack2')
+    rcv.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='rack2')
     assert rc.get_value(st.session_state, 'f', 1, 'typed') is True
     assert not rc.get_value(st.session_state, 'f', 1, 0) and not rc.get_value(st.session_state, 'f', 1, 1)
     assert not rc.get_value(st.session_state, 'f', 1, 'none')
 
-    rs.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='B')  # 候補を選ぶと typed は外れる
+    rcv.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='B')  # 候補を選ぶと typed は外れる
     assert rc.get_value(st.session_state, 'f', 1, 'typed') is False and rc.get_value(st.session_state, 'f', 1, 1) is True
 
-    rs.apply_viewer_choice('f', reg, 'none', checked)
+    rcv.apply_viewer_choice('f', reg, 'none', checked)
     assert rc.get_value(st.session_state, 'f', 1, 'none') is True and rc.get_value(st.session_state, 'f', 1, 'typed') is False
 
 
@@ -104,7 +105,7 @@ def test_typed_region_is_not_touched_by_propagation(state):
     rc.set_value(st.session_state, 'f', 1, 'typed', True)
     rc.set_value(st.session_state, 'f', 1, 0, False)
     rc.set_value(st.session_state, 'f', 1, 1, False)
-    rs.apply_viewer_choice('f', a, 'cand', {'X', 'Y'}, idx=0, text='X')
+    rcv.apply_viewer_choice('f', a, 'cand', {'X', 'Y'}, idx=0, text='X')
     assert rc.get_value(st.session_state, 'f', 1, 0) is False and rc.get_value(st.session_state, 'f', 1, 'typed') is True
 
 
@@ -124,7 +125,7 @@ def test_ensure_choice_defaults_is_idempotent(state):
 # viewer ON/OFF をまたいでも選択が消えない（AppTest）
 # ---------------------------------------------------------------------------
 
-def _viewer_toggle_app():
+def _page_ui_app():
     import streamlit as st
     from model import region_choices as rc
     from view import region_selection as rs
@@ -136,37 +137,22 @@ def _viewer_toggle_app():
     analyses = {'f.dxf': {'regions': [reg], 'frames': [1], 'labels': [('RACK2', 1, 1)]}}
     st.session_state['region_analyses'] = analyses
 
-    viewer_on = st.toggle("viewer", key="viewer_on")
-    rs.render_region_confirmation_section(
-        analyses, False, file_preview=lambda f, a, p: viewer_on, allow_typed_name=True)
+    rs.render_region_confirmation_section(analyses, False)
     st.write("rc=" + repr(rc.get_value(st.session_state, 'f.dxf', 1, 1)))
 
 
-def test_selection_survives_viewer_on_off():
-    at = AppTest.from_function(_viewer_toggle_app, default_timeout=20).run()
+def test_page_checkbox_selection_is_kept_across_reruns():
+    """共有のページ上の選択（DXF-label-comparison・HostPL-comparer の経路）: チェックボックス（rcw_…）で
+    選んだ候補が選択状態（rc_…）に写り、再描画してもチェックボックスに反映される。"""
+    at = AppTest.from_function(_page_ui_app, default_timeout=20).run()
     assert not at.exception
-    # viewer OFF: ページ上のチェックボックス（rcw_…）で2番目の候補を選ぶ
     boxes = {c.key: c for c in at.checkbox}
     boxes['rcw_f.dxf_1_1'].check().run()
     assert rc.get_value(_AtState(at), 'f.dxf', 1, 1) is True and rc.get_value(_AtState(at), 'f.dxf', 1, 0) is False
 
-    at.toggle(key='viewer_on').set_value(True).run()  # viewer ON: チェックボックスは描かれない
-    assert 'rcw_f.dxf_1_1' not in {c.key for c in at.checkbox}
-    assert rc.get_value(_AtState(at), 'f.dxf', 1, 1) is True
-
-    at.toggle(key='viewer_on').set_value(False).run()  # viewer OFF に戻す: 選択が反映される
+    at.run()  # 再描画: 選択状態からチェックボックスへ写される
     assert at.checkbox(key='rcw_f.dxf_1_1').value is True
     assert at.checkbox(key='rcw_f.dxf_1_0').value is False
-
-
-def test_typed_input_ui_can_be_retried_and_shows_result():
-    at = AppTest.from_function(_viewer_toggle_app, default_timeout=20).run()
-    at.text_input(key='rcwt_f.dxf_1').set_value('rack2').run()
-    assert rc.get_value(_AtState(at), 'f.dxf', 1, 'typed') is True
-    assert any('採用: RACK2' in c.value for c in at.caption)
-    at.text_input(key='rcwt_f.dxf_1').set_value('nope').run()  # 入力し直す
-    assert any('一致するラベルなし' in c.value for c in at.caption)
-    assert rc.get_value(_AtState(at), 'f.dxf', 1, 'typedtext') == 'nope'
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +218,8 @@ def _viewer_mount_app():
     import types
     import ezdxf
     import streamlit as st
-    import app
+    from model import region_choices as rc
+    from view import region_confirm_viewer as rcv
     from view import region_selection as rs
 
     st.session_state.setdefault('grc_A', True)
@@ -252,8 +239,8 @@ def _viewer_mount_app():
         st.session_state['_seen_regions'] = [r['key'] for r in data['regions']]
         return types.SimpleNamespace(choice=st.session_state.get('_fake_choice'))
 
-    app._REGION_CONFIRM_VIEWER = fake_viewer
-    app._show_region_confirm_viewer('f.dxf', buf.getvalue().encode('utf-8'), analysis, [reg], False)
+    rcv.mount_viewer = fake_viewer
+    rcv.show_viewer('f.dxf', buf.getvalue().encode('utf-8'), analysis, [reg], False)
     st.write('mounted')
 
 
@@ -278,12 +265,14 @@ def test_viewer_call_passes_json_data_and_applies_returned_choice():
     assert rc.get_value(_AtState(at), 'f.dxf', 1, 'typedtext') == 'a'
 
 
-def test_confirmation_targets_include_unnamed_only_when_requested():
-    """名称の無い領域だけを持つファイルは、include_unnamed=True のときだけ「領域の確認」の対象になる。"""
+def test_unnamed_only_file_is_a_confirmation_target_only_in_the_viewer_version():
+    """名称の無い領域だけを持つファイルは、ページ上の選択（共有）では「領域の確認」の対象にならず、
+    viewer 版（DXF-extract-labels）では対象で、確認が必要なファイルとして扱われる。"""
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'frames': [1]}
     assert rs.region_confirmation_targets({'f': analysis}, set()) == []
-    targets = rs.region_confirmation_targets({'f': analysis}, set(), include_unnamed=True)
+    targets = rcv.confirmation_targets({'f': analysis}, set())
     assert [t[0] for t in targets] == ['f'] and targets[0][2] == []
+    assert rcv.needs_choice(analysis, [], set()) is True
 
 
 def test_build_confirmation_data_includes_unnamed_regions(state):
@@ -319,7 +308,7 @@ def test_typed_override_applies_to_decided_and_unnamed_regions(state):
     rc.set_value(st.session_state, 'f', 2, 'typedtext', 'm1 drv')
     assert rs.gather_name_selections('f', analysis)[('f', 2)] == ['M1 DRV']  # 無名領域にも名前を付けられる
 
-    rs.apply_viewer_choice('f', decided, 'typedoff', {'CN CS'})  # 外すと元の自動決定に戻る
+    rcv.apply_viewer_choice('f', decided, 'typedoff', {'CN CS'})  # 外すと元の自動決定に戻る
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['CN CS']
 
 
@@ -342,15 +331,15 @@ def test_viewer_data_lists_only_confirmed_regions_as_editable(state):
     assert data['choices']['2']['typed'] is False
 
 
-def test_confirmation_targets_include_all_files_only_when_requested():
-    """確定のみ・領域なしのファイルも、include_all=True のときだけ「領域の確認」の対象になる
+def test_viewer_version_targets_include_all_files_unlike_the_shared_page_version():
+    """確定のみ・領域なしのファイルも、viewer 版（DXF-extract-labels）だけ「領域の確認」の対象になる
     （図面枠が見つからない既知の未対応ケースは常に対象外）。"""
     decided = {'regions': [_reg(0, [(1.0, 'A')])], 'labels': [], 'frames': [1]}
     empty = {'regions': [], 'labels': [], 'frames': [1]}
     no_frame = {'regions': [], 'error': rs.FRAME_NOT_FOUND_ERROR_MARKER, 'frames': []}
     analyses = {'a': decided, 'b': empty, 'c': no_frame}
     assert rs.region_confirmation_targets(analyses, {'A'}) == []
-    assert [t[0] for t in rs.region_confirmation_targets(analyses, {'A'}, include_all=True)] == ['a', 'b']
+    assert [t[0] for t in rcv.confirmation_targets(analyses, {'A'})] == ['a', 'b']
 
 
 def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
@@ -370,7 +359,7 @@ def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
         'x3': ('unnamed_off', '除外', False), 'x4': ('unnamed_off', '特定OFF', False)}
     assert data['choices'] == {}
     assert data['labelNames'] == ['CN CS', 'M1 DRV']
-    assert 'data-sg' in rp.CONFIRM_JS and "normalize('NFKC')" in rp.CONFIRM_JS
+    assert 'data-sg' in rcv.CONFIRM_JS and "normalize('NFKC')" in rcv.CONFIRM_JS
 
 
 def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(state):
@@ -382,21 +371,21 @@ def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(sta
     analysis = {'regions': [a, b], 'labels': labels}
     checked = {'CN CS'}
 
-    rs.apply_viewer_choice('f', a, 'editnone', checked)
+    rcv.apply_viewer_choice('f', a, 'editnone', checked)
     sel = rs.gather_name_selections('f', analysis)
     assert sel[('f', 1)] == [''] and sel[('f', 2)] == ['CN CS']
 
-    rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')  # 入力すると「選択しない」は外れる
+    rcv.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')  # 入力すると「選択しない」は外れる
     assert rc.get_value(st.session_state, 'f', 1, 'skip') is False
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
-    rs.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」の間は入力名を採用しない
+    rcv.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」の間は入力名を採用しない
     assert rc.get_value(st.session_state, 'f', 1, 'typed') is True
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
 
-    rs.apply_viewer_choice('f', a, 'editnoneoff', checked)  # 外すと保持していた入力名に戻る
+    rcv.apply_viewer_choice('f', a, 'editnoneoff', checked)  # 外すと保持していた入力名に戻る
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
-    rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')
-    rs.apply_viewer_choice('f', a, 'typedoff', checked)  # 入力欄を空にする＝自動の名称に戻る
+    rcv.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')
+    rcv.apply_viewer_choice('f', a, 'typedoff', checked)  # 入力欄を空にする＝自動の名称に戻る
     assert rc.get_value(st.session_state, 'f', 1, 'typedtext') == ''
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['CN CS']
 
@@ -458,6 +447,6 @@ def test_none_propagated_from_pending_region_does_not_skip_confirmed_regions(sta
     checked = {'A', 'B'}
     rs.ensure_choice_defaults('f', pending, rs.pending_candidates_for_region(pending, checked),
                               {'f': analysis}, checked)
-    rs.apply_viewer_choice('f', pending, 'none', checked)
+    rcv.apply_viewer_choice('f', pending, 'none', checked)
     assert rc.get_value(st.session_state, 'f', 1, 'none') is True  # 既存の伝播（内部状態）
     assert rs.gather_name_selections('f', analysis).get(('f', 1)) == ['A']  # 確定領域は採用されたまま

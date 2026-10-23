@@ -21,6 +21,7 @@ import streamlit as st  # noqa: E402
 
 from model.ref_designator import unnamed_region_labels  # noqa: E402
 from model import region_choices as rc  # noqa: E402
+from view import region_confirm_viewer as rcv  # noqa: E402
 from view import region_selection as rs  # noqa: E402
 
 SQ = [(0, 0), (10, 0), (10, 10), (0, 10)]
@@ -60,7 +61,7 @@ def test_chosen_candidate_survives_unchecking_another_candidate(state):
     """(1) BBB を選んだまま AAA を外しても、採用は BBB のまま。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='BBB')
+    rcv.apply_viewer_choice('f', reg, 'cand', checked, idx=1, text='BBB')
     assert rs.gather_name_selections('f', analysis) == {('f', 0): ['BBB']}
 
     state['grc_AAA'] = False
@@ -75,7 +76,7 @@ def test_chosen_candidate_removed_falls_back_to_default(state):
     """(1') 選んでいた候補そのものを外すと、残った候補の既定（先頭）になる。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'cand', checked, idx=2, text='CCC')
+    rcv.apply_viewer_choice('f', reg, 'cand', checked, idx=2, text='CCC')
     state['grc_CCC'] = False
     _init(reg, analysis)
     assert rs.gather_name_selections('f', analysis) == {('f', 0): ['AAA']}
@@ -85,7 +86,7 @@ def test_none_choice_is_kept_when_candidates_change(state):
     """「領域選択しない」を選んでいれば、候補が変わっても実候補を勝手に選ばない。"""
     reg, analysis = _three_candidate_region(state)
     checked = _init(reg, analysis)
-    rs.apply_viewer_choice('f', reg, 'none', checked)
+    rcv.apply_viewer_choice('f', reg, 'none', checked)
     state['grc_AAA'] = False
     _init(reg, analysis)
     assert not any(rc.get_value(state, 'f', 0, i) for i in range(3))
@@ -108,22 +109,20 @@ def test_unspecified_region_ignores_typed_name_and_skip_mark(state, override):
 
 def test_excluded_unnamed_region_is_inactive_in_viewer_not_adopted(state):
     """(3) 除外した名称なし領域は、viewer では「除外」の灰色（inactive）で、採用（unnamed）に入らない。"""
-    import app
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
     label = unnamed_region_labels(analysis)[0]
     state['grc_' + label] = True
     state['gre_' + label] = True
-    assert app._unnamed_regions(analysis) == []
-    assert [(r['id'], note) for r, _name, note in app._inactive_regions(analysis)] == [(0, '除外')]
+    assert rcv.unnamed_regions(analysis) == []
+    assert [(r['id'], note) for r, _name, note in rcv.inactive_regions(analysis)] == [(0, '除外')]
     assert rs.gather_name_selections('f', analysis) == {}
 
 
 def test_unnamed_region_stays_adopted_when_not_excluded(state):
-    import app
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
-    got = app._unnamed_regions(analysis)
+    got = rcv.unnamed_regions(analysis)
     assert [(r['id'], on) for r, _label, on in got] == [(0, True)]
-    assert app._inactive_regions(analysis) == []
+    assert rcv.inactive_regions(analysis) == []
 
 
 def test_excluded_unnamed_region_does_not_make_file_need_confirmation(state):
@@ -131,10 +130,10 @@ def test_excluded_unnamed_region_does_not_make_file_need_confirmation(state):
     analysis = {'regions': [_reg(0, [])], 'labels': [], 'main_drawing_number': 'X'}
     label = unnamed_region_labels(analysis)[0]
     state['gre_' + label] = True
-    assert rs.region_confirmation_targets({'f': analysis}, set(), include_unnamed=True) == []
+    assert rs.region_confirmation_targets({'f': analysis}, set()) == []
+    assert rcv.needs_choice(analysis, [], set()) is False
     state['gre_' + label] = False
-    assert [t[0] for t in rs.region_confirmation_targets(
-        {'f': analysis}, set(), include_unnamed=True)] == ['f']
+    assert rcv.needs_choice(analysis, [], set()) is True
 
 
 @pytest.mark.parametrize('flag,expected', [('none', 0), ('skip', 1)])
@@ -181,14 +180,14 @@ def test_confirmed_region_returns_to_typed_name_after_none_is_cleared(state):
         r = data['regions'][0]
         return r['state'], r['note'], r['name']
 
-    rs.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='m1 drv')
+    rcv.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='m1 drv')
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     assert shown() == ('decided', '', 'M1 DRV')
 
-    rs.apply_viewer_choice('f', reg, 'editnone', checked)
+    rcv.apply_viewer_choice('f', reg, 'editnone', checked)
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
     assert shown()[:2] == ('unnamed_off', '領域選択しない')
 
-    rs.apply_viewer_choice('f', reg, 'editnoneoff', checked)
+    rcv.apply_viewer_choice('f', reg, 'editnoneoff', checked)
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     assert shown() == ('decided', '', 'M1 DRV')

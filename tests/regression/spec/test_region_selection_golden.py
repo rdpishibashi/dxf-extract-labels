@@ -44,10 +44,10 @@ class _Api:
 
     @staticmethod
     def _mods():
-        import app
         from model import ref_designator, region_decisions, region_detector, region_preview
-        from view import region_selection
-        return app, ref_designator, region_decisions, region_detector, region_preview, region_selection
+        from view import region_confirm_viewer, region_selection
+        return (region_confirm_viewer, ref_designator, region_decisions, region_detector,
+                region_preview, region_selection)
 
     @classmethod
     def checked(cls):
@@ -77,13 +77,11 @@ class _Api:
     @classmethod
     def targets_all(cls, analyses, checked):
         """DXF-extract-labels の「領域の確認」の対象（全ファイル）。"""
-        return cls._mods()[5].region_confirmation_targets(
-            analyses, checked, include_unnamed=True, include_all=True)
+        return cls._mods()[0].confirmation_targets(analyses, checked)
 
     @classmethod
     def needs_choice(cls, analysis, pending, checked):
-        decisions = cls._mods()[2].classify_regions(analysis, checked, cls.excluded())
-        return bool(pending or any(d.status == cls._mods()[2].UNNAMED for d in decisions.values()))
+        return cls._mods()[0].needs_choice(analysis, pending, checked)
 
     @classmethod
     def ensure_choice_defaults(cls, fname, reg, cands, analyses, checked):
@@ -91,13 +89,14 @@ class _Api:
 
     @classmethod
     def ensure_typed_for_viewer(cls, fname, analysis):
-        app, *_rest, rs = cls._mods()
-        for reg, *_r in app._decided_regions(analysis) + app._unnamed_regions(analysis):
-            rs.ensure_typed_defaults(fname, reg['id'])
+        from model import region_choices
+        rcv = cls._mods()[0]
+        for reg, *_r in rcv.decided_regions(analysis) + rcv.unnamed_regions(analysis):
+            region_choices.ensure_typed_defaults(st.session_state, fname, reg['id'])
 
     @classmethod
     def apply_viewer_choice(cls, fname, reg, kind, checked, idx=None, text='', typed_text=None):
-        cls._mods()[5].apply_viewer_choice(
+        cls._mods()[0].apply_viewer_choice(
             fname, reg, kind, checked, idx=idx, text=text, typed_text=typed_text)
 
     @classmethod
@@ -127,13 +126,13 @@ class _Api:
 
     @classmethod
     def viewer_data(cls, base, fname, analysis, pending, checked):
-        app, _rd, _dec, region_detector, region_preview, rs = cls._mods()
-        decided = app._decided_regions(analysis)
-        unnamed = app._unnamed_regions(analysis)
+        rcv, _rd, _dec, region_detector, region_preview, rs = cls._mods()
+        decided = rcv.decided_regions(analysis)
+        unnamed = rcv.unnamed_regions(analysis)
         return region_preview.build_confirmation_data(
             base, fname, analysis, pending, decided, st.session_state, checked, False,
             rs.match_typed_region_name, region_detector.pending_candidates_for_region,
-            unnamed=unnamed, inactive=app._inactive_regions(analysis))
+            unnamed=unnamed, inactive=rcv.inactive_regions(analysis))
 
     @classmethod
     def base_render(cls):

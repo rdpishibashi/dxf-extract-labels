@@ -280,10 +280,10 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         used, matched = override(r)
         shown_state, shown_name = "decided", name
         note = ""
-        if used:  # 入力した領域名が優先（一致しなければ未選択）
-            shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
-        elif is_none(r):
+        if is_none(r):  # 「領域選択しない」は入力名より優先（入力名は保持され、外すと戻る）
             shown_state, note = "unnamed_off", "領域選択しない"
+        elif used:  # 入力した領域名が優先（一致しなければ未選択）
+            shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
         regions.append({
             "key": f"d{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name, "note": note,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
@@ -299,11 +299,11 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         used, matched = override(r)
         shown_state, shown_name = ("unnamed" if adopted else "unnamed_off"), label
         note = "" if adopted else "特定OFF"
-        if used:
+        if is_none(r):
+            shown_state, note = "unnamed_off", "領域選択しない"
+        elif used:
             shown_state, shown_name = ("decided", matched) if matched else ("unnamed_off", "（入力名が一致せず未選択）")
             note = ""
-        elif is_none(r):
-            shown_state, note = "unnamed_off", "領域選択しない"
         regions.append({
             "key": f"u{r['id']}", "id": r["id"], "state": shown_state, "name": shown_name,
             "label": f"図面{r['frame'] + 1} / 領域{r['id'] + 1}（{r['area_pct']:.0f}%）",
@@ -472,7 +472,7 @@ export default function(component) {
       ch.typed = false; ch.typedtext = '';
     } else if (kind === 'editnone') {
       if (ch.none) return;
-      ch.none = true; ch.typed = false;
+      ch.none = true;
     } else if (kind === 'editnoneoff') {
       if (!ch.none) return;
       ch.none = false;
@@ -555,7 +555,7 @@ export default function(component) {
         h += '<h4>領域名を入力</h4>' +
              '<input type="text" data-ex="' + r.id + '" value="' + esc(ch.typedtext || '') + '" ' + (d.locked ? 'disabled ' : '') +
              'placeholder="図面枠内のラベルと完全一致（全角・小文字可）"><div class="rp-sg" data-sg="e' + r.id + '"></div>';
-        if (ch.typed) h += msg(ch);
+        if (ch.typed && !ch.none) h += msg(ch);
         h += '<label class="' + dis.trim() + '"><input type="checkbox" data-en="' + r.id + '" ' + (ch.none ? 'checked ' : '') +
              (d.locked ? 'disabled' : '') + '><span>（領域選択しない）</span></label>';
       }

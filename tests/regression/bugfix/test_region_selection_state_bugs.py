@@ -6,6 +6,8 @@
   (2) 「抽出領域の選択」で候補をすべて外した（特定OFF）領域に、以前入力した領域名が出力に残った
   (3) 「除外」した名称なし領域が、viewer では採用（赤）として表示された
   (4) 「図面を表示」OFF の件数表示が、伝播で立った `_none` を「選択しない」として数えた
+  (5) 確定領域で入力名 "M1 DRV" → 「領域選択しない」ON → OFF にすると、入力欄に名称が残っているのに
+      自動の名称（CN CS）に戻った（`editnone` が入力名の選択状態まで消していた）
 """
 import os
 import sys
@@ -156,3 +158,35 @@ _render_region_confirmation_section(enable_region_detection=True, locked=False, 
     at = AppTest.from_string(script, default_timeout=20).run()
     assert not at.exception
     assert any(f'名称を変更または選択しない {expected} 個' in c.value for c in at.caption)
+
+
+def test_confirmed_region_returns_to_typed_name_after_none_is_cleared(state):
+    """(5) 入力名 → 「領域選択しない」ON → OFF で、保持していた入力名に戻る。ON の間は採用せず灰色。"""
+    import ezdxf, io
+    from model import region_preview as rp
+    reg = _reg(1, [(1.0, 'CN CS')])
+    analysis = {'regions': [reg], 'labels': [('M1 DRV', 5, 5), ('CN CS', 6, 6)]}
+    state['grc_CN CS'] = True
+    checked = {'CN CS'}
+    doc = ezdxf.new('R2010'); doc.modelspace().add_line((0, 0), (100, 100))
+    buf = io.StringIO(); doc.write(buf)
+    base = rp.render_base_svg(buf.getvalue().encode())
+
+    def shown():
+        data = rp.build_confirmation_data(
+            base, 'f', analysis, [], [(reg, 'CN CS')], state, checked, False,
+            rs.match_typed_region_name, lambda r, c: [])
+        r = data['regions'][0]
+        return r['state'], r['note'], r['name']
+
+    rs.apply_viewer_choice('f', reg, 'typedtext', checked, typed_text='m1 drv')
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
+    assert shown() == ('decided', '', 'M1 DRV')
+
+    rs.apply_viewer_choice('f', reg, 'editnone', checked)
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
+    assert shown()[:2] == ('unnamed_off', '領域選択しない')
+
+    rs.apply_viewer_choice('f', reg, 'editnoneoff', checked)
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
+    assert shown() == ('decided', '', 'M1 DRV')

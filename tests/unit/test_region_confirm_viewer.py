@@ -351,8 +351,8 @@ def test_viewer_data_shows_inactive_regions_gray_and_not_editable(state):
 
 
 def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(state):
-    """確定済み・無名の領域の「（領域選択しない）」は採用しない印（['']）。入力名とは排他で、
-    外すと自動の名称に戻る。同じ候補を持つ他の確定領域には伝播しない。"""
+    """確定済み・無名の領域の「（領域選択しない）」は採用しない印（['']）。入力名は保持され、
+    外すと入力名に戻る（入力欄を空にすると自動の名称）。同じ候補を持つ他の確定領域には伝播しない。"""
     st.session_state['grc_CN CS'] = True
     labels = [('M1 DRV', 5, 5), ('CN CS', 6, 6)]
     a, b = _reg(1, [(1.0, 'CN CS')]), _reg(2, [(1.0, 'CN CS')])
@@ -366,11 +366,12 @@ def test_confirmed_region_none_means_not_adopted_and_is_exclusive_with_typed(sta
     rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')  # 入力すると「選択しない」は外れる
     assert st.session_state['rc_f_1_skip'] is False
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
-    rs.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」を選ぶと入力名は無効
-    assert st.session_state['rc_f_1_typed'] is False
+    rs.apply_viewer_choice('f', a, 'editnone', checked)  # 「選択しない」の間は入力名を採用しない
+    assert st.session_state['rc_f_1_typed'] is True
     assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['']
 
-    rs.apply_viewer_choice('f', a, 'editnoneoff', checked)
+    rs.apply_viewer_choice('f', a, 'editnoneoff', checked)  # 外すと保持していた入力名に戻る
+    assert rs.gather_name_selections('f', analysis)[('f', 1)] == ['M1 DRV']
     rs.apply_viewer_choice('f', a, 'typedtext', checked, typed_text='m1 drv')
     rs.apply_viewer_choice('f', a, 'typedoff', checked)  # 入力欄を空にする＝自動の名称に戻る
     assert st.session_state['rc_f_1_typedtext'] == ''

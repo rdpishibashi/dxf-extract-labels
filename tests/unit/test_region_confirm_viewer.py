@@ -394,15 +394,17 @@ def test_viewer_data_marks_none_region_gray(state):
 
 def test_app_confirmation_wraps_every_file_in_expander_with_status_suffix():
     """全ファイルをファイル名のABC順の開閉枠に入れ、「（確定のみ）」「（選択の必要あり）」を付ける。"""
-    two = {'regions': [dict(_reg(0, [(1.0, 'A'), (2.0, 'B')]), name_candidates=[(1.0, 'A'), (2.0, 'B')])],
+    two = {'regions': [dict(_reg(0, [(1.0, 'A'), (2.0, 'B')]), name_candidates=[(1.0, 'A'), (2.0, 'B')],
+        dangling_edges=[{'attachment': (1.0, 2.0), 'entities': [{'handle': 'AB', 'start': (0, 0), 'end': (1, 1)}]}])],
            'labels': [], 'frames': [1]}
     one = {'regions': [_reg(0, [(1.0, 'C')])], 'labels': [], 'frames': [1]}
+    noname = {'regions': [_reg(0, [])], 'labels': [], 'frames': [1]}
     script = f'''
 import sys
 sys.path.insert(0, {PROJECT_ROOT!r})
 import streamlit as st
 from app import _render_region_confirmation_section
-st.session_state['region_analyses'] = {{'b.dxf': {two!r}, 'a.dxf': {one!r}}}
+st.session_state['region_analyses'] = {{'b.dxf': {two!r}, 'a.dxf': {one!r}, 'c.dxf': {noname!r}}}
 st.session_state['region_selection_confirmed'] = True
 for n in ('A', 'B', 'C'):
     st.session_state['grc_' + n] = True
@@ -410,4 +412,6 @@ _render_region_confirmation_section(enable_region_detection=True, locked=False)
 '''
     at = AppTest.from_string(script, default_timeout=20).run()
     assert at.exception.len == 0
-    assert [e.label for e in at.expander] == ['a.dxf（確定のみ）', 'b.dxf（選択の必要あり）']
+    assert len(at.get('popover')) >= 2  # 📐 と ⚠️行き止まり枝（開閉枠の中なのでポップオーバー）
+    assert [e.label for e in at.expander] == [
+        'a.dxf（確定のみ）', 'b.dxf（選択の必要あり）', 'c.dxf（選択の必要あり）']  # 名称なし領域も選択の必要あり

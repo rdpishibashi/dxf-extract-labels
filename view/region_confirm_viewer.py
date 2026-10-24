@@ -200,6 +200,7 @@ def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
             st.session_state, checked, locked,
             rs.match_typed_region_name, pending_candidates_for_region,
             unnamed=unnamed, inactive=inactive_regions(analysis, decisions))
+        data['height'] = REGION_CONFIRM_HEIGHT_PX  # viewer の外枠の高さ（JS が明示的に設定する）
         res = mount_viewer(
             key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
             on_choice_change=lambda: None)

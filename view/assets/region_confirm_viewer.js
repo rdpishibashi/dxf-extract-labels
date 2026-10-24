@@ -53,6 +53,8 @@ export default function(component) {
   }
 
   S.data = data;
+  // 外枠の高さを明示する（v2 部品の中では親の高さが確定せず、100% が効かないため）
+  if (data.height) S.wrap.style.height = data.height + 'px';
   S.setTrigger = setTriggerValue;
 
   const send = (payload) => {

@@ -11,7 +11,7 @@ export default function(component) {
     wrap.innerHTML =
       '<div class="rp-side" id="rp-side"></div>' +
       '<div class="rp-stage"><svg class="rp-cv" id="rp-cv" xmlns="' + NS + '" preserveAspectRatio="xMidYMid meet">' +
-      '<rect id="rp-bg" fill="#000"/><g id="rp-base"></g><g id="rp-ov"></g></svg>' +
+      '<style id="rp-hl"></style><rect id="rp-bg" fill="#000"/><g id="rp-base"></g><g id="rp-ov"></g></svg>' +
       '<div class="rp-note">線幅は拡大しても一定です</div></div>';
     S.wrap = wrap;
     S.svg = parentElement.querySelector('#rp-cv');
@@ -108,8 +108,20 @@ export default function(component) {
            '" dominant-baseline="' + g.base + '"' + rot + ' style="' + style + '">' + esc(g.text) + '</text>';
   };
 
+  // 元の文字そのものの色を変える（SVG の文字は専用の CSS クラスを持つ）。クラスが無いラベルだけ、重ね書きにする
+  let hlRules = [];
+  const hlLabel = (g, col) => {
+    if (!g.cls || !g.cls.length) return geomText(g, col);
+    g.cls.forEach((c) => {
+      hlRules.push('#rp-cv .' + c[0] + '{' + c[1] + ':' + col + ';' +
+        (c[1] === 'fill' ? 'stroke:' + col + ';stroke-width:0.6px;vector-effect:non-scaling-stroke' : '') + '}');
+    });
+    return '';
+  };
+
   const render = () => {
     const d = S.data, C = d.colors;
+    hlRules = [];
     if (d.empty) { S.wrap.innerHTML = '<div style="padding:16px;color:#aaa">描画対象のエンティティがありません</div>'; return; }
     if (S.sig !== d.sig) {
       S.sig = d.sig;
@@ -127,7 +139,7 @@ export default function(component) {
             '" fill="' + col + '" stroke="' + col + '"/>';
       if (r.state !== 'pending') {
         // 確定した領域の名称は元のラベルの位置に（同じ文字列が複数あればすべて）。無名領域は多角形の左上
-        if (r.geoms && r.geoms.length) r.geoms.forEach((g) => { ov += geomText(g, col); });
+        if (r.geoms && r.geoms.length) r.geoms.forEach((g) => { ov += hlLabel(g, col); });
         else ov += '<text x="' + (r.anchor[0] + 4) + '" y="' + (r.anchor[1] + 16) + '" fill="' + col + '">' + esc(r.name) + '</text>';
       }
     });
@@ -136,10 +148,11 @@ export default function(component) {
       const ch = d.choices[String(r.id)];
       (ch ? ch.cands : []).forEach((c) => {
         const col = c.selected ? C.candSel : C.candOther;
-        (c.geoms || []).forEach((g) => { ov += geomText(g, col); });
+        (c.geoms || []).forEach((g) => { ov += hlLabel(g, col); });
       });
     });
     S.svg.querySelector('#rp-ov').innerHTML = ov;
+    S.svg.querySelector('#rp-hl').textContent = hlRules.join('\n');
     S.apply();
 
     // --- 左パネル ---

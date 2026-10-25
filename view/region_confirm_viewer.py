@@ -18,6 +18,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from model import minor_selection
 from model import region_choices as rc
 from model import region_decisions as rd
 from model import region_preview
@@ -126,6 +127,15 @@ def decided_regions(analysis, pending_regions=None, decisions=None):
         analysis, decisions, rd.DECIDED, rd.OTHER_FRAME)]
 
 
+def minor_regions_for_viewer(analyses, fname):
+    """この図面の採用される小領域 `[(reg, 採用名), ...]`（viewer に確定領域として出す）。
+    「ラベルを抽出」と同じ `minor_selection.adopted_minor_names()` で、全ファイルの名称選択から決める
+    （他のファイルでの選択・入力で変わるので、表示のたびに計算し直す）。"""
+    selections = {f: rs.gather_name_selections(f, a) for f, a in analyses.items()}
+    names = minor_selection.adopted_minor_names(analyses, selections).get(fname, {})
+    return [(r, names[r['id']]) for r in analyses[fname].get('minor_regions', []) if r['id'] in names]
+
+
 def inactive_regions(analysis, decisions=None):
     """抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」、または名称候補を1つも特定していない
     領域。viewer では灰色で表示する）。"""
@@ -148,15 +158,6 @@ def apply_viewer_choice(fname, reg, kind, checked_names, idx=None, text='', type
 # ---------------------------------------------------------------------------
 # 描画
 # ---------------------------------------------------------------------------
-
-def render_select_all_button(candidate_names, locked):
-    """「すべての領域名を特定にする」ボタン。全領域名の「特定」を ON にする（「除外」は変えない。
-    結果表示中は無効）。`rs.render_global_region_names_section(above_table=...)` に渡して、表の上に出す。"""
-    if st.button("すべての領域名を特定にする", key="grc_select_all_btn", disabled=locked):
-        for name in candidate_names:
-            st.session_state[f"grc_{name}"] = True
-        rs.invalidate_region_selection_confirmation()
-
 
 def render_info_rows(regions):
     """選択の必要がある領域ごとに、📐（頂点の座標）と⚠️（行き止まり枝）をポップオーバーで出す。
@@ -184,13 +185,15 @@ def render_info_rows(regions):
                 st.code('\n'.join(lines))
 
 
-def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
-    """「領域の確認」の viewer。viewer 内の選択を選択状態（`rc_…`）へ反映する。"""
+def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked, analyses=None):
+    """「領域の確認」の viewer。viewer 内の選択を選択状態（`rc_…`）へ反映する。
+    採用される小領域（`minor_regions_for_viewer()`）も、確定した領域として出す（`analyses` を渡したとき）。"""
     checked = rs.global_checked_region_names()
     decisions = rs.classify_file_regions(analysis)
-    decided = decided_regions(analysis, decisions=decisions)
+    minors = minor_regions_for_viewer(analyses, fname) if analyses else []
+    decided = decided_regions(analysis, decisions=decisions) + minors
     unnamed = unnamed_regions(analysis, decisions)
-    # 確定済み・無名の領域も「領域名を入力」で名称を変更できる（状態を初期化）
+    # 確定済み・無名・小領域も「領域名を入力」で名称を変更できる（状態を初期化）
     for reg, *_rest in decided + unnamed:
         rc.ensure_typed_defaults(st.session_state, fname, reg['id'])
     try:
@@ -199,7 +202,8 @@ def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
             base, fname, analysis, pending_regions, decided,
             st.session_state, checked, locked,
             rs.match_typed_region_name, pending_candidates_for_region,
-            unnamed=unnamed, inactive=inactive_regions(analysis, decisions))
+            unnamed=unnamed, inactive=inactive_regions(analysis, decisions),
+            minor_ids={r['id'] for r, _name in minors})
         data['height'] = REGION_CONFIRM_HEIGHT_PX  # viewer の外枠の高さ（JS が明示的に設定する）
         res = mount_viewer(
             key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
@@ -211,7 +215,8 @@ def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked):
     seq_key = f"regprev_seq_{fname}"
     if choice and choice.get('seq') != st.session_state.get(seq_key) and not locked:
         st.session_state[seq_key] = choice.get('seq')
-        reg = next((r for r in analysis.get('regions', []) if r['id'] == choice.get('region')), None)
+        reg = next((r for r in list(analysis.get('regions', [])) + list(analysis.get('minor_regions', []))
+                    if r['id'] == choice.get('region')), None)
         if reg is not None:
             apply_viewer_choice(
                 fname, reg, choice.get('kind'), checked, idx=choice.get('idx'),
@@ -245,17 +250,21 @@ def _render_file(fname, analysis, pending_regions, analyses, checked_names, lock
                      on_change=_only_this_viewer, args=(fname,)):
         # OFF: 選択・入力はすべて図面（viewer）の中で行う。ここでは状況だけを示す
         decisions = rs.classify_file_regions(analysis)
+        editable_ids = [rid for rid, d in decisions.items()
+                        if d.status in (rd.DECIDED, rd.OTHER_FRAME, rd.UNNAMED)]
+        minors = minor_regions_for_viewer(analyses, fname)
+        editable_ids += [r['id'] for r, _name in minors]
         n_changed = sum(
-            1 for rid, d in decisions.items()
-            if d.status in (rd.DECIDED, rd.OTHER_FRAME, rd.UNNAMED)
-            and (rc.get_value(st.session_state, fname, rid, 'typed')
-                 or rc.get_value(st.session_state, fname, rid, 'skip')))
+            1 for rid in editable_ids
+            if rc.get_value(st.session_state, fname, rid, 'typed')
+            or rc.get_value(st.session_state, fname, rid, 'skip'))
+        minor_note = f"・小領域 {len(minors)} 個" if minors else ""
         st.caption(
             f"検出領域 {len(analysis.get('regions', []))} 個"
-            f"（要選択 {len(pending_regions)} 個・図面で名称を変更または選択しない {n_changed} 個）。"
+            f"（要選択 {len(pending_regions)} 個{minor_note}・図面で名称を変更または選択しない {n_changed} 個）。"
             "選択・名称の入力は、図面を表示して行います。")
     else:
-        show_viewer(fname, uf.getvalue(), analysis, pending_regions, locked)  # ON: 選択は viewer の中で行う
+        show_viewer(fname, uf.getvalue(), analysis, pending_regions, locked, analyses)  # ON: 選択は viewer の中で行う
 
     # 開閉枠の中に、選択が必要な領域の📐・行き止まり枝を出す
     unnamed_ids = _unnamed_active_ids(rs.classify_file_regions(analysis))
@@ -278,7 +287,8 @@ def render_confirmation_section(analyses, locked, uploaded_files=()):
     st.subheader("領域の確認")
     st.caption(
         "各ファイルを開き、図面で領域の確認・選択・名称の入力を行います。確定した領域の名称も、図面の「領域名を入力」で変更できます。"
-        f"「{rs.SECTION_TITLE}」で除外した領域・特定をOFFにした領域は灰色で表示します。")
+        "検出した領域の名称はすべて抽出の対象です（抽出しない領域は「（領域選択しない）」にします）。"
+        "面積が小さい領域は、他のファイルで採用された名称と一致するときだけ採用され、図面に「小領域」として表示します。")
 
     def _needs_choice(item):
         _f, a, pend = item
@@ -289,6 +299,11 @@ def render_confirmation_section(analyses, locked, uploaded_files=()):
         st.caption(f"選択の必要あり: {n_choice} ファイル")
         if st.toggle("選択の必要ありのファイルのみ表示", value=False, key="regconfirm_only_action"):
             targets = [it for it in targets if _needs_choice(it)]
+
+    # 小領域の採用は全ファイルの選択から決まるので、描画の前に全ファイルの既定の選択を初期化しておく
+    for fname, analysis, pending_regions in targets:
+        if analysis.get('regions'):
+            rs.ensure_pending_defaults(fname, pending_regions, analyses, checked_names)
 
     for item in targets:
         fname, analysis, pending_regions = item

@@ -21,6 +21,7 @@ from model import terminal_detector
 from model import assembly_compare
 from model import designator_master
 from model import label_preview
+from model import minor_selection
 from config import region_detection_config
 from view import label_viewer
 from view import region_confirm_viewer
@@ -119,7 +120,7 @@ _PREVIEW_VIEWER_KEY_PREFIX = 'extract_preview_viewer_'
 
 _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
-    'region_selection_confirmed', 'extract_label_positions',
+    'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_', _PREVIEW_VIEWER_KEY_PREFIX)
 
@@ -133,7 +134,7 @@ _EXTRACT_CLEAR_PREFIXES = (_PREVIEW_VIEWER_KEY_PREFIX,)
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
-    'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
+    'terminal_results', 'extract_preview_expanded',
     'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_', _PREVIEW_VIEWER_KEY_PREFIX)
@@ -243,8 +244,8 @@ def _render_intro():
             "1. DXFファイルをアップロードしてください（複数可）",
             "2. 必要に応じてオプションを設定します",
             "3. 「領域を検出」をONにした場合は、「領域を検出」ボタンで矩形領域を検出し、"
-            "「抽出領域の選択」で抽出したい領域名にチェックを入れます（複数選択可）。"
-            "チェックで決定できなかった領域は「領域の確認」で個別に選択します",
+            "「領域の確認」で各ファイルの図面を開いて、領域名の選択（候補が複数ある領域）・"
+            "名称の確認と修正（「領域名を入力」「（領域選択しない）」）を行います",
             "4. 「ラベルを抽出」ボタンで処理を実行します（結果はそのままExcelとして"
             "ダウンロードできます）。抽出後はオプション等を振り返れますが変更は"
             "できません（変更するには「新しい抽出を開始」を押してください）",
@@ -306,7 +307,7 @@ def _render_options_section(locked):
             value=False,
             key='enable_region_detection',
             disabled=locked,
-            help="ONにすると「領域を検出」ボタン、「抽出領域の選択」と「領域の確認」"
+            help="ONにすると「領域を検出」ボタンと「領域の確認」"
                  "セクションが表示され、矩形領域付きでラベルを抽出できます。"
         )
         if not enable_region_detection:
@@ -319,7 +320,7 @@ def _render_options_section(locked):
             # 消えてしまう。2026-07-15ユーザー報告で発覚、v1.9.4で領域検出を
             # オプション化した際に混入した回帰）。
             _clear_session_keys(
-                keys=['region_analyses', 'region_selection_confirmed'],
+                keys=['region_analyses'],
                 prefixes=_REGION_DETECT_CLEAR_PREFIXES)
 
         # b) 端子一覧を抽出
@@ -444,34 +445,25 @@ _invalidate_region_selection_confirmation = \
 _region_confirmation_targets = region_selection.region_confirmation_targets
 
 
-def _render_global_region_names_section(locked):
-    """「領域一覧」セクション（本体は `region_selection.render_global_region_names_section()`）。
-    検出済みの全ファイル・全領域の名称候補を重複なくABC順で一覧表示する。
-    未検出なら何も表示しない。"""
-    if 'region_analyses' not in st.session_state:
-        return
-    analyses = st.session_state['region_analyses']
-    # 名称のない領域も「領域一覧」に出す（表示名は ref_designator.unnamed_region_label()。
-    # 「特定」は既定ON。同じ表示名は1行にまとめる）。
-    unnamed = list(dict.fromkeys(
+def _specify_all_region_names(analyses):
+    """検出した全領域の名称を、常に「特定」として扱う（v3.18.0。かつての「抽出領域の選択」の表は廃止した）。
+    共有の判定（`region_decisions.classify_regions()` 等）は「特定」の状態 `grc_<名称>` を読むので、
+    名称候補と名称なし領域の表示名の `grc_<名称>` を毎回ONにする（冪等）。「除外」の状態 `gre_<名称>` は作らない
+    （「除外」は廃止したので、常に空）。"""
+    names = collect_unique_region_candidate_names(analyses) + [
         label for analysis in analyses.values()
-        for label in unnamed_region_labels(analysis).values()))
-    names = collect_unique_region_candidate_names(analyses) + unnamed
-    region_selection.render_global_region_names_section(
-        names, locked,
-        allow_exclude=True, default_on_names=unnamed,
-        above_table=lambda: region_confirm_viewer.render_select_all_button(names, locked))
+        for label in unnamed_region_labels(analysis).values()]
+    for name in names:
+        st.session_state[f"grc_{name}"] = True
 
 
 def _render_region_confirmation_section(enable_region_detection, locked, uploaded_files=()):
     """「領域の確認」セクション（本体は `region_confirm_viewer.render_confirmation_section()`）。
-    「領域選択を完了」が押される（`region_selection_confirmed` が True になる）
-    までは表示しない（2026-07-30 ユーザー指定）。"""
+    領域検出済みなら表示する（かつての「領域選択を完了」は廃止した、v3.18.0）。"""
     # ============================================================
     # 領域の確認
     # ============================================================
-    if not (enable_region_detection and 'region_analyses' in st.session_state
-            and st.session_state.get('region_selection_confirmed')):
+    if not (enable_region_detection and 'region_analyses' in st.session_state):
         return
     region_confirm_viewer.render_confirmation_section(
         st.session_state['region_analyses'], locked, uploaded_files)
@@ -573,11 +565,12 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         for fname in ref_data_by_file
                     }
                     # 5%未満の小領域は、採用されたすべての領域名（「領域の確認」で手動選択した名称を含む）
-                    # と一致するものを採用する
-                    minor_targets = ref_designator.adopted_region_names(name_selections_by_file)
-                    name_selections_by_file = ref_designator.add_minor_region_selections(
-                        analyses, name_selections_by_file, minor_targets,
-                        excluded_names=region_selection.global_excluded_region_names())
+                    # と一致するものを採用する。「領域の確認」の viewer と同じ関数で決め、viewer での
+                    # 「（領域選択しない）」「領域名を入力」を重ねる（`model/minor_selection.py`）
+                    minor = minor_selection.adopted_minor_names(analyses, name_selections_by_file)
+                    for fname in ref_data_by_file:
+                        name_selections_by_file[fname].update(minor_selection.minor_name_selections(
+                            st.session_state, fname, analyses[fname], minor.get(fname, {})))
                     region_results = ref_designator.build_ref_designator_region_results(
                         ref_data_by_file, analyses, name_selections_by_file, sort_value,
                         master_index=master_index,
@@ -908,25 +901,18 @@ def _render_results_section(master_index_status=None, uploaded_files=()):
 
 
 def app():
-    """全体の表示制御（5状態）:
+    """全体の表示制御（4状態）:
 
-    A) 結果表示中（`excel_result`あり）: オプション・領域一覧・
-       領域の確認は表示するが操作不可（disabled、振り返り専用）。
-       （領域検出パラメータは config.py 側の設定のため、この状態遷移の対象外）
-       「領域を検出」「領域選択を完了」「ラベルを抽出」ボタンはいずれも非表示
+    A) 結果表示中（`excel_result`あり）: オプション・領域の確認は表示するが操作不可
+       （disabled、振り返り専用）。（領域検出パラメータは config.py 側の設定のため、
+       この状態遷移の対象外）「領域を検出」「ラベルを抽出」ボタンはいずれも非表示
        （「新しい抽出を開始」でのみ次のサイクルへ進める）。
     B) 領域検出ON・未検出: 「領域を検出」ボタンのみ表示（常に青）。
-       「ラベルを抽出」・領域一覧・領域の確認は非表示（region_analysesが無いため）。
-    C1) 領域検出ON・検出済み・未確定（「領域選択を完了」未クリック）:
-       「領域を検出」は非表示（役目を終えたため）。「領域一覧」（チェックボックス
-       群＋「領域選択を完了」ボタン）のみ表示。「領域の確認」「ラベルを抽出」は
-       非表示（一括選択が終わるまで、決定できなかった領域が頻繁に増減して
-       表示されるのを避けるため）。
-    C2) 領域検出ON・検出済み・確定済み（「領域選択を完了」クリック後）:
-       「領域選択を完了」ボタンは非表示（役目を終えたため。「領域一覧」の
-       チェックを変更すると `_invalidate_region_selection_confirmation` に
-       より確定が取り消され C1 に戻る）。「領域の確認」（チェック済み候補が2件以上残る領域のみ）・
-       「ラベルを抽出」（常に青）を表示。
+       「ラベルを抽出」・領域の確認は非表示（region_analysesが無いため）。
+    C) 領域検出ON・検出済み: 「領域を検出」は非表示（役目を終えたため）。
+       「領域の確認」と「ラベルを抽出」（常に青）を表示する。検出した全領域の名称は
+       常に「特定」として扱う（`_specify_all_region_names()`。かつての「抽出領域の選択」
+       「領域選択を完了」は v3.18.0 で廃止）。
     D) 領域検出OFF: 「ラベルを抽出」のみ表示（常に青、既存通り）。
     """
     _render_intro()
@@ -946,18 +932,18 @@ def app():
     master_index, master_index_status = _resolve_master_index()
 
     detected = 'region_analyses' in st.session_state
-    region_selection_confirmed = bool(st.session_state.get('region_selection_confirmed'))
 
     if not locked and opts['enable_region_detection'] and not detected:
         _render_region_detection_trigger(uploaded_files, region_cfg)
 
-    _render_global_region_names_section(locked)
+    if detected:
+        _specify_all_region_names(st.session_state['region_analyses'])
 
     _render_region_confirmation_section(opts['enable_region_detection'], locked, uploaded_files)
 
     if not locked and (
         not opts['enable_region_detection']
-        or (detected and region_selection_confirmed)
+        or detected
     ):
         _handle_extract_button(uploaded_files, region_cfg, opts, master_index=master_index)
 

@@ -151,12 +151,8 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
     `_render_global_region_names_section`・`_render_region_confirmation_section`）
     を実際に経由する。
 
-    2026-07-30 の「領域一覧」チェックボックスグリッド＋「領域選択を完了」
-    ボタン導入に伴い更新: 検出後は「領域一覧」で何もチェックせず（＝全領域を
-    抽出対象から除外する最小ケース）「領域選択を完了」を押すだけで
-    「ラベルを抽出」まで進めることを確認する（個別選択が必要な「領域の確認」
-    セクションは、チェック済み候補が2件以上残る領域がある場合のみ表示される
-    ため、本テストの前提では表示されないのが正しい）。
+    2026-10-25（v3.18.0）更新: 「領域一覧」（抽出領域の選択）と「領域選択を完了」は廃止した。
+    検出後は何も操作せず「ラベルを抽出」まで進めることを確認する。
     """
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     try:
@@ -175,11 +171,10 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
         page.get_by_role('button', name='領域を検出', exact=True).click()
         page.wait_for_timeout(4000)
 
-        assert page.get_by_text('領域一覧', exact=False).count() > 0, (
-            '領域一覧セクションが表示されていない（テストの前提が崩れている）')
-
-        page.get_by_role('button', name='領域選択を完了', exact=True).click()
-        page.wait_for_timeout(1000)
+        # v3.18.0: 「抽出領域の選択」「領域選択を完了」は廃止。検出直後に「領域の確認」が出て、
+        # そのまま「ラベルを抽出」に進める
+        assert page.get_by_text('領域の確認', exact=False).count() > 0, (
+            '領域の確認セクションが表示されていない（テストの前提が崩れている）')
 
         page.get_by_role('button', name='ラベルを抽出').click()
         page.wait_for_timeout(6000)

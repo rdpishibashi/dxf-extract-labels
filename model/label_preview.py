@@ -23,6 +23,7 @@ MARK_COLORS: Dict[str, str] = {
     MARK_CANDIDATE: "#ff9f1a",  # CAN
     BLANK_MARK: "#ffe600",      # 空欄
 }
+REGION_LINE_COLOR = "#ff3030"  # 抽出された領域の領域線（輪郭のみ。塗りつぶさない）
 EXCEL_SHEET_NAME_MAX = 31
 
 
@@ -65,14 +66,31 @@ def mark_of_label(rows: Sequence[dict]) -> Dict[str, str]:
     return out
 
 
+def region_outlines(base: region_preview.BaseRender, named_regions: Sequence[dict]) -> List[dict]:
+    """抽出された領域（`build_named_regions()` の named。Excel に出力される領域と同じ）の輪郭を、SVG 座標の
+    `[{id, points}, ...]` にする。同じ領域に複数の名称があっても線は1本（領域 id で重複を除く）。"""
+    seen = set()
+    out = []
+    for reg in named_regions:
+        rid = reg.get('id')
+        poly = reg.get('polygon') or []
+        if rid in seen or len(poly) < 3:
+            continue
+        seen.add(rid)
+        out.append({"id": rid, "points": [list(region_preview._to_svg(base.matrix, x, y)) for x, y in poly]})
+    return out
+
+
 def build_label_viewer_data(base: region_preview.BaseRender, fname: str,
                             positions: Sequence[Tuple[str, float, float]],
-                            mark_of: Dict[str, str], selected_marks) -> dict:
+                            mark_of: Dict[str, str], selected_marks,
+                            named_regions: Sequence[dict] = ()) -> dict:
     """viewer 部品に渡す data を作る。
 
     positions: `kept_label_positions()` の結果／mark_of: `mark_of_label()`／selected_marks: 色を付ける区分の集合
     groups: 区分ごとの `{mark, color, count（出現数。選択に関わらず全ラベル）, selected, placed（図面に描かれている数）}`
     items: 色を付けるラベルの CSS クラス `[{m: 区分, c: [[クラス名, 'fill'|'stroke'], ...]}, ...]`
+    regions: 抽出された領域の輪郭 `[{id, points}]`（領域付きモードのみ。`region_outlines()`）
     unplaced: 選択した区分のうち、図面に描かれていない（CSS クラスが無い）ラベルの数。ハイライトできず、
       位置を推測して重ね書きもしない（Paper Space のみの文字などは図面の座標系が違うため）。"""
     selected = set(selected_marks)
@@ -98,7 +116,8 @@ def build_label_viewer_data(base: region_preview.BaseRender, fname: str,
         "fname": fname, "viewBox": [base.view_box[0], base.view_box[1]],
         "svg": base.inner_svg, "sig": f"{fname}:{len(base.inner_svg)}:{hash(base.inner_svg) & 0xffffffff}",
         "empty": base.empty, "hasFont": base.cjk_font is not None,
-        "colors": dict(MARK_COLORS),
+        "colors": dict(MARK_COLORS), "regionColor": REGION_LINE_COLOR,
+        "regions": region_outlines(base, named_regions),
         "groups": [{"mark": m, "color": MARK_COLORS[m], "count": counts[m], "placed": placed[m],
                     "selected": m in selected} for m in MARK_ORDER],
         "items": items, "unplaced": unplaced,

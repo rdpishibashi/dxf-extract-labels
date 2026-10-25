@@ -4,6 +4,7 @@
 - 抽出で残ったラベルの位置は、領域付きモードでは「除外」領域のラベルを含まない（Excel と同じ）
 - シート名 -> ファイル名は Excel と同じ規則（拡張子なし・31文字）。図面に対応しないシートでは出さない
 - 色を付けるのは選択した区分だけ。図面に描かれていないラベルは件数にだけ出し、位置を推測して重ね書きしない
+- 領域付きモードでは、抽出された領域の領域線（輪郭のみ・領域ごとに1本）を重ねる。通常モードでは出さない
 """
 import base64
 import os
@@ -94,6 +95,34 @@ def test_viewer_data_reports_unplaced_labels_without_guessing_a_position():
 
 
 # ---------------------------------------------------------------------------
+# 領域線（領域付きモード）
+# ---------------------------------------------------------------------------
+
+_SQ = [(0, 0), (10, 0), (10, 10), (0, 10)]
+
+
+def test_region_outlines_are_one_line_per_region_in_svg_coordinates():
+    """守るもの: 同じ領域に複数の名称（named に同じ id が複数）があっても線は1本。点が3つ未満の多角形は描かない。
+    座標は図面の SVG 座標（`region_preview._to_svg` と同じ変換）。"""
+    base = rp.render_base_svg(_dxf_bytes())
+    named = [{'id': 0, 'polygon': _SQ, 'name': 'A'}, {'id': 0, 'polygon': _SQ, 'name': 'B'},
+             {'id': 1, 'polygon': [(0, 0), (1, 1)], 'name': 'BAD'}, {'id': 2, 'polygon': _SQ, 'name': 'C'}]
+    out = lp.region_outlines(base, named)
+    assert [o['id'] for o in out] == [0, 2]
+    assert out[0]['points'] == [list(rp._to_svg(base.matrix, x, y)) for x, y in _SQ]
+
+
+def test_viewer_data_has_region_lines_only_when_regions_are_given():
+    """守るもの: 領域線は named（抽出された領域）を渡したときだけ data に入る。通常モードは空で、色は赤。"""
+    base = rp.render_base_svg(_dxf_bytes())  # 座標変換の行列が要るので、実際に描画した結果を使う
+    assert lp.build_label_viewer_data(base, 'a.dxf', _POS, _MARKS, {'DEF'})['regions'] == []
+    data = lp.build_label_viewer_data(
+        base, 'a.dxf', _POS, _MARKS, {'DEF'}, [{'id': 3, 'polygon': _SQ, 'name': 'X'}])
+    assert [r['id'] for r in data['regions']] == [3]
+    assert data['regionColor'] == lp.REGION_LINE_COLOR == '#ff3030'
+
+
+# ---------------------------------------------------------------------------
 # 画面（app.py）
 # ---------------------------------------------------------------------------
 
@@ -133,13 +162,13 @@ st.session_state['excel_result'] = base64.b64decode({excel_b64!r})
 st.session_state['output_filename'] = 'extracted_labels.xlsx'
 st.session_state['is_region_mode'] = False
 st.session_state['ref_results_summary'] = {{'a.dxf': {{}}}}
-st.session_state['extract_results_full'] = {{'a.dxf': {{'rows': {rows!r}}}}}
+st.session_state['extract_results_full'] = {{'a.dxf': dict({full_extra!r}, rows={rows!r})}}
 st.session_state['extract_label_positions'] = {{'a.dxf': list(base.label_classes)}}
 _render_results_section(uploaded_files={files})
 '''
 
 
-def _run_preview(with_file=True):
+def _run_preview(with_file=True, named=None):
     ref_final = {'a.dxf': {
         'rows': _ROWS, 'total_in_frame': 3, 'ref_designator_count': 2, 'frames': 1, 'warning': None,
         'main_drawing_number': 'EE1234-500-01A', 'source_drawing_number': None, 'title': 'T', 'subtitle': None}}
@@ -147,6 +176,7 @@ def _run_preview(with_file=True):
     script = _PREVIEW_SCRIPT.format(
         project_root=PROJECT_ROOT, dxf_b64=base64.b64encode(_dxf_bytes()).decode('ascii'),
         excel_b64=base64.b64encode(excel).decode('ascii'), rows=_ROWS,
+        full_extra={} if named is None else {'named': named},
         files='[_UF()]' if with_file else '[]')
     at = AppTest.from_string(script)
     at.run()
@@ -196,3 +226,17 @@ def test_preview_without_uploaded_file_explains_instead_of_toggle():
     assert at.exception.len == 0
     assert _toggles(at) == []
     assert any('図面を表示できません' in c.value for c in at.caption)
+
+
+def test_preview_viewer_draws_region_lines_only_in_region_mode():
+    """守るもの: 領域付きモードの結果（`named` あり）では viewer に領域線が渡り、通常モードの結果（`named` なし）では渡らない。"""
+    at = _run_preview()  # 通常モード
+    at.selectbox(key='extract_preview_sheet').select('a').run()
+    _toggles(at)[0].set_value(True).run()
+    assert at.session_state['_viewer_calls'][-1]['regions'] == []
+
+    at = _run_preview(named=[{'id': 0, 'polygon': _SQ, 'name': 'A'}, {'id': 0, 'polygon': _SQ, 'name': 'B'}])
+    at.selectbox(key='extract_preview_sheet').select('a').run()
+    _toggles(at)[0].set_value(True).run()
+    assert at.exception.len == 0
+    assert [r['id'] for r in at.session_state['_viewer_calls'][-1]['regions']] == [0]

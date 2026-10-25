@@ -8,12 +8,12 @@ export default function(component) {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
   if (!S) {
-    S = parentElement.__lv = { sig: null, vb: null, vb0: null, drag: null };
+    S = parentElement.__lv = { sig: null, vb: null, vb0: null, drag: null, showRegions: true };
     const wrap = parentElement.querySelector('#lv-wrap');
     wrap.innerHTML =
       '<div class="lv-side" id="lv-side"></div>' +
       '<div class="lv-stage"><svg class="lv-cv" id="lv-cv" xmlns="' + NS + '" preserveAspectRatio="xMidYMid meet">' +
-      '<style id="lv-hl"></style><rect id="lv-bg" fill="#000"/><g id="lv-base"></g></svg>' +
+      '<style id="lv-hl"></style><rect id="lv-bg" fill="#000"/><g id="lv-base"></g><g id="lv-ov"></g></svg>' +
       '<div class="lv-note">線幅は拡大しても一定です</div></div>';
     S.wrap = wrap;
     S.svg = parentElement.querySelector('#lv-cv');
@@ -72,6 +72,11 @@ export default function(component) {
       });
     });
     S.svg.querySelector('#lv-hl').textContent = rules.join('\n');
+    // 抽出された領域の領域線（輪郭のみ。領域付きモードだけ）
+    const regs = d.regions || [];
+    S.svg.querySelector('#lv-ov').innerHTML = !S.showRegions ? '' : regs.map((r) =>
+      '<polygon points="' + r.points.map((p) => p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' ') +
+      '" stroke="' + d.regionColor + '"/>').join('');
     S.apply();
 
     let h = '<h4>機器符号候補</h4>';
@@ -80,6 +85,10 @@ export default function(component) {
            (g.selected ? g.color : 'transparent') + '"></span><span>' + esc(g.mark) +
            (g.selected ? '' : '（選択なし）') + '</span><span class="lv-cnt">' + g.count + ' 件</span></div>';
     });
+    if (regs.length) {
+      h += '<h4>領域線</h4><label class="lv-row"><input type="checkbox" data-regions ' + (S.showRegions ? 'checked' : '') +
+           '><span class="lv-line" style="border-color:' + d.regionColor + '"></span><span>領域線を表示（' + regs.length + ' 個）</span></label>';
+    }
     if (d.unplaced > 0) {
       h += '<div class="lv-warn">図面に描かれていないラベルが ' + d.unplaced + ' 件あります（色を付けられません）。</div>';
     }
@@ -88,6 +97,9 @@ export default function(component) {
          '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
          (d.hasFont ? '' : '<div class="lv-warn" style="margin-top:8px">日本語フォントが見つからないため、日本語の文字は表示されません。</div>');
     S.side.innerHTML = h;
+    S.side.querySelectorAll('input[data-regions]').forEach((el) => el.addEventListener('change', () => {
+      S.showRegions = el.checked; render();
+    }));
     S.side.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', () => {
       const act = b.getAttribute('data-act');
       if (act === 'fit') { S.vb = S.vb0.slice(); S.apply(); return; }

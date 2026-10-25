@@ -831,7 +831,8 @@ def _render_preview_viewer(preview_sheet, selected, uploaded_files, mark_expande
     positions = (st.session_state.get('extract_label_positions') or {}).get(fname, [])
     label_viewer.render_label_viewer(
         fname, uf.getvalue(), positions, label_preview.mark_of_label(full[fname].get('rows', [])),
-        selected, key=f"{_PREVIEW_VIEWER_KEY_PREFIX}mount_{preview_sheet}")
+        selected, key=f"{_PREVIEW_VIEWER_KEY_PREFIX}mount_{preview_sheet}",
+        named_regions=full[fname].get('named', []))  # 通常モードの結果には領域が無い
 
 
 def _render_results_section(master_index_status=None, uploaded_files=()):

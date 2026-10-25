@@ -7,6 +7,7 @@
 .lv-row{display:flex;align-items:center;gap:6px;margin:4px 0;line-height:1.3}
 .lv-row.off{opacity:.45}
 .lv-sw{display:inline-block;width:12px;height:12px;border:1px solid #666;flex:none}
+.lv-line{display:inline-block;width:14px;height:0;border-top:2px solid;flex:none}
 .lv-cnt{margin-left:auto;color:#aaa;font-size:12px}
 .lv-warn{color:#e8a;font-size:12px;margin-top:6px;line-height:1.4}
 .lv-side button{background:#2d2d2d;color:#ddd;border:1px solid #555;border-radius:4px;
@@ -16,5 +17,6 @@
 .lv-cv{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none;background:#000}
 .lv-cv.drag{cursor:grabbing}
 .lv-cv path{vector-effect:non-scaling-stroke;stroke-width:1px}
+.lv-cv polygon{vector-effect:non-scaling-stroke;stroke-width:2px;fill:none;pointer-events:none}
 .lv-note{position:absolute;right:8px;bottom:6px;color:#777;font-size:11px;pointer-events:none}
 .lv-wrap:fullscreen{height:100vh !important}

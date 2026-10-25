@@ -112,3 +112,14 @@ def test_locked_region_list_shows_current_selection_not_the_frozen_base():
     assert unlocked['特定'].tolist() == [False, False]
     assert locked['特定'].tolist() == [True, False] and locked['除外'].tolist() == [False, True]
     assert list(region_list_dataframe(['A'], base, False).columns) == ['特定', '領域名']
+
+
+def test_apply_to_all_files_option_is_not_shown():
+    """守るもの: 「抽出領域の選択」に、オプション「すべてのファイルに適用する」のチェックボックスが出ない
+    （2026-10-25 v3.17.2 で削除。5%未満の小領域の採用は、手動選択した名称も含めて常にこの動作）。
+    名称候補がある領域があっても（以前はこのとき表の右に出ていた）、チェックボックスも
+    セッション状態のキー `minor_include_confirmed` も作られない。"""
+    at = _run({'a.dxf': [{'id': 0, 'name_candidates': [[1.0, 'SYSTEM A']]}]})
+    assert at.exception.len == 0
+    assert [c.label for c in at.checkbox if 'すべてのファイルに適用' in (c.label or '')] == []
+    assert 'minor_include_confirmed' not in at.session_state

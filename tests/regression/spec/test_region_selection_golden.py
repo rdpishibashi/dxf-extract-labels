@@ -14,6 +14,14 @@
 
 記録を作る（リファクタ前のコードでだけ行う）:
   python3 tests/regression/spec/test_region_selection_golden.py --record
+
+記録の更新履歴（振る舞いを意図して変えたときだけ。差が意図した箇所だけであることを確認してから更新する）:
+  2026-10-25 v3.17.0: 領域名のハイライトを「その領域の内側の同名ラベル（なければ最も近い1件）」に限定した
+    （`region_preview.region_label_occurrences()`）ため、viewer の `geoms` を更新。合成データ d.dxf の
+    `cn cs`/`CN CS`（NFKC・大文字で同じ文字列。どちらも領域の外）が、2件から最も近い1件になる。
+    確認: `region_label_occurrences` を旧挙動（`resolve_labels`）に差し替えると旧記録と完全に一致し、
+    新挙動では gather/targets/unconditional/minor が全60シード・全30手で一致、viewer は最終状態で
+    geoms 以外が一致（差は d.dxf の領域1・2・3とその候補だけ）。
 """
 import contextlib
 import hashlib

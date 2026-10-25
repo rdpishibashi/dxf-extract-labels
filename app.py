@@ -456,16 +456,10 @@ def _render_global_region_names_section(locked):
     unnamed = list(dict.fromkeys(
         label for analysis in analyses.values()
         for label in unnamed_region_labels(analysis).values()))
-    # 5%未満の小領域の採用オプション（抽出時にだけ効くため `region_selection_confirmed` は
-    # 戻さない）。「領域一覧」の表の右に置く。
-    def _minor_option():
-        st.checkbox(MINOR_INCLUDE_CONFIRMED_LABEL, key=MINOR_INCLUDE_CONFIRMED_KEY,
-                    disabled=locked, help=MINOR_INCLUDE_CONFIRMED_HELP)
-
     names = collect_unique_region_candidate_names(analyses) + unnamed
     region_selection.render_global_region_names_section(
         names, locked,
-        allow_exclude=True, default_on_names=unnamed, side_widget=_minor_option,
+        allow_exclude=True, default_on_names=unnamed,
         above_table=lambda: region_confirm_viewer.render_select_all_button(names, locked))
 
 
@@ -578,10 +572,9 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         fname: _gather_name_selections(fname, analyses[fname])
                         for fname in ref_data_by_file
                     }
-                    minor_targets = (
-                        ref_designator.adopted_region_names(name_selections_by_file)
-                        if st.session_state.get(MINOR_INCLUDE_CONFIRMED_KEY)
-                        else region_selection.unconditional_region_names(analyses))
+                    # 5%未満の小領域は、採用されたすべての領域名（「領域の確認」で手動選択した名称を含む）
+                    # と一致するものを採用する
+                    minor_targets = ref_designator.adopted_region_names(name_selections_by_file)
                     name_selections_by_file = ref_designator.add_minor_region_selections(
                         analyses, name_selections_by_file, minor_targets,
                         excluded_names=region_selection.global_excluded_region_names())
@@ -729,13 +722,6 @@ def _render_type_judgment_section(master_index=None):
     if st.button("判定を実行", type=run_type, disabled=run_disabled, key='type_judgment_apply'):
         _apply_type_judgment(selection, validation, master_index=master_index)
 
-
-MINOR_INCLUDE_CONFIRMED_KEY = 'minor_include_confirmed'
-MINOR_INCLUDE_CONFIRMED_LABEL = "すべてのファイルに適用する"
-MINOR_INCLUDE_CONFIRMED_HELP = (
-    "このオプションを有効にすると（チェックすると）、「特定」した領域名は、アップロードした"
-    "すべてのファイルに対して有効な領域となります。デフォルトのチェックしない状態では、"
-    "ファイルごとに有効な領域（図面面積の5％以上の領域）以外は抽出対象になりません。")
 
 PX_PER_CHAR = 8       # 表の列幅 px = 表示幅（全角=2）×8 + 余白（Excelの文字数単位から換算）
 PX_PADDING = 28

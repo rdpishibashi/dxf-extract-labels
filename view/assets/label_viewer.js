@@ -71,6 +71,13 @@ export default function(component) {
           (c[1] === 'fill' ? 'stroke:' + col + ';stroke-width:0.6px;vector-effect:non-scaling-stroke' : '') + '}');
       });
     });
+    // 領域名のラベル（領域線と同じ色。区分の色より後に書いて優先させる）
+    if (S.showRegions) {
+      (d.regionNames || []).forEach((c) => {
+        rules.push('#lv-cv .' + c[0] + '{' + c[1] + ':' + d.regionColor + ';' +
+          (c[1] === 'fill' ? 'stroke:' + d.regionColor + ';stroke-width:0.6px;vector-effect:non-scaling-stroke' : '') + '}');
+      });
+    }
     S.svg.querySelector('#lv-hl').textContent = rules.join('\n');
     // 抽出された領域の領域線（輪郭のみ。領域付きモードだけ）
     const regs = d.regions || [];
@@ -86,8 +93,8 @@ export default function(component) {
            (g.selected ? '' : '（選択なし）') + '</span><span class="lv-cnt">' + g.count + ' 件</span></div>';
     });
     if (regs.length) {
-      h += '<h4>領域線</h4><label class="lv-row"><input type="checkbox" data-regions ' + (S.showRegions ? 'checked' : '') +
-           '><span class="lv-line" style="border-color:' + d.regionColor + '"></span><span>領域線を表示（' + regs.length + ' 個）</span></label>';
+      h += '<h4>領域線・領域名</h4><label class="lv-row"><input type="checkbox" data-regions ' + (S.showRegions ? 'checked' : '') +
+           '><span class="lv-line" style="border-color:' + d.regionColor + '"></span><span>領域線・領域名を表示（' + regs.length + ' 個）</span></label>';
     }
     if (d.unplaced > 0) {
       h += '<div class="lv-warn">図面に描かれていないラベルが ' + d.unplaced + ' 件あります（色を付けられません）。</div>';

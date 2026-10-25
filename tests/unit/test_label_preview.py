@@ -113,13 +113,70 @@ def test_region_outlines_are_one_line_per_region_in_svg_coordinates():
 
 
 def test_viewer_data_has_region_lines_only_when_regions_are_given():
-    """守るもの: 領域線は named（抽出された領域）を渡したときだけ data に入る。通常モードは空で、色は赤。"""
+    """守るもの: 領域線は named（抽出された領域）を渡したときだけ data に入る。通常モードは空で、色はシアン。"""
     base = rp.render_base_svg(_dxf_bytes())  # 座標変換の行列が要るので、実際に描画した結果を使う
     assert lp.build_label_viewer_data(base, 'a.dxf', _POS, _MARKS, {'DEF'})['regions'] == []
     data = lp.build_label_viewer_data(
         base, 'a.dxf', _POS, _MARKS, {'DEF'}, [{'id': 3, 'polygon': _SQ, 'name': 'X'}])
     assert [r['id'] for r in data['regions']] == [3]
-    assert data['regionColor'] == lp.REGION_LINE_COLOR == '#ff3030'
+    assert data['regionColor'] == lp.REGION_LINE_COLOR == '#00e5ff'  # シアン（2026-10-25 ユーザー決定。DEF の赤と区別）
+
+
+# ---------------------------------------------------------------------------
+# 領域名のハイライト（R2。領域線と同じシアン）
+# ---------------------------------------------------------------------------
+
+_TEXTS = [('CN-IF2-1', 5, 5), ('CN-IF2-1', 80, 80), ('DCPS01', 6, 8), ('M1 DRV', 20, 5)]
+
+
+def _base_with_texts():
+    import io
+    import ezdxf
+    doc = ezdxf.new('R2010')
+    msp = doc.modelspace()
+    for text, x, y in _TEXTS:
+        msp.add_text(text, dxfattribs={'insert': (x, y), 'height': 2})
+    buf = io.StringIO()
+    doc.write(buf)
+    return rp.render_base_svg(buf.getvalue().encode('utf-8'))
+
+
+def _cls(base, *labels):
+    return sorted(tuple(c) for lab in labels for c in rp.label_classes_of(base, lab))
+
+
+def test_region_name_classes_cover_every_part_of_an_or_name_inside_the_region_only():
+    """守るもの: 連結名（` | `）は各名称のラベルを強調し、同名のラベルは領域の内側のものだけ（図面情報枠側の同名は強調しない）。"""
+    base = _base_with_texts()
+    got = lp.region_name_classes(base, [{'id': 0, 'polygon': _SQ, 'name': 'CN-IF2-1 | DCPS01'}], _TEXTS)
+    assert sorted(tuple(c) for c in got) == _cls(base, _TEXTS[0], _TEXTS[2])
+    assert not set(map(tuple, got)) & set(_cls(base, _TEXTS[1]))
+
+
+def test_region_name_classes_typed_name_outside_the_region_uses_the_nearest_label():
+    """守るもの: 「領域名を入力」で付けた名称（領域外のラベル）は、最も近い1件を強調する。"""
+    base = _base_with_texts()
+    got = lp.region_name_classes(base, [{'id': 0, 'polygon': _SQ, 'name': 'M1 DRV'}], _TEXTS)
+    assert sorted(tuple(c) for c in got) == _cls(base, _TEXTS[3])
+
+
+def test_region_name_classes_skips_no_name_regions_and_dedupes():
+    """守るもの: 名称なし領域（`no name`）は元のラベルが無いので何も強調しない。同じラベルは1度だけ。"""
+    base = _base_with_texts()
+    assert lp.region_name_classes(base, [{'id': 1, 'polygon': _SQ, 'name': 'no name'}], _TEXTS) == []
+    twice = [{'id': 0, 'polygon': _SQ, 'name': 'DCPS01'}, {'id': 2, 'polygon': _SQ, 'name': 'DCPS01'}]
+    assert sorted(tuple(c) for c in lp.region_name_classes(base, twice, _TEXTS)) == _cls(base, _TEXTS[2])
+
+
+def test_viewer_data_has_region_names_only_when_labels_are_given():
+    """守るもの: `regionNames` は named と検出時のラベルを渡したときだけ入る（通常モードは空）。JSON にできる。"""
+    import json
+    base = _base_with_texts()
+    named = [{'id': 0, 'polygon': _SQ, 'name': 'DCPS01'}]
+    assert lp.build_label_viewer_data(base, 'a.dxf', _POS, _MARKS, {'DEF'}, named)['regionNames'] == []
+    data = lp.build_label_viewer_data(base, 'a.dxf', _POS, _MARKS, {'DEF'}, named, _TEXTS)
+    assert data['regionNames'] == lp.region_name_classes(base, named, _TEXTS) and data['regionNames']
+    json.dumps(data)
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +221,12 @@ st.session_state['is_region_mode'] = False
 st.session_state['ref_results_summary'] = {{'a.dxf': {{}}}}
 st.session_state['extract_results_full'] = {{'a.dxf': dict({full_extra!r}, rows={rows!r})}}
 st.session_state['extract_label_positions'] = {{'a.dxf': list(base.label_classes)}}
+st.session_state['region_analyses'] = {analyses!r}
 _render_results_section(uploaded_files={files})
 '''
 
 
-def _run_preview(with_file=True, named=None):
+def _run_preview(with_file=True, named=None, analyses=None):
     ref_final = {'a.dxf': {
         'rows': _ROWS, 'total_in_frame': 3, 'ref_designator_count': 2, 'frames': 1, 'warning': None,
         'main_drawing_number': 'EE1234-500-01A', 'source_drawing_number': None, 'title': 'T', 'subtitle': None}}
@@ -177,7 +235,7 @@ def _run_preview(with_file=True, named=None):
         project_root=PROJECT_ROOT, dxf_b64=base64.b64encode(_dxf_bytes()).decode('ascii'),
         excel_b64=base64.b64encode(excel).decode('ascii'), rows=_ROWS,
         full_extra={} if named is None else {'named': named},
-        files='[_UF()]' if with_file else '[]')
+        files='[_UF()]' if with_file else '[]', analyses={} if analyses is None else analyses)
     at = AppTest.from_string(script)
     at.run()
     return at
@@ -240,3 +298,21 @@ def test_preview_viewer_draws_region_lines_only_in_region_mode():
     _toggles(at)[0].set_value(True).run()
     assert at.exception.len == 0
     assert [r['id'] for r in at.session_state['_viewer_calls'][-1]['regions']] == [0]
+
+
+def test_preview_viewer_highlights_region_names_from_the_detected_labels():
+    """守るもの: 領域付きモードでは、抽出された領域の名称のラベルが viewer に渡る（検出時のラベル
+    `region_analyses[ファイル]['labels']` から探す）。通常モード（`named` なし）では渡らない。"""
+    labels = [('R10', 10.0, 10.0)]
+    named = [{'id': 0, 'polygon': [(0, 0), (30, 0), (30, 30), (0, 30)], 'name': 'R10'}]
+    at = _run_preview(named=named, analyses={'a.dxf': {'labels': labels}})
+    at.selectbox(key='extract_preview_sheet').select('a').run()
+    _toggles(at)[0].set_value(True).run()
+    assert at.exception.len == 0
+    data = at.session_state['_viewer_calls'][-1]
+    assert data['regionNames'] and data['regionColor'] == '#00e5ff'
+
+    at = _run_preview()
+    at.selectbox(key='extract_preview_sheet').select('a').run()
+    _toggles(at)[0].set_value(True).run()
+    assert at.session_state['_viewer_calls'][-1]['regionNames'] == []

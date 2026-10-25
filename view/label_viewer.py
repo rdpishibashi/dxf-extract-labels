@@ -55,13 +55,15 @@ def mount_viewer(**kwargs):
     return _get_label_viewer(sig)(**kwargs)
 
 
-def render_label_viewer(fname, dxf_bytes, positions, mark_of, selected_marks, key, named_regions=()):
+def render_label_viewer(fname, dxf_bytes, positions, mark_of, selected_marks, key, named_regions=(),
+                        region_labels=()):
     """図面 `dxf_bytes` を描き、`selected_marks`（区分の集合）に当たるラベルを色付けする。
-    `named_regions`（領域付きモードで抽出された領域）があれば、その領域線を赤で重ねる。"""
+    `named_regions`（領域付きモードで抽出された領域）があれば、その領域線を重ね、領域名のラベル（`region_labels` =
+    検出時のラベルから探す）を同じ色（シアン）にする。"""
     try:
         base = region_confirm_viewer.render_region_base(dxf_bytes)
         data = label_preview.build_label_viewer_data(
-            base, fname, positions, mark_of, selected_marks, named_regions)
+            base, fname, positions, mark_of, selected_marks, named_regions, region_labels)
         data['height'] = LABEL_VIEWER_HEIGHT_PX  # viewer の外枠の高さ（JS が明示的に設定する）
         mount_viewer(key=key, data=data, height=LABEL_VIEWER_HEIGHT_PX)
     except Exception as e:

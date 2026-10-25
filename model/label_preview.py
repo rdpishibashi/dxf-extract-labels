@@ -13,6 +13,7 @@ import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from model import region_preview
+from model.ref_designator import OR_DELIMITER
 from model.ref_designator import (
     MARK_CANDIDATE, MARK_DEFINED, excluded_region_ids, filter_labels_outside_excluded)
 
@@ -23,7 +24,7 @@ MARK_COLORS: Dict[str, str] = {
     MARK_CANDIDATE: "#ff9f1a",  # CAN
     BLANK_MARK: "#ffe600",      # 空欄
 }
-REGION_LINE_COLOR = "#ff3030"  # 抽出された領域の領域線（輪郭のみ。塗りつぶさない）
+REGION_LINE_COLOR = "#00e5ff"  # 抽出された領域の領域線（輪郭のみ。塗りつぶさない）と領域名（シアン。DEF の赤と区別する）
 EXCEL_SHEET_NAME_MAX = 31
 
 
@@ -81,16 +82,41 @@ def region_outlines(base: region_preview.BaseRender, named_regions: Sequence[dic
     return out
 
 
+def region_name_classes(base: region_preview.BaseRender, named_regions: Sequence[dict],
+                        labels: Sequence[Tuple[str, float, float]]) -> List[list]:
+    """抽出された領域（`build_named_regions()` の named）の名称のラベルの CSS クラス `[[クラス, 'fill'|'stroke'], ...]`。
+    強調するラベルは「領域の確認」の viewer と同じ（`region_preview.region_label_occurrences()`: その領域の内側の
+    同名ラベルすべて、無ければ最も近い1件）。連結名（` | `）は各名称、名称なし領域（`no name`）は元のラベルが無いので何もしない。
+    `labels` は検出時のラベル（`analysis['labels']`）。"""
+    seen = set()
+    out = []
+    for reg in named_regions:
+        poly = reg.get('polygon') or []
+        for part in (reg.get('name') or '').split(OR_DELIMITER):
+            if not part:
+                continue
+            for lab in region_preview.region_label_occurrences(part, labels, poly):
+                for cls in region_preview.label_classes_of(base, lab) or []:
+                    key = tuple(cls)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(list(cls))
+    return out
+
+
 def build_label_viewer_data(base: region_preview.BaseRender, fname: str,
                             positions: Sequence[Tuple[str, float, float]],
                             mark_of: Dict[str, str], selected_marks,
-                            named_regions: Sequence[dict] = ()) -> dict:
+                            named_regions: Sequence[dict] = (),
+                            region_labels: Sequence[Tuple[str, float, float]] = ()) -> dict:
     """viewer 部品に渡す data を作る。
 
     positions: `kept_label_positions()` の結果／mark_of: `mark_of_label()`／selected_marks: 色を付ける区分の集合
     groups: 区分ごとの `{mark, color, count（出現数。選択に関わらず全ラベル）, selected, placed（図面に描かれている数）}`
     items: 色を付けるラベルの CSS クラス `[{m: 区分, c: [[クラス名, 'fill'|'stroke'], ...]}, ...]`
     regions: 抽出された領域の輪郭 `[{id, points}]`（領域付きモードのみ。`region_outlines()`）
+    regionNames: 領域名のラベルの CSS クラス（`region_name_classes()`。領域線と同じ色で、区分の色より優先）。
+      `region_labels`（検出時のラベル）を渡したときだけ
     unplaced: 選択した区分のうち、図面に描かれていない（CSS クラスが無い）ラベルの数。ハイライトできず、
       位置を推測して重ね書きもしない（Paper Space のみの文字などは図面の座標系が違うため）。"""
     selected = set(selected_marks)
@@ -118,6 +144,7 @@ def build_label_viewer_data(base: region_preview.BaseRender, fname: str,
         "empty": base.empty, "hasFont": base.cjk_font is not None,
         "colors": dict(MARK_COLORS), "regionColor": REGION_LINE_COLOR,
         "regions": region_outlines(base, named_regions),
+        "regionNames": region_name_classes(base, named_regions, region_labels) if region_labels else [],
         "groups": [{"mark": m, "color": MARK_COLORS[m], "count": counts[m], "placed": placed[m],
                     "selected": m in selected} for m in MARK_ORDER],
         "items": items, "unplaced": unplaced,

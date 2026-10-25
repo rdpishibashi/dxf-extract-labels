@@ -1,4 +1,8 @@
-"""「領域一覧」（2026-10-17 に見出しを「抽出領域の選択」へ改称）セクションで、面積条件を満たす領域が1件も無かったときの
+"""**v3.18.0（2026-10-25）で DXF-extract-labels の画面から「抽出領域の選択」セクションを削除した**ため、
+`app._render_global_region_names_section()` を描く AppTest の5本はスキップ（代替: `test_always_specify_regions.py`）。
+共有関数 `region_list_dataframe()` を直接呼ぶテストは、DXF-label-comparison・HostPL-comparer が使い続けるため残す。
+
+「領域一覧」（2026-10-17 に見出しを「抽出領域の選択」へ改称）セクションで、面積条件を満たす領域が1件も無かったときの
 案内メッセージを検証する（2026-09-10、ユーザー指示による文言変更）。
 
 旧UI（「領域検出の詳細設定」フォームがあった頃）の「面積条件を満たす領域が
@@ -24,6 +28,8 @@
 import json
 import os
 import sys
+
+import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -60,6 +66,8 @@ def _run(region_analyses_regions_by_file=None):
     return at
 
 
+@pytest.mark.skip(reason="2026-10-25 v3.18.0: 「抽出領域の選択」セクション削除（アプリは表を描かない）。"
+                         "代替: tests/unit/test_always_specify_regions.py")
 def test_no_regions_shows_new_message():
     """全ファイルで検出領域が0件（＝面積条件を満たす領域が無かった）とき、
     新文言の st.info が表示される。"""
@@ -71,6 +79,8 @@ def test_no_regions_shows_new_message():
     assert not any('詳細設定' in t for t in info_texts)
 
 
+@pytest.mark.skip(reason="2026-10-25 v3.18.0: 「抽出領域の選択」セクション削除（アプリは表を描かない）。"
+                         "代替: tests/unit/test_always_specify_regions.py")
 def test_regions_without_name_candidates_are_listed_not_reported_as_missing():
     """検出領域は存在するが、いずれも名称候補が1件も無い場合（2026-10-10 変更）:
     名称のない領域も「領域一覧」に行として出すため、「検出されませんでした」の
@@ -82,6 +92,8 @@ def test_regions_without_name_candidates_are_listed_not_reported_as_missing():
     assert any(sh.value == '抽出領域の選択' for sh in at.subheader)
 
 
+@pytest.mark.skip(reason="2026-10-25 v3.18.0: 「抽出領域の選択」セクション削除（アプリは表を描かない）。"
+                         "代替: tests/unit/test_always_specify_regions.py")
 def test_no_message_when_region_analyses_absent():
     """「領域を検出」自体をまだ実行していない（session_stateに region_analyses
     が無い）場合はメッセージを出さない（早期returnのまま。誤って毎回表示され
@@ -91,6 +103,8 @@ def test_no_message_when_region_analyses_absent():
     assert [i.value for i in at.info] == []
 
 
+@pytest.mark.skip(reason="2026-10-25 v3.18.0: 「抽出領域の選択」セクション削除（アプリは表を描かない）。"
+                         "代替: tests/unit/test_always_specify_regions.py")
 def test_no_message_when_candidates_exist():
     """名称候補が実際に存在する場合はメッセージを出さず、「領域一覧」の
     見出しが表示される（既存の正常系が壊れていないことの担保）。"""
@@ -114,6 +128,8 @@ def test_locked_region_list_shows_current_selection_not_the_frozen_base():
     assert list(region_list_dataframe(['A'], base, False).columns) == ['特定', '領域名']
 
 
+@pytest.mark.skip(reason="2026-10-25 v3.18.0: 「抽出領域の選択」セクション削除（アプリは表を描かない）。"
+                         "代替: tests/unit/test_always_specify_regions.py")
 def test_apply_to_all_files_option_is_not_shown():
     """守るもの: 「抽出領域の選択」に、オプション「すべてのファイルに適用する」のチェックボックスが出ない
     （2026-10-25 v3.17.2 で削除。5%未満の小領域の採用は、手動選択した名称も含めて常にこの動作）。

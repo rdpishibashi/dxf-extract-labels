@@ -20,7 +20,9 @@ from model import ref_designator
 from model import terminal_detector
 from model import assembly_compare
 from model import designator_master
+from model import label_preview
 from config import region_detection_config
+from view import label_viewer
 from view import region_confirm_viewer
 from view import region_selection
 
@@ -111,24 +113,30 @@ _ASSEMBLY_COMPARE_CLEAR_KEYS = [
     'type_judgment', 'type_judgment_applied',
 ]
 
+# 抽出結果プレビューの図面表示（v3.17.0）: `extract_label_positions`（ファイルごとに抽出で残ったラベルの位置）と、
+# シートごとのトグル `extract_preview_viewer_<シート名>`。抽出結果と同じタイミングで無効化する
+_PREVIEW_VIEWER_KEY_PREFIX = 'extract_preview_viewer_'
+
 _REGION_DETECT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
-    'region_selection_confirmed',
+    'region_selection_confirmed', 'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_')
+_REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_', _PREVIEW_VIEWER_KEY_PREFIX)
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
     'ref_results_summary', 'terminal_results', 'extract_preview_expanded',
+    'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_EXTRACT_CLEAR_PREFIXES = ()
+_EXTRACT_CLEAR_PREFIXES = (_PREVIEW_VIEWER_KEY_PREFIX,)
 
 _RESTART_CLEAR_KEYS = [
     'excel_result', 'output_filename', 'is_region_mode', 'region_analyses',
     'region_results_summary', 'ref_results_summary', 'download_done',
     'terminal_results', 'region_selection_confirmed', 'extract_preview_expanded',
+    'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
-_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_')
+_RESTART_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_', _PREVIEW_VIEWER_KEY_PREFIX)
 
 
 _temp_dxf_file = region_selection.temp_dxf_file
@@ -558,6 +566,14 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         analyses=analyses, status_placeholder=status_placeholder,
                         start_time=start_time)
 
+                    # 抽出結果プレビューの図面表示用に、Excel に残るラベルの位置を保存する（「除外」領域のラベルは除く）
+                    excluded_names = region_selection.global_excluded_region_names()
+                    st.session_state['extract_label_positions'] = {
+                        fname: label_preview.kept_label_positions(
+                            data.get('labels', []), analyses[fname], excluded_names)
+                        for fname, data in ref_data_by_file.items()
+                    }
+
                     name_selections_by_file = {
                         fname: _gather_name_selections(fname, analyses[fname])
                         for fname in ref_data_by_file
@@ -593,6 +609,10 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         [(uf.name, uf) for uf in uploaded_files], frame_lineweight,
                         status_placeholder=status_placeholder, start_time=start_time)
 
+                    st.session_state['extract_label_positions'] = {
+                        fname: label_preview.kept_label_positions(data.get('labels', []))
+                        for fname, data in ref_data_by_file.items()
+                    }
                     ref_final = ref_designator.build_ref_designator_final(
                         ref_data_by_file, sort_value, master_index=master_index)
                     assembly_result = _resolve_assembly_compare(
@@ -750,7 +770,7 @@ def preview_column_config(df):
 
 
 CANDIDATE_COLUMN = '機器符号候補'
-CANDIDATE_BLANK = '（空欄）'
+CANDIDATE_BLANK = label_preview.BLANK_MARK
 _CANDIDATE_ORDER = ('DEF', 'CAN')
 
 
@@ -774,16 +794,44 @@ def filter_by_candidate(df, selected):
     return df[keys.isin(set(selected))]
 
 
-def render_candidate_filter(df, key):
-    """表の上に「機器符号候補」の絞り込み選択欄を出し、絞り込み後の df を返す。
-    列が無い、または値が無いときは選択欄を出さず df をそのまま返す。初期状態は全選択。"""
+def render_candidate_pills(df, key):
+    """表の上に「機器符号候補」の絞り込み選択欄を出し、選択された値のリストを返す。
+    列が無い、または値が無いときは選択欄を出さず None を返す。初期状態は全選択。"""
     if CANDIDATE_COLUMN not in df.columns or df.empty:
-        return df
+        return None
     options = candidate_filter_options(df[CANDIDATE_COLUMN])
     # 選択肢の構成が変わったとき（新しい抽出結果など）に古い選択が残らないよう、key に含める
     selected = st.pills(CANDIDATE_COLUMN, options, selection_mode='multi',
                         default=options, key=f"{key}:{'|'.join(options)}")
-    return filter_by_candidate(df, selected or [])
+    return list(selected or [])
+
+
+def render_candidate_filter(df, key):
+    """表の上に「機器符号候補」の絞り込み選択欄を出し、絞り込み後の df を返す。
+    列が無い、または値が無いときは選択欄を出さず df をそのまま返す。初期状態は全選択。"""
+    selected = render_candidate_pills(df, key)
+    return df if selected is None else filter_by_candidate(df, selected)
+
+
+def _render_preview_viewer(preview_sheet, selected, uploaded_files, mark_expanded):
+    """プレビューのシートが1つの図面のものなら、「図面を表示」トグルを出し、ON のときは
+    「機器符号候補」の選択（`selected`）に当たるラベルを図面上で色付けする（v3.17.0）。
+    Summary・Total など図面に対応しないシート、選択欄の無い（ラベルが無い）シートでは何も出さない。"""
+    full = st.session_state.get('extract_results_full') or {}
+    fname = label_preview.sheet_to_file(preview_sheet, list(full))
+    if fname is None or selected is None:
+        return
+    uf = {f.name: f for f in uploaded_files}.get(fname)
+    if uf is None:
+        st.caption("図面を表示できません（アップロードされたファイルが残っていません）。")
+        return
+    if not st.toggle("図面を表示", value=False, key=f"{_PREVIEW_VIEWER_KEY_PREFIX}{preview_sheet}",
+                     on_change=mark_expanded):
+        return
+    positions = (st.session_state.get('extract_label_positions') or {}).get(fname, [])
+    label_viewer.render_label_viewer(
+        fname, uf.getvalue(), positions, label_preview.mark_of_label(full[fname].get('rows', [])),
+        selected, key=f"{_PREVIEW_VIEWER_KEY_PREFIX}mount_{preview_sheet}")
 
 
 def _render_results_section(master_index_status=None, uploaded_files=()):
@@ -838,9 +886,13 @@ def _render_results_section(master_index_status=None, uploaded_files=()):
                 on_change=_mark_extract_preview_expanded,
                 width=sheet_select_width(preview_xl.sheet_names),
             )
-            preview_df = render_candidate_filter(
-                preview_xl.parse(preview_sheet),
-                key=f"extract_cand_filter_{preview_sheet}")
+            sheet_df = preview_xl.parse(preview_sheet)
+            selected_marks = render_candidate_pills(
+                sheet_df, key=f"extract_cand_filter_{preview_sheet}")
+            _render_preview_viewer(
+                preview_sheet, selected_marks, uploaded_files, _mark_extract_preview_expanded)
+            preview_df = sheet_df if selected_marks is None else filter_by_candidate(
+                sheet_df, selected_marks)
             column_config, table_width = preview_column_config(preview_df)
             st.dataframe(preview_df, width=table_width, hide_index=True,
                          column_config=column_config)

@@ -410,7 +410,7 @@ def _poly_of(reg):
 
 
 def build_confirmation_data(base, fname, analysis, pending, decided, state, checked_names,
-                            locked, match_fn, candidates_fn, unnamed=(), inactive=(), minor_ids=()):
+                            locked, match_fn, candidates_fn, unnamed=(), inactive=(), minor_ids=(), hidden_cands=None):
     """viewer 部品に渡す data（JSON 化できる dict）を作る。streamlit 非依存。
 
     pending: 選択が必要な領域（reg dict のリスト）／decided: `[(reg, 確定した名称), ...]`
@@ -419,6 +419,8 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
     candidates_fn(reg, checked_names) -> [(距離, 文字列), ...]（共有側の `pending_candidates_for_region`）
     inactive: 抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」「特定OFF」。灰色で表示し、名称は変更できない）
     match_fn(text, labels) -> 一致したラベル or None（共有側の `match_typed_region_name`）
+    hidden_cands: `{要選択の領域id: {候補の文字列}}`。選択肢から外す候補（採用された小領域が持つ名称。`model/minor_selection.py`）。
+      候補の番号 `idx` は外す前の並びのまま（viewer が返す idx を `region_choices.apply_viewer_choice()` にそのまま使える）
     minor_ids: `decided` のうち、5%未満などの小領域（`minor_regions`）の id（表示ラベルに「小領域」を付ける）
     """
     labels = analysis.get("labels", [])
@@ -514,7 +516,10 @@ def build_confirmation_data(base, fname, analysis, pending, decided, state, chec
         val = lambda suffix, default=None: rc.get_value(state, fname, rid, suffix, default)
         pts = svg_pts(corners)
         cands = []
+        hide = (hidden_cands or {}).get(rid, ())
         for i, (d, t) in enumerate(candidates_fn(r, checked_names)):
+            if t in hide:
+                continue
             cands.append({
                 "idx": i, "text": t, "dist": round(float(d), 1),
                 "selected": bool(val(i, False)),

@@ -77,18 +77,26 @@ def mount_viewer(**kwargs):
 # 表示対象・領域の分類
 # ---------------------------------------------------------------------------
 
-def confirmation_targets(analyses, checked_names):
+def resolve(analyses):
+    """全ファイルの最終結果 `{ファイルキー: minor_selection.Resolution}`（「ラベルを抽出」と同じ `resolve_all()`）。
+    他のファイルでの選択・入力で変わるので、表示のたびに計算し直す（状態は書き換えない）。"""
+    return minor_selection.resolve_all(st.session_state, analyses, rs.classify_file_regions)
+
+
+def confirmation_targets(analyses, checked_names, resolutions=None):
     """「領域の確認」に表示するファイルを返す: 図面枠が検出できた全ファイル（図面枠未検出の既知の
     未対応ケースは除く。エラーのあるファイルは、エラーを見せるため含める）。
     戻り値はファイルキーでソートした `[(fname, analysis, pending_regions), ...]`。
-    `pending_regions` は、候補が2件以上残り、別の図面枠でも決まらない（要選択の）領域。"""
+    `pending_regions` は、候補が2件以上残り、別の図面枠でも決まらない（要選択の）領域。
+    `resolutions`（`resolve()` の結果）を渡すと、採用された小領域が持つ名称で確定した領域（R1）を除いた要選択になる。"""
     excluded_names = rs.global_excluded_region_names()
     targets = []
     for fname, analysis in sorted(analyses.items()):
         err = analysis.get('error')
         if err and rs.FRAME_NOT_FOUND_ERROR_MARKER in err:
             continue  # 図面枠が見つからない既知の未対応ケースは表示しない
-        decisions = rd.classify_regions(analysis, checked_names, excluded_names)
+        decisions = (resolutions[fname].decisions if resolutions is not None
+                     else rd.classify_regions(analysis, checked_names, excluded_names))
         pending_regions = [
             r for r in analysis.get('regions', []) if decisions[r['id']].status == rd.PENDING]
         targets.append((fname, analysis, pending_regions))
@@ -100,9 +108,10 @@ def _unnamed_active_ids(decisions):
     return {rid for rid, d in decisions.items() if d.status == rd.UNNAMED}
 
 
-def needs_choice(analysis, pending_regions, checked_names):
+def needs_choice(analysis, pending_regions, checked_names, decisions=None):
     """このファイルに、ユーザーが確認する領域（要選択の領域、または除外でない名称なし領域）があるか。"""
-    decisions = rd.classify_regions(analysis, checked_names, rs.global_excluded_region_names())
+    if decisions is None:
+        decisions = rd.classify_regions(analysis, checked_names, rs.global_excluded_region_names())
     return bool(pending_regions or _unnamed_active_ids(decisions))
 
 
@@ -128,12 +137,8 @@ def decided_regions(analysis, pending_regions=None, decisions=None):
 
 
 def minor_regions_for_viewer(analyses, fname):
-    """この図面の採用される小領域 `[(reg, 採用名), ...]`（viewer に確定領域として出す）。
-    「ラベルを抽出」と同じ `minor_selection.adopted_minor_names()` で、全ファイルの名称選択から決める
-    （他のファイルでの選択・入力で変わるので、表示のたびに計算し直す）。"""
-    selections = {f: rs.gather_name_selections(f, a) for f, a in analyses.items()}
-    names = minor_selection.adopted_minor_names(analyses, selections).get(fname, {})
-    return [(r, names[r['id']]) for r in analyses[fname].get('minor_regions', []) if r['id'] in names]
+    """この図面の採用される小領域 `[(reg, 採用名), ...]`（viewer に確定領域として出す。`resolve()` の結果）。"""
+    return resolve(analyses)[fname].minors
 
 
 def inactive_regions(analysis, decisions=None):
@@ -185,12 +190,14 @@ def render_info_rows(regions):
                 st.code('\n'.join(lines))
 
 
-def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked, analyses=None):
+def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked, analyses=None, resolution=None):
     """「領域の確認」の viewer。viewer 内の選択を選択状態（`rc_…`）へ反映する。
-    採用される小領域（`minor_regions_for_viewer()`）も、確定した領域として出す（`analyses` を渡したとき）。"""
+    採用される小領域も、確定した領域として出す。`resolution`（`resolve()` のこのファイルの結果）が無ければ計算する。"""
     checked = rs.global_checked_region_names()
-    decisions = rs.classify_file_regions(analysis)
-    minors = minor_regions_for_viewer(analyses, fname) if analyses else []
+    if resolution is None:
+        resolution = resolve(analyses or {fname: analysis})[fname]
+    decisions = resolution.decisions
+    minors = resolution.minors
     decided = decided_regions(analysis, decisions=decisions) + minors
     unnamed = unnamed_regions(analysis, decisions)
     # 確定済み・無名・小領域も「領域名を入力」で名称を変更できる（状態を初期化）
@@ -203,7 +210,7 @@ def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked, analyses=No
             st.session_state, checked, locked,
             rs.match_typed_region_name, pending_candidates_for_region,
             unnamed=unnamed, inactive=inactive_regions(analysis, decisions),
-            minor_ids={r['id'] for r, _name in minors})
+            minor_ids={r['id'] for r, _name in minors}, hidden_cands=resolution.hidden)
         data['height'] = REGION_CONFIRM_HEIGHT_PX  # viewer の外枠の高さ（JS が明示的に設定する）
         res = mount_viewer(
             key=f"regprev_viewer_{fname}", data=data, height=REGION_CONFIRM_HEIGHT_PX,
@@ -224,7 +231,7 @@ def show_viewer(fname, dxf_bytes, analysis, pending_regions, locked, analyses=No
             st.rerun()
 
 
-def _render_file(fname, analysis, pending_regions, analyses, checked_names, locked, files):
+def _render_file(fname, analysis, pending_regions, analyses, checked_names, locked, files, resolution):
     """「領域の確認」の1ファイル分（開閉枠の中）。"""
     if rs.render_confirmation_file_header(fname, analysis, pending_regions):
         return  # エラー（警告を出した）
@@ -249,10 +256,10 @@ def _render_file(fname, analysis, pending_regions, analyses, checked_names, lock
     if not st.toggle("図面を表示して領域を確認", value=False, key=f"regprev_confirm_{fname}",
                      on_change=_only_this_viewer, args=(fname,)):
         # OFF: 選択・入力はすべて図面（viewer）の中で行う。ここでは状況だけを示す
-        decisions = rs.classify_file_regions(analysis)
+        decisions = resolution.decisions
         editable_ids = [rid for rid, d in decisions.items()
                         if d.status in (rd.DECIDED, rd.OTHER_FRAME, rd.UNNAMED)]
-        minors = minor_regions_for_viewer(analyses, fname)
+        minors = resolution.minors
         editable_ids += [r['id'] for r, _name in minors]
         n_changed = sum(
             1 for rid in editable_ids
@@ -264,10 +271,10 @@ def _render_file(fname, analysis, pending_regions, analyses, checked_names, lock
             f"（要選択 {len(pending_regions)} 個{minor_note}・図面で名称を変更または選択しない {n_changed} 個）。"
             "選択・名称の入力は、図面を表示して行います。")
     else:
-        show_viewer(fname, uf.getvalue(), analysis, pending_regions, locked, analyses)  # ON: 選択は viewer の中で行う
+        show_viewer(fname, uf.getvalue(), analysis, pending_regions, locked, analyses, resolution)  # ON: 選択は viewer の中で行う
 
     # 開閉枠の中に、選択が必要な領域の📐・行き止まり枝を出す
-    unnamed_ids = _unnamed_active_ids(rs.classify_file_regions(analysis))
+    unnamed_ids = _unnamed_active_ids(resolution.decisions)
     render_info_rows([
         r for r in analysis.get('regions', [])
         if r in pending_regions or r['id'] in unnamed_ids])
@@ -277,12 +284,20 @@ def render_confirmation_section(analyses, locked, uploaded_files=()):
     """「領域の確認」セクション（DXF-extract-labels 版）。図面枠が検出できた全ファイルを、ファイル名の
     ABC順の開閉枠（見出しに「（エラー）」「（選択の必要あり）」「（確定のみ）」）で表示し、各枠の中で
     図面上の viewer を開いて領域の確認・選択・名称の入力を行う（同時に開くのは1ファイル）。
-    表示するかどうか（領域検出済み かつ「領域選択を完了」済み）は呼び出し側が判定する。"""
+    表示するかどうか（領域検出済みか）は呼び出し側が判定する。"""
     files = {uf.name: uf for uf in uploaded_files}
     checked_names = rs.global_checked_region_names()
     targets = confirmation_targets(analyses, checked_names)
     if not targets:
         return
+
+    # 小領域の採用と要選択の領域の確定は全ファイルの選択から決まるので、描画の前に、全ファイルの
+    # 既定の選択（共有の分類で要選択の領域）を初期化してから、最終結果を1回だけ計算する
+    for fname, analysis, pending_regions in targets:
+        if analysis.get('regions'):
+            rs.ensure_pending_defaults(fname, pending_regions, analyses, checked_names)
+    resolutions = resolve(analyses)
+    targets = confirmation_targets(analyses, checked_names, resolutions)
 
     st.subheader("領域の確認")
     st.caption(
@@ -292,18 +307,13 @@ def render_confirmation_section(analyses, locked, uploaded_files=()):
 
     def _needs_choice(item):
         _f, a, pend = item
-        return needs_choice(a, pend, checked_names)
+        return needs_choice(a, pend, checked_names, resolutions[_f].decisions)
 
     n_choice = sum(1 for it in targets if _needs_choice(it))
     if n_choice:
         st.caption(f"選択の必要あり: {n_choice} ファイル")
         if st.toggle("選択の必要ありのファイルのみ表示", value=False, key="regconfirm_only_action"):
             targets = [it for it in targets if _needs_choice(it)]
-
-    # 小領域の採用は全ファイルの選択から決まるので、描画の前に全ファイルの既定の選択を初期化しておく
-    for fname, analysis, pending_regions in targets:
-        if analysis.get('regions'):
-            rs.ensure_pending_defaults(fname, pending_regions, analyses, checked_names)
 
     for item in targets:
         fname, analysis, pending_regions = item
@@ -312,4 +322,5 @@ def render_confirmation_section(analyses, locked, uploaded_files=()):
         container = st.expander(
             f"{fname}{suffix}", expanded=bool(st.session_state.get(f"regprev_confirm_{fname}")))
         with container:
-            _render_file(fname, analysis, pending_regions, analyses, checked_names, locked, files)
+            _render_file(fname, analysis, pending_regions, analyses, checked_names, locked, files,
+                         resolutions[fname])

@@ -21,7 +21,6 @@ from model import terminal_detector
 from model import assembly_compare
 from model import designator_master
 from model import label_preview
-from model import minor_selection
 from config import region_detection_config
 from view import label_viewer
 from view import region_confirm_viewer
@@ -560,17 +559,12 @@ def _handle_extract_button(uploaded_files, region_cfg, opts, master_index=None):
                         for fname, data in ref_data_by_file.items()
                     }
 
+                    # 通常領域と採用される小領域（5%未満など。採用されたすべての領域名と一致するもの）の
+                    # 名称選択は、「領域の確認」の viewer と同じ関数で決める（`model/minor_selection.py`。
+                    # 小領域が持つ名称は、同じ図面枠の要選択の領域の選択肢から外れる）
+                    resolutions = region_confirm_viewer.resolve(analyses)
                     name_selections_by_file = {
-                        fname: _gather_name_selections(fname, analyses[fname])
-                        for fname in ref_data_by_file
-                    }
-                    # 5%未満の小領域は、採用されたすべての領域名（「領域の確認」で手動選択した名称を含む）
-                    # と一致するものを採用する。「領域の確認」の viewer と同じ関数で決め、viewer での
-                    # 「（領域選択しない）」「領域名を入力」を重ねる（`model/minor_selection.py`）
-                    minor = minor_selection.adopted_minor_names(analyses, name_selections_by_file)
-                    for fname in ref_data_by_file:
-                        name_selections_by_file[fname].update(minor_selection.minor_name_selections(
-                            st.session_state, fname, analyses[fname], minor.get(fname, {})))
+                        fname: resolutions[fname].selections for fname in ref_data_by_file}
                     region_results = ref_designator.build_ref_designator_region_results(
                         ref_data_by_file, analyses, name_selections_by_file, sort_value,
                         master_index=master_index,

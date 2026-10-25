@@ -6,6 +6,8 @@
   - `model/minor_selection.py`: 採用される小領域（他ファイルで採用された名称と一致するものだけ）と上書き
   - viewer: 採用小領域が確定領域として出る（ラベルに「小領域」）。小領域にしかない名称は出ない。連結名は両方を強調
   - ファイルAでの選択が、ファイルBの小領域の採用（画面と出力の両方）に反映される
+  - R1: 採用された小領域が持つ名称を、同じ図面枠の要選択の領域の選択肢から外す（`resolve_all()`）。
+    小領域を「（領域選択しない）」「入力名」にすると選択肢に戻る
 """
 import io
 import json
@@ -257,3 +259,129 @@ _render_region_confirmation_section(enable_region_detection=True, locked=False, 
     assert [e.label for e in at.expander] == ['a.dxf（確定のみ）']  # 「領域選択を完了」を押していなくても出る
     assert not [b for b in at.button if b.label in ('領域選択を完了', 'すべての領域名を特定にする')]
     assert not at.get('arrow_data_frame') and not [sh for sh in at.subheader if sh.value == '抽出領域の選択']
+
+
+# ---------------------------------------------------------------------------
+# R1: 採用された小領域が持つ名称を、要選択の領域の選択肢から外す（EE3273-039-06B を模す）
+# ---------------------------------------------------------------------------
+
+def _r1_analyses(cands=('A', 'B'), minors=('B',), with_other_file=True):
+    """a.dxf: 要選択の通常領域 id0（候補 cands）＋小領域（minors。id は 2 から）。b.dxf: 通常領域 B（B を採用済みにする）。"""
+    regs = [_reg(0, [(1.0 + i, c) for i, c in enumerate(cands)])]
+    mins = [_reg(2 + i, [(1.0, m)], [(50 + 20 * i, 0), (60 + 20 * i, 0), (60 + 20 * i, 10), (50 + 20 * i, 10)], pct=2.0)
+            for i, m in enumerate(minors)]
+    a = {'regions': regs, 'minor_regions': mins, 'frames': [1],
+         'labels': [('M1 DRV', 52, 8), ('A', 5, 5), ('B', 55, 5), ('C', 6, 6)]}
+    out = {'a.dxf': a}
+    if with_other_file:
+        out['b.dxf'] = {'regions': [_reg(0, [(1.0, 'B')])], 'minor_regions': [], 'labels': [('B', 5, 5)], 'frames': [1]}
+    return out
+
+
+@pytest.fixture
+def r1_state():
+    original = st.session_state
+    st.session_state = {}
+    for n in ('A', 'B', 'C'):
+        st.session_state['grc_' + n] = True
+    yield st.session_state
+    st.session_state = original
+
+
+def _resolve(analyses):
+    return ms.resolve_all(st.session_state, analyses, rs.classify_file_regions)
+
+
+def test_r1_pending_region_is_decided_when_an_adopted_minor_holds_one_candidate(r1_state):
+    """要望そのもの: 小領域（B）が採用されていれば、同じ図面枠の要選択の領域（A,B）は A で確定する。"""
+    analyses = _r1_analyses()
+    res = _resolve(analyses)['a.dxf']
+    assert (res.decisions[0].status, res.decisions[0].name) == ('decided', 'A')
+    assert res.selections[('a.dxf', 0)] == ['A'] and res.selections[('a.dxf', 2)] == ['B']
+    assert res.hidden == {0: {'B'}}
+    assert [(r['id'], n) for r, n in res.minors] == [(2, 'B')]
+    # 画面（要選択の一覧）からも外れる
+    checked = rs.global_checked_region_names()
+    pend = {f: p for f, _a, p in rcv.confirmation_targets(analyses, checked, _resolve(analyses))}
+    assert pend['a.dxf'] == []
+    assert [r['id'] for r in {f: p for f, _a, p in rcv.confirmation_targets(analyses, checked)}['a.dxf']] == [0]
+
+
+def test_r1_skip_or_typed_minor_returns_the_candidate_to_the_pending_region(r1_state):
+    """小領域を「（領域選択しない）」にする、または入力名で別のラベルにすると、領域の選択肢に B が戻る。"""
+    analyses = _r1_analyses()
+    rc.set_value(st.session_state, 'a.dxf', 2, 'skip', True)
+    res = _resolve(analyses)['a.dxf']
+    assert res.decisions[0].status == 'pending' and [t for _d, t in res.decisions[0].candidates] == ['A', 'B']
+    assert res.hidden == {} and res.selections[('a.dxf', 2)] == [''] and [r['id'] for r, _n in res.minors] == [2]
+
+    rc.set_value(st.session_state, 'a.dxf', 2, 'skip', False)
+    rc.set_value(st.session_state, 'a.dxf', 2, 'typed', True)
+    rc.set_value(st.session_state, 'a.dxf', 2, 'typedtext', 'm1 drv')
+    res = _resolve(analyses)['a.dxf']
+    assert res.decisions[0].status == 'pending' and res.selections[('a.dxf', 2)] == ['M1 DRV']  # 入力名が持つのは B ではない
+
+
+def test_r1_three_candidates_keep_original_indexes_in_the_viewer(r1_state):
+    """候補が3件で B だけ外れる → 要選択（A,C）。viewer の idx は元の番号（0,2）で、選ぶと C が採用される。"""
+    analyses = _r1_analyses(cands=('A', 'B', 'C'))
+    a = analyses['a.dxf']
+    reg0 = a['regions'][0]
+    rs.ensure_choice_defaults('a.dxf', reg0, reg0['name_candidates'], analyses, {'A', 'B', 'C'})
+    st.session_state['region_analyses'] = analyses
+    res = _resolve(analyses)['a.dxf']
+    assert res.decisions[0].status == 'pending' and [t for _d, t in res.decisions[0].candidates] == ['A', 'C']
+    data = rp.build_confirmation_data(
+        _base(), 'a.dxf', a, [reg0], [], st.session_state, {'A', 'B', 'C'}, False,
+        rs.match_typed_region_name, lambda r, c: r['name_candidates'], hidden_cands=res.hidden)
+    assert [(c['idx'], c['text']) for c in data['choices']['0']['cands']] == [(0, 'A'), (2, 'C')]
+
+    rcv.apply_viewer_choice('a.dxf', reg0, 'cand', {'A', 'B', 'C'}, idx=2, text='C')
+    assert _resolve(analyses)['a.dxf'].selections[('a.dxf', 0)] == ['C']
+
+
+def test_r1_choice_in_the_pending_region_does_not_block_the_minor_adoption(r1_state):
+    """循環を断つ: 要選択の領域で B を選んでいても、小領域 B は採用され、領域は A で確定する（B を使うには小領域を外す）。"""
+    analyses = _r1_analyses(with_other_file=False)
+    reg0 = analyses['a.dxf']['regions'][0]
+    rs.ensure_choice_defaults('a.dxf', reg0, reg0['name_candidates'], analyses, {'A', 'B'})
+    st.session_state['region_analyses'] = analyses
+    rcv.apply_viewer_choice('a.dxf', reg0, 'cand', {'A', 'B'}, idx=1, text='B')
+    res = _resolve(analyses)['a.dxf']
+    assert [(r['id'], n) for r, n in res.minors] == [(2, 'B')]
+    assert res.decisions[0].status == 'decided' and res.selections[('a.dxf', 0)] == ['A']
+
+
+def test_r1_when_every_candidate_is_held_the_region_stays_pending_and_chosen_name_leaves_the_minor(r1_state):
+    """全候補を小領域が持つときは要選択のまま。選んだ名称は、同じ図面枠の（上書きのない）小領域から外れる。"""
+    analyses = _r1_analyses(minors=('A', 'B'))
+    analyses['c.dxf'] = {'regions': [_reg(0, [(1.0, 'A')])], 'minor_regions': [], 'labels': [('A', 5, 5)], 'frames': [1]}  # A も採用済みにする
+    reg0 = analyses['a.dxf']['regions'][0]
+    rs.ensure_choice_defaults('a.dxf', reg0, reg0['name_candidates'], analyses, {'A', 'B'})
+    st.session_state['region_analyses'] = analyses
+    rcv.apply_viewer_choice('a.dxf', reg0, 'cand', {'A', 'B'}, idx=1, text='B')
+    res = _resolve(analyses)['a.dxf']
+    assert res.decisions[0].status == 'pending' and res.hidden == {}
+    assert res.selections[('a.dxf', 0)] == ['B']
+    assert ('a.dxf', 3) not in res.selections  # B を持つ小領域（id3）は採用されない
+    assert [(r['id'], n) for r, n in res.minors] == [(2, 'A')]
+
+
+def test_r1_resolve_all_is_pure_and_deterministic(r1_state):
+    import copy
+    analyses = _r1_analyses(cands=('A', 'B', 'C'))
+    reg0 = analyses['a.dxf']['regions'][0]
+    rs.ensure_choice_defaults('a.dxf', reg0, reg0['name_candidates'], analyses, {'A', 'B', 'C'})
+    before = copy.deepcopy(st.session_state)
+    first, second = _resolve(analyses), _resolve(analyses)
+    assert st.session_state == before  # 状態を書き換えない
+    assert {f: r.selections for f, r in first.items()} == {f: r.selections for f, r in second.items()}
+
+
+def test_r1_extraction_uses_the_same_selections_as_the_viewer(r1_state):
+    """画面と出力が食い違わない: 抽出は `region_confirm_viewer.resolve()` の selections をそのまま使う。"""
+    analyses = _r1_analyses()
+    st.session_state['region_analyses'] = analyses
+    res = rcv.resolve(analyses)
+    assert res['a.dxf'].selections == _resolve(analyses)['a.dxf'].selections
+    assert rcv.minor_regions_for_viewer(analyses, 'a.dxf') == res['a.dxf'].minors

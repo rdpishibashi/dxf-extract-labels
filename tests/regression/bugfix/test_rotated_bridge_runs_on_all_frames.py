@@ -31,7 +31,9 @@ def test_inner_six_vertex_region_is_detected_in_rotated_drawing():
     assert a['error'] is None
     # 36.0%（コーナーは6つ。#10D0・#1184 を辺に含む）。境界線 y=169.3 の仕切りで下に
     # 6.3%・上に29.7%の領域にも分かれて検出される（polygon には共線上の頂点が入る）。
-    inner = [r for r in a['regions'] if 30 < r['area_pct'] < 40 and len(r['corners']) == 6]
+    # 2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（A1、旧値×1.026）ため、36.0% → 36.9%。
+    # 窓の下限を 30 → 33 に上げる（29.7% → 30.5% の別の6角形領域 DC19A4 を拾わないため）。
+    inner = [r for r in a['regions'] if 33 < r['area_pct'] < 40 and len(r['corners']) == 6]
     assert len(inner) == 1
     for ex, ey in EXPECTED:
         assert any(abs(ex - x) < 0.5 and abs(ey - y) < 0.5 for x, y in inner[0]['corners'])

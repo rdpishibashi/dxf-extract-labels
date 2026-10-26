@@ -41,8 +41,10 @@ def test_rack_named_for_region_emptied_by_overlap_removal():
 @pytest.mark.slow
 @pytest.mark.skipif(_sample('EE6333-610-07A.dxf') is None, reason='サンプル DXF が無い')
 def test_rack_within_15_of_horizontal_edge_is_a_candidate():
+    """2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（A1、旧値×1.026）ため、
+    対象領域の面積比は 65.4% → 67.1%（窓 65–66 → 67–68）。"""
     a = analyze_dxf_regions(_sample('EE6333-610-07A.dxf'))
-    big = next(r for r in a['regions'] if 65 < r['area_pct'] < 66)
+    big = next(r for r in a['regions'] if 67 < r['area_pct'] < 68)
     assert [t for _d, t in big['name_candidates']] == ['RACK']
 
 
@@ -50,7 +52,10 @@ def test_rack_within_15_of_horizontal_edge_is_a_candidate():
 @pytest.mark.skipif(_sample('EE6333-610-07A.dxf') is None, reason='サンプル DXF が無い')
 def test_dc19a4_is_a_region_name_candidate_in_07a():
     """「英字+数字+英字+数字」（`DC19A4`）は機器符号候補ではなく領域名候補（2026-10-10、
-    `label_classifier.NON_DESIGNATOR_PATTERNS`。戻すときはそのタプルを空にする）。"""
+    `label_classifier.NON_DESIGNATOR_PATTERNS`。戻すときはそのタプルを空にする）。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（A1、旧値×1.026）ため、
+    対象領域の面積比は 29.7% → 30.5%（窓 29–30 → 30–31）。"""
     a = analyze_dxf_regions(_sample('EE6333-610-07A.dxf'))
-    r = next(r for r in a['regions'] if 29 < r['area_pct'] < 30)
+    r = next(r for r in a['regions'] if 30 < r['area_pct'] < 31)
     assert 'DC19A4' in [t for _d, t in r['name_candidates']]

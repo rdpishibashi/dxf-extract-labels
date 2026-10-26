@@ -427,12 +427,15 @@ def test_dangling_edge_pruning_dedupes_inner_outer_region_pair():
     除去後は同一 bbox になり正しく1領域に統合される（修正前は frames=1,regions=6
     で面積63.6%の領域が2件、修正後は5件で1件のみ。さらに v1.5.10 でPHANTOM線種の
     領域〈面積4.6%、後述 test_phantom_linetype_excluded_from_region_boundaries 参照〉
-    を境界探索から除外したため、現在は4件）。"""
+    を境界探索から除外したため、現在は4件）。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値（図面枠−情報枠。この図面は A1 796×554 で
+    旧値×1.026）に変えたため、面積は [1.8, 9.8, 52.6, 63.6] → [1.9, 10.1, 54.0, 65.3]。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
     assert len(a['regions']) == 4
     area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
-    assert area_pcts == [1.8, 9.8, 52.6, 63.6]
+    assert area_pcts == [1.9, 10.1, 54.0, 65.3]
 
 
 @pytest.mark.skipif(not os.path.exists(DANGLING), reason='サンプル DXF が無い')
@@ -447,12 +450,15 @@ def test_phantom_linetype_excluded_from_region_boundaries():
     「実体矩形をくり抜いた」10角形・面積4.6%の領域が誤検出されていた
     （ユーザー報告: DXF-viewerで座標を確認したところ、抽出された境界の一部が
     実体の直線ではなく二点鎖線〈#21AB等〉だった）。除去後は実体の矩形
-    （面積1.8%）のみが残り、PHANTOM由来の誤検出領域は消える。"""
+    （面積1.8%）のみが残り、PHANTOM由来の誤検出領域は消える。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（この図面は A1、旧値×1.026）ため、
+    実体の矩形は 1.9%、誤検出領域は 4.6% → 4.7% として検査する。"""
     a = analyze_dxf_regions(DANGLING)
     assert a['error'] is None
     area_pcts = sorted(round(r['area_pct'], 1) for r in a['regions'])
-    assert 4.6 not in area_pcts
-    small_box = next(r for r in a['regions'] if round(r['area_pct'], 1) == 1.8)
+    assert 4.7 not in area_pcts
+    small_box = next(r for r in a['regions'] if round(r['area_pct'], 1) == 1.9)
     assert small_box['default_name'] == 'MX CHAMBER'
     assert small_box['corners'] == [
         (698.61, 238.2), (812.24, 238.2), (812.24, 309.1), (698.61, 309.1)]
@@ -579,10 +585,13 @@ def test_tier1_candidate_must_be_inside_the_region():
     だけでは領域内側の正しいラベルより誤って優先されてしまっていた。
 
     `id` は検出順に振られる連番であり、他の領域の増減（合体親分解等）で該当領域の
-    id がずれ得るため、面積比で対象領域を特定する（id を固定参照しない）。"""
+    id がずれ得るため、面積比で対象領域を特定する（id を固定参照しない）。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（この図面は A2 559×400、
+    旧値×1.053）ため、対象領域の面積比は 41.5% → 43.7%。"""
     a = analyze_dxf_regions(ROTATED)
     assert a['error'] is None
-    region = next(r for r in a['regions'] if round(r['area_pct'], 1) == 41.5)
+    region = next(r for r in a['regions'] if round(r['area_pct'], 1) == 43.7)
     assert region['default_name'] == 'CONTROL BOX CORE FX'
     assert region['default_name_tier'] == 1
     # 領域外のラベルは Tier1/2 から除外され、候補に現れない。
@@ -688,7 +697,10 @@ def test_level_pollution_fallback_recovers_frame():
     検出されるようになった（従来は15%閾値未満で非表示だっただけで、本来存在する
     領域）。この追加検出自体は area_ratio 変更の意図した効果であり問題ない。
     このテストが保証したい本質（4枠すべてで SYSTEM I/F BOX が正しく回復・検出
-    されること）は影響を受けない。"""
+    されること）は影響を受けない。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（この図面は A3 385×277、
+    旧値×1.117）ため、回復した領域の面積比は 74.0% → 83%（82.7）。"""
     a = analyze_dxf_regions(POLLUTED)
     assert a['error'] is None
     assert len(a['frames']) == 4
@@ -697,7 +709,7 @@ def test_level_pollution_fallback_recovers_frame():
     assert sorted(sysif_by_frame.keys()) == [0, 1, 2, 3]
     # 回復した2枠目（frame=1）の領域: 指定9ハンドルの線分と一致する8角の凹ポリゴン
     rec = sysif_by_frame[1]
-    assert round(rec['area_pct'], 0) == 74.0
+    assert round(rec['area_pct'], 0) == 83.0
     # face_snap=0.5（2026-10-10〜）では1パス目でこの領域が閉じるため、境界線のレベルは
     # クラスタ平均（y=122.25）のまま採用される。頂点の並び・レベルの0.3以内の差は不問。
     expected = [
@@ -769,7 +781,11 @@ def test_lshape_notch_bottom_edge_label_is_candidate():
 
     併せて、ネストされた HEATER CTRL B.D 領域（8.5%、単独では閾値未満）が
     「同名複数ピース合算」条件で従来通り保持されることも固定する（L字側の
-    default が変わってもグループ集計は候補確定前の default 名で行われるため）。"""
+    default が変わってもグループ集計は候補確定前の default 名で行われるため）。
+
+    2026-10-26: 既定の最小面積が 5%→4%、分母が用紙サイズ別の固定値（この図面は A3、旧値×1.117）
+    になったため、新たに `CN-IF2-1`・`THM01`（どちらも L字領域とは別の小領域）が検出され、
+    領域数は 2 → 4。"""
     a = analyze_dxf_regions(LSHAPE)
     assert a['error'] is None
     assert len(a['frames']) == 1
@@ -782,7 +798,8 @@ def test_lshape_notch_bottom_edge_label_is_candidate():
     assert 'FLAT CABLE' not in [t for _d, t in lshape['name_candidates']]
     # ネストされた HEATER CTRL B.D 領域の保持（従来挙動の維持）
     assert 'HEATER CTRL B.D-5A(HCBD)' in by_name
-    assert len(a['regions']) == 2
+    assert {'CN-IF2-1', 'THM01'} <= set(by_name)   # 4% 既定で新たに検出される小領域
+    assert len(a['regions']) == 4
 
 
 UNDER_THRESHOLD_SIBLINGS = _find_sample('DE5434-563-03A.dxf')  # 単独面積<閾値の異名兄弟矩形
@@ -1183,14 +1200,17 @@ def test_detect_frames_with_shared_left_edge_different_heights_real_sample():
     `frames[0]`が枠A（非表示の旧枠、面積223,600）から枠B（実在する枠、面積
     440,984）に変わり、分母が正された（`EFEM UPPER`自体の面積165,110は不変）。
     ここでは「枠が1つ検出され、かつ`EFEM UPPER`（2026-07-26不具合のユーザー
-    可視症状そのもの）が引き続き検出される」ことを固定する。"""
+    可視症状そのもの）が引き続き検出される」ことを固定する。
+
+    2026-10-26: 面積比の分母を用紙サイズ別の固定値に変えた（この図面は A1 796×554、
+    旧値×1.026）ため、`EFEM UPPER` の面積比は 37.4% → 38.4%。"""
     a = analyze_dxf_regions(EE6868_ROTATED)
     assert a['error'] is None
     assert len(a['frames']) == 1
     assert len(a['regions']) >= 1
     efem = next((r for r in a['regions'] if r['default_name'] == 'EFEM UPPER'), None)
     assert efem is not None, '枠内の大面積領域 EFEM UPPER が検出されていない'
-    assert round(efem['area_pct'], 0) == 37.0
+    assert round(efem['area_pct'], 0) == 38.0
 
 
 EE6868_ROTATED_NESTED = _find_sample('EE6868-516-01A.dxf')  # EFEM UPPER内部の入れ子矩形

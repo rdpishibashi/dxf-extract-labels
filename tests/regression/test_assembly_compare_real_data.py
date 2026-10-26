@@ -8,15 +8,14 @@ assembly_compare パイプラインと矛盾なく繋がることを確認する
 end-to-end スモークテスト（`_handle_extract_button` の通常モード分岐と
 同じ手順を踏む）。
 
-テストデータ: sample-dxf/組立図・内結線図_ME25-7103-0_ZMR1_339/
-（2026-09-13 ユーザー提供。共有カタログ〈problems/samples/terminal-detector/
-viewer-error〉には属さない非カタログデータのため、`_find_sample()` の
-探索対象外——他プロジェクトで再利用する場合は改めてカタログに登録すること）。
-全71件のうち、実行時間を抑えるためA側2件（全角・半角タイトル各1件、
+テストデータ: sample-dxf 配下をファイル名で再帰探索する（`tests/sample_data.py`。
+実体は `dataset/組立図・内結線図_ME25-7103-0_ZMR1_339/` 等。フォルダは決め打ちしない）。
+2026-09-13 ユーザー提供の実作業データ全71件のうち、実行時間を抑えるためA側2件（全角・半角タイトル各1件、
 D13の全角/半角混在を実データで固定）＋B側1件（実在する組立図はこの
 データセット中1件のみ）の計3件だけを対象にする。
 
-フォルダが無い環境（他マシン・CI）では収集不能ではなくスキップする。
+`sample-dxf/` 自体が無い環境（他マシン・CI）ではスキップする。`sample-dxf/` があるのに
+ファイルが無ければ失敗する（データ欠落を skip で隠さない）。
 """
 import os
 import sys
@@ -26,17 +25,18 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-DATA_DIR = os.path.join(
-    os.path.dirname(PROJECT_ROOT), 'sample-dxf', '組立図・内結線図_ME25-7103-0_ZMR1_339')
+from tests.sample_data import pool_exists, require_sample  # noqa: E402
+
 # A側: 全角タイトル1件・半角タイトル1件（実データで確認した表記混在、D13）
 A_FILES = ['EE6491-039-16A.dxf', 'EE6491-039-21A.dxf']
 # B側: タイトルに「組立図」を含む実在ファイル（このデータセット中1件のみ）
 B_FILE = 'EE6892-455B.dxf'
 
+# sample-dxf があるのに無いファイルがあれば、ここ（収集時）で AssertionError になる。
+_PATHS = {fname: require_sample(fname) for fname in A_FILES + [B_FILE]}
+
 pytestmark = [
-    pytest.mark.skipif(
-        not all(os.path.exists(os.path.join(DATA_DIR, f)) for f in A_FILES + [B_FILE]),
-        reason=f'実データ未配置のためスキップ: {DATA_DIR}'),
+    pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境'),
     # module fixture `ref_final` が40MBの実DXFを抽出する（setup 約9秒）ため、
     # モジュール全体を slow とする（conftest.py 参照）。
     pytest.mark.slow,
@@ -56,7 +56,7 @@ def ref_final():
     1回だけ実行し、このモジュール内の全テストで共有する。"""
     ref_data_by_file = {}
     for fname in A_FILES + [B_FILE]:
-        path = os.path.join(DATA_DIR, fname)
+        path = _PATHS[fname]
         data = dxf_cache.extract_ref_designator_data(
             path, frame_lineweight=100, original_filename=fname)
         _, dn_info = dxf_cache.extract_labels(

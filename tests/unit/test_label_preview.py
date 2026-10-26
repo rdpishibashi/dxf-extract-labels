@@ -266,7 +266,10 @@ def test_preview_viewer_follows_the_candidate_selection():
     data = at.session_state['_viewer_calls'][-1]
     assert {it['m'] for it in data['items']} == {'DEF', 'CAN', lp.BLANK_MARK}  # 既定は全選択
     assert data['unplaced'] == 0
-    pills = [p for p in at.pills if p.key.startswith('extract_cand_filter_a:')]
+    # `st.pills` は AppTest では `button_group`（Streamlit 1.54.0 には `AppTest.pills` が無い）。
+    # `pills` がある新しい版ではそちらを使う。
+    groups = at.pills if hasattr(at, 'pills') else at.button_group
+    pills = [p for p in groups if p.key.startswith('extract_cand_filter_a:')]
     assert len(pills) == 1
     pills[0].set_value(['DEF']).run()
     assert at.exception.len == 0

@@ -20,9 +20,12 @@ sys.path.insert(0, PROJECT_ROOT)
 from model.region_detector import analyze_dxf_regions  # noqa: E402
 
 
+from tests.sample_data import pool_exists, require_sample  # noqa: E402
+
+
 def _sample(name):
-    found = glob.glob(os.path.join(PROJECT_ROOT, 'sample-dxf', '*', name))
-    return found[0] if found else None
+    # sample-dxf があるのに無ければ AssertionError（skip にしない）
+    return require_sample(name)
 
 
 @pytest.mark.slow

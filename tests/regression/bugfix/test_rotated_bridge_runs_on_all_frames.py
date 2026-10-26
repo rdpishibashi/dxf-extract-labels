@@ -18,12 +18,14 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from model.region_detector import analyze_dxf_regions  # noqa: E402
 
-_FILES = glob.glob(os.path.join(PROJECT_ROOT, 'sample-dxf', '*', 'EE6333-610-07A.dxf'))
+from tests.sample_data import pool_exists, require_sample  # noqa: E402
+
+_FILES = [p for p in [require_sample('EE6333-610-07A.dxf')] if p]
 EXPECTED = [(44.9, 132.2), (795.2, 132.2), (795.2, 352.9), (118.9, 352.9), (118.9, 259.1), (44.9, 259.1)]
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not _FILES, reason='サンプル DXF が無い')
+@pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 def test_inner_six_vertex_region_is_detected_in_rotated_drawing():
     a = analyze_dxf_regions(_FILES[0])
     assert a['error'] is None

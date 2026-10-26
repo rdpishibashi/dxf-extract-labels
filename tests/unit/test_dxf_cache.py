@@ -19,7 +19,9 @@ sys.path.insert(0, PROJECT_ROOT)
 from tests import dxf_cache  # noqa: E402
 
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
-SHARED_SAMPLE = os.path.join(SAMPLE_DIR, 'samples', 'EE6097-039-06C.dxf')  # 3図面枠・軽量
+from tests.sample_data import pool_exists, require_sample  # noqa: E402
+
+SHARED_SAMPLE = require_sample('EE6097-039-06C.dxf')  # 3図面枠・軽量（sample-dxf 配下をファイル名で探す）
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +43,7 @@ def _make_synthetic_doc():
     return doc
 
 
-@pytest.mark.skipif(not os.path.exists(SHARED_SAMPLE), reason='サンプル DXF が無い')
+@pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 def test_second_call_returns_equivalent_result():
     """同一引数の2回目呼び出しが1回目と等価な結果を返す（キャッシュヒット時も内容は同じ）。"""
     a1 = dxf_cache.analyze_dxf_regions(SHARED_SAMPLE)
@@ -49,7 +51,7 @@ def test_second_call_returns_equivalent_result():
     assert a1 == a2
 
 
-@pytest.mark.skipif(not os.path.exists(SHARED_SAMPLE), reason='サンプル DXF が無い')
+@pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 def test_second_call_returns_distinct_object():
     """2回目の戻り値は1回目とは別オブジェクト（deepcopy による分離を検証）。"""
     a1 = dxf_cache.analyze_dxf_regions(SHARED_SAMPLE)
@@ -58,7 +60,7 @@ def test_second_call_returns_distinct_object():
     assert a1['regions'] is not a2['regions']
 
 
-@pytest.mark.skipif(not os.path.exists(SHARED_SAMPLE), reason='サンプル DXF が無い')
+@pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 def test_mutating_returned_result_does_not_pollute_cache():
     """呼び出し側が戻り値を書き換えても、以降の呼び出し結果に影響しない（変更汚染の隔離）。"""
     a1 = dxf_cache.analyze_dxf_regions(SHARED_SAMPLE)
@@ -70,7 +72,7 @@ def test_mutating_returned_result_does_not_pollute_cache():
     assert a2['frames'] != 'CORRUPTED'
 
 
-@pytest.mark.skipif(not os.path.exists(SHARED_SAMPLE), reason='サンプル DXF が無い')
+@pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 def test_different_config_produces_separate_cache_entries():
     """config が異なれば別キーとして扱われ、結果が混同されない（キー衝突が無いこと）。"""
     a_default = dxf_cache.analyze_dxf_regions(SHARED_SAMPLE, None)

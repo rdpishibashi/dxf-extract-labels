@@ -28,13 +28,7 @@ from tests import dxf_cache  # noqa: E402
 SAMPLE_DIR = os.path.join(PROJECT_ROOT, 'sample-dxf')
 
 
-def _sample(name):
-    """curated フォルダを固定順で探す（共有データ置き場の外は探さない。同名は curated 間に無い制約）。"""
-    for sub in ('problems', 'samples', 'terminal-detector', 'viewer-error'):
-        p = os.path.join(SAMPLE_DIR, sub, name)
-        if os.path.exists(p):
-            return p
-    return None
+from tests.sample_data import find_sample as _sample  # noqa: E402
 
 SAMPLES = [
     'EE2685-335-01D.dxf',     # ブロック内に文字（JZB_0001）と寸法
@@ -49,7 +43,7 @@ SAMPLES = [
 @pytest.mark.parametrize('name', SAMPLES)
 def test_every_extracted_label_has_a_css_class(name):
     path = _sample(name)
-    assert path, f'{name} が sample-dxf の curated フォルダにない（データ欠落。skip にしない）'
+    assert path, f'{name} が sample-dxf 配下（再帰）にない（データ欠落。skip にしない）'
     with open(path, 'rb') as f:
         base = rp.render_base_svg(f.read())
     analysis = dxf_cache.analyze_dxf_regions(path, dict(DEFAULT_REGION_CONFIG))

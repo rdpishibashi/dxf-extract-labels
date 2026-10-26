@@ -34,15 +34,16 @@ import time
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SAMPLE_DXF = os.path.join(
-    PROJECT_ROOT, 'sample-dxf', 'terminal-detector', 'EE6492-039-38A.dxf')
+sys.path.insert(0, PROJECT_ROOT)
+from tests.sample_data import pool_exists, require_sample  # noqa: E402
+
+# sample-dxf 配下をファイル名で探す（無ければ、sample-dxf があるとき収集時に失敗する）
+SAMPLE_DXF = require_sample('EE6492-039-38A.dxf')
 
 pytest.importorskip('playwright.sync_api')
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-pytestmark = pytest.mark.skipif(
-    not os.path.exists(SAMPLE_DXF),
-    reason='sample-dxf/terminal-detector/EE6492-039-38A.dxf が無い')
+pytestmark = pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 
 
 def _free_port():

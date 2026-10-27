@@ -5,7 +5,9 @@
 5%未満のため従来は no name のまま捨てられていた。
 
 受入条件:
-  - `analysis['minor_regions']` は `detect_minor_regions` が真のときだけ埋まり、`regions` の検出結果は不変
+  - `analysis['minor_regions']` は `detect_minor_regions` が真のときだけ埋まる。`regions` の検出結果は、
+    対辺補完で閉じた四角形のうち面積条件（`area_ratio`）を満たすものが加わる以外は不変（2026-10-27。
+    加わった領域は通常領域と同じ扱いで、外側の領域の同名候補は外れる）
   - 採用対象は、「領域の確認」で選んだ名称も含む採用済みのすべての領域名（`adopted_region_names()`。アプリは常にこちら。
     2026-10-25 v3.17.2 でオプション「すべてのファイルに適用する」を廃止し、常時この動作にした）。
     `unconditional_region_names()`（「領域の確認」を経ずに決まる名称だけ）は、旧既定の振る舞いの関数としてテストが残っている。
@@ -238,17 +240,26 @@ def test_real_data_minor_regions_do_not_change_regions():
 
 
 @pytest.mark.slow
-def test_real_data_rectangle_completion_makes_sensor_region_a_candidate():
+def test_real_data_rectangle_completion_promotes_large_region_to_regions():
     """06B（`SENSOR I/F B.D-Ⅲ` 枠の左辺が部品箱で途切れ、上側の片が長さ2未満）でも、対辺補完で閉じた
-    領域が `minor_regions` に入る。通常の `regions` は補完しないので変わらない（2026-10-17）。"""
+    領域が見つかる。小さい方（`SENSOR I/F B.D-Ⅲ` 0.9%）は `minor_regions` に入る。面積条件を満たす方
+    （`CN-IF2-1` 12.7%）は、他で採用された名称との一致を待たず通常領域（`regions`）になる
+    （2026-10-27 ユーザー決定。それまでは `minor_regions` に入り、`CN-IF2-1` が他図面で採用されない限り
+    出力に載らなかった）。外側の領域0の候補からは同名の `CN-IF2-1` が外れる。
+    補完を使わない検出（`detect_minor_regions` なし）の `regions` は変わらない。"""
     path = _find_sample('EE3273-039-06B.dxf')
     if path is None:
         pytest.skip('サンプル DXF が無い')
     cfg = build_region_cfg(config.region_detection_config)
     plain = analyze_dxf_regions(path, cfg)
     with_minor = analyze_dxf_regions(path, {**cfg, 'detect_minor_regions': True})
-    key = lambda a: [(r['id'], r['frame'], r['polygon'], r['name_candidates']) for r in a['regions']]  # noqa: E731
-    assert key(plain) == key(with_minor)
+    in_range = lambda a: [r for r in a['regions'] if 12 < r['area_pct'] < 13]  # noqa: E731
+    assert in_range(plain) == []
+    promoted = in_range(with_minor)
+    assert [(r['frame'], [t for _d, t in r['name_candidates']]) for r in promoted] == [(0, ['CN-IF2-1'])]
+    outer = [r for r in with_minor['regions'] if r['area_pct'] > 70][0]
+    assert [t for _d, t in outer['name_candidates']] == ['SYSTEM I/F BOX']
     minors = {(r['frame'], r['name_candidates'][0][1]): r['area_pct'] for r in with_minor['minor_regions']}
-    assert (0, 'SENSOR I/F B.D-Ⅲ') in minors and minors[(0, 'SENSOR I/F B.D-Ⅲ')] < 5
-    assert (0, 'CN-IF2-1') in minors and minors[(0, 'CN-IF2-1')] > 5   # 補完で閉じた 11% の領域
+    assert minors.keys() == {(0, 'SENSOR I/F B.D-Ⅲ')} and minors[(0, 'SENSOR I/F B.D-Ⅲ')] < 5
+    ids = [r['id'] for r in with_minor['regions']] + [r['id'] for r in with_minor['minor_regions']]
+    assert len(ids) == len(set(ids))

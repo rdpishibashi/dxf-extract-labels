@@ -173,7 +173,7 @@ def test_connection_point_region_excluded():
     assert a['error'] is None
     assert len(a['regions']) >= 1
     doc = ezdxf.readfile(SINGLE)
-    _, _, _, _, cps = _collect_region_geometry(doc, DEFAULT_REGION_CONFIG)
+    _, _, _, _, cps, _ = _collect_region_geometry(doc, DEFAULT_REGION_CONFIG)
     thr = DEFAULT_REGION_CONFIG['connection_point_threshold']
     margin = DEFAULT_REGION_CONFIG['connection_point_margin']
     for r in a['regions']:

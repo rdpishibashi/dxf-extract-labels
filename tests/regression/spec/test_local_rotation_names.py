@@ -126,3 +126,18 @@ def test_device_bridge_does_not_cross_a_long_gap():
 def test_device_bridge_requires_all_four_sides_of_the_device():
     Hf, Vf, Hm = _device_case()
     assert _device_gap_bridges(Hf[:-1], Vf, Hm[:-1]) == []   # 下辺（y=10）が無い
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('name', ['DE3527-553-10E.dxf', 'EE6333-610-07A.dxf', 'EE6892-633-01A.dxf'])
+def test_globally_rotated_drawings_keep_their_union_parents(name):
+    """図面全体が回転している図面では `local_rotation` を指定しても領域が減らないこと（2026-10-27）。
+
+    以前は局所回転の判定が全体回転の図面にも効き、合体親の名称探索を飛ばして
+    合体親領域（`SNM-1 DI15 LB WAFER LIFTER DOWN` など）が10ファイルで消えていた。
+    """
+    path = _find_sample(name)
+    base = analyze_dxf_regions(path, {'detect_minor_regions': True})
+    local = analyze_dxf_regions(path, {'detect_minor_regions': True, 'local_rotation': True})
+    sig = lambda a: sorted((round(r['area_pct'], 1), r['default_name']) for r in a['regions'])
+    assert sig(local) == sig(base)

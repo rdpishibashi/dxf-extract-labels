@@ -142,7 +142,7 @@ def _page_ui_app():
 
 
 def test_page_checkbox_selection_is_kept_across_reruns():
-    """共有のページ上の選択（DXF-label-comparison・HostPL-comparer の経路）: チェックボックス（rcw_…）で
+    """共有のページ上の選択（DXF-cross-checker・HostPL-comparer の経路）: チェックボックス（rcw_…）で
     選んだ候補が選択状態（rc_…）に写り、再描画してもチェックボックスに反映される。"""
     at = AppTest.from_function(_page_ui_app, default_timeout=20).run()
     assert not at.exception

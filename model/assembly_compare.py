@@ -38,7 +38,7 @@ KUBUN_BOTH = '両方'
 KUBUN_A_ONLY = 'A のみ'
 KUBUN_B_ONLY = 'B のみ'
 
-# 表示色（Excel出力で使用）。全区分が淡色の配色セット（HostPL-comparer・DXF-label-comparison と同じ）
+# 表示色（Excel出力で使用）。全区分が淡色の配色セット（HostPL-comparer・DXF-cross-checker と同じ）
 # （区分が「両方」でも個数が一致するかどうかで色を分けるため、区分そのものとは
 # 別に「表示スタイル区分」（ROW_STYLE_*）を設ける）。
 ROW_STYLE_A_ONLY = 'A_ONLY'

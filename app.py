@@ -176,7 +176,7 @@ def _compute_terminal_results(uploaded_files, status_placeholder=None, start_tim
     return results
 
 
-# 領域選択UIの本体は共有モジュール `view/region_selection.py`（DXF-label-comparison と
+# 領域選択UIの本体は共有モジュール `view/region_selection.py`（DXF-cross-checker と
 # バイト一致で共有）に移した（v3.8.0）。既存の呼び出し・テストのため旧名を残す。
 _global_checked_region_names = region_selection.global_checked_region_names
 _gather_name_selections = region_selection.gather_name_selections

@@ -1,6 +1,6 @@
 """**v3.18.0（2026-10-25）で DXF-extract-labels の画面から「抽出領域の選択」セクションを削除した**ため、
 `app._render_global_region_names_section()` を描く AppTest の5本はスキップ（代替: `test_always_specify_regions.py`）。
-共有関数 `region_list_dataframe()` を直接呼ぶテストは、DXF-label-comparison・HostPL-comparer が使い続けるため残す。
+共有関数 `region_list_dataframe()` を直接呼ぶテストは、DXF-cross-checker・HostPL-comparer が使い続けるため残す。
 
 「領域一覧」（2026-10-17 に見出しを「抽出領域の選択」へ改称）セクションで、面積条件を満たす領域が1件も無かったときの
 案内メッセージを検証する（2026-09-10、ユーザー指示による文言変更）。

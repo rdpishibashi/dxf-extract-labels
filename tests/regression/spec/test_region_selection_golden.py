@@ -79,7 +79,7 @@ class _Api:
 
     @classmethod
     def targets_page(cls, analyses, checked):
-        """共有側の対象判定（DXF-label-comparison・HostPL-comparer が使う形）。"""
+        """共有側の対象判定（DXF-cross-checker・HostPL-comparer が使う形）。"""
         return cls._mods()[5].region_confirmation_targets(analyses, checked)
 
     @classmethod

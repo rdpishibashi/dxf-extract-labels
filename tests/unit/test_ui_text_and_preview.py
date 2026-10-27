@@ -75,7 +75,7 @@ region_selection.render_region_confirmation_section(st.session_state['region_ana
 
 
 def _run_confirmation_shared(analyses, locked=False):
-    """共有関数（ページ上で選ぶ版）を実行する。DXF-label-comparison・HostPL-comparer と
+    """共有関数（ページ上で選ぶ版）を実行する。DXF-cross-checker・HostPL-comparer と
     同じ「選択の必要なファイルだけを表示する」契約の検証用（DXF-extract-labels の app.py は
     全ファイルを表示する viewer 版 `view/region_confirm_viewer.py` を使うため、app 経由では検証できない）。"""
     script = _CONFIRM_SHARED_SCRIPT_TEMPLATE.format(

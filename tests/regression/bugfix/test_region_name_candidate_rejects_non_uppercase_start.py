@@ -26,7 +26,7 @@
 `circuit_symbol_keep_terms`=('RACK',)）と同じ引数で検証する
 （実DXFファイルは不要——このバグは文字列入力のみで再現できるため）。
 
-DXF-label-comparison にも同日中にバイト一致で伝播済み
+DXF-cross-checker にも同日中にバイト一致で伝播済み
 （`Tools/CLAUDE.md`「region_detector.py」節参照）。
 """
 import os

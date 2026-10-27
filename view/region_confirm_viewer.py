@@ -3,7 +3,7 @@
 全ファイルをファイル名のABC順の開閉枠に出し、枠の中の「図面を表示して領域を確認」を ON にすると
 図面上の viewer（`st.components.v2` の双方向部品。選択を Streamlit へ返す）で領域の確認・選択・
 名称の入力を行う。ページ上に選択肢は出さない（📐・行き止まり枝は枠内のポップオーバー）。
-DXF-label-comparison・HostPL-comparer は、ページ上のチェックボックスで選ぶ共有の
+DXF-cross-checker・HostPL-comparer は、ページ上のチェックボックスで選ぶ共有の
 `view/region_selection.render_region_confirmation_section()` を使う。
 
 構成:

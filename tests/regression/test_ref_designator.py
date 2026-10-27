@@ -778,7 +778,7 @@ def test_invisible_excluded_from_region_geometry():
     text_block.add_text('FROM_INSERT', dxfattribs={'insert': (0, 0)})
     msp.add_blockref('TEXT_BLK', (100, 100))
 
-    frame_lines, region_lines, region_lines_lp, label_entities, connection_points = (
+    frame_lines, region_lines, region_lines_lp, label_entities, connection_points, _lp_rects = (
         _collect_region_geometry(doc, cfg))
 
     label_texts = {e.dxf.text for e in label_entities if e.dxftype() == 'TEXT'}
@@ -967,7 +967,7 @@ def test_layer_off_frozen_excluded_from_region_geometry():
     text_block.add_text('FROM_INSERT', dxfattribs={'insert': (0, 0)})
     msp.add_blockref('TEXT_BLK', (100, 100))
 
-    frame_lines, region_lines, region_lines_lp, label_entities, connection_points = (
+    frame_lines, region_lines, region_lines_lp, label_entities, connection_points, _lp_rects = (
         _collect_region_geometry(doc, cfg))
 
     label_texts = {e.dxf.text for e in label_entities if e.dxftype() == 'TEXT'}

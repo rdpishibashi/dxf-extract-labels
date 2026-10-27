@@ -56,6 +56,7 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     ('CN11 CN12', DESIGNATOR), ('CNP1 TB004', DESIGNATOR), ('CN11A or B', DESIGNATOR),
     ('CN B.D-1B', REGION_NAME),
     ('CN CS (I/F)', DESIGNATOR),   # 判定は括弧より前。括弧内の I/F は見ない
+    ('CATHODE', REGION_NAME),     # 2026-10-27 `_COMMON_NOUNS` から外した（`EE6892-610-01B` の領域名）
     ('CN 日本語', OTHER),          # 日本語を含むものは従来どおり OTHER（1-00 が先）
     #   英大文字1字以上+数字ちょうど2桁（追加機器符号 CN.*・LS.*・DCPS.*・TH.* 等も含む）
     ('THM01', REGION_NAME), ('SX01 (NX-SIH400)', REGION_NAME), ('SX03 ** (NX-SID800)', REGION_NAME),

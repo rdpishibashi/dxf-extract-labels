@@ -425,9 +425,10 @@ def _render_region_detection_trigger(uploaded_files, region_cfg):
                 # 面積条件に満たない小領域も検出しておく（採用は「ラベルを抽出」時に、
                 # 全ファイルで採用された名称と一致するものだけ。`ref_designator.
                 # add_minor_region_selections()`）。他プロジェクトは検出しない。
+                # `local_rotation` は図面の一部だけが回転して描かれた領域の名称探索（DXF-extract-labels のみ）。
                 analyses = region_selection.run_region_detection(
                     [(uf.name, uf) for uf in uploaded_files],
-                    {**region_cfg, 'detect_minor_regions': True},
+                    {**region_cfg, 'detect_minor_regions': True, 'local_rotation': True},
                     status_placeholder, time.time())
                 status_placeholder.empty()
                 st.session_state['region_analyses'] = analyses

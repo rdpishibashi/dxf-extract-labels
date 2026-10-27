@@ -56,6 +56,9 @@ pytestmark = pytest.mark.skipif(
 # それ以外の値差は primary からの意図しないドリフトとみなし失敗させる。
 # name_filter_prefixes: DXF-extract-labels のみが持つUI機能（v1.9.3）。DXF-viewer に同機能はない。
 ALLOWED_CONFIG_ONLY_IN_PRIMARY = {'name_filter_prefixes'}
+# local_rotation: primary は app.py だけが指定する（DEFAULT_REGION_CONFIG に入れない）が、DXF-viewer は
+# 既定で有効にする（2026-10-27、ユーザー決定）。比較テストは両側に明示して渡し、値は True であること。
+ALLOWED_CONFIG_ONLY_IN_VIEWER = {'local_rotation'}
 
 
 def _sample_problem_files():
@@ -75,7 +78,9 @@ def test_default_region_config_parity():
         f"primaryにのみ存在するキーが想定外です: {primary_only - ALLOWED_CONFIG_ONLY_IN_PRIMARY}"
     )
     viewer_only = set(VIEWER_CONFIG) - set(PRIMARY_CONFIG)
-    assert not viewer_only, f"DXF-viewerにのみ存在するキーがあります: {viewer_only}"
+    assert viewer_only == ALLOWED_CONFIG_ONLY_IN_VIEWER, (
+        f"DXF-viewerにのみ存在するキーが想定外です: {viewer_only - ALLOWED_CONFIG_ONLY_IN_VIEWER}")
+    assert VIEWER_CONFIG['local_rotation'] is True
 
     mismatches = []
     for key in sorted(set(PRIMARY_CONFIG) & set(VIEWER_CONFIG)):
@@ -98,6 +103,7 @@ def test_region_naming_matches_across_projects(dxf_path):
     """
     cfg = dict(PRIMARY_CONFIG)
     cfg.pop('name_filter_prefixes', None)  # DXF-viewer側のconfigに無いキーは渡さない
+    cfg['local_rotation'] = True  # DXF-viewer の既定値。primary にも明示して挙動を揃える
 
     a_primary = analyze_primary(dxf_path, cfg)
     a_viewer = analyze_viewer(dxf_path, cfg)
@@ -127,3 +133,23 @@ def test_region_naming_matches_across_projects(dxf_path):
         f"primaryのみ: {sorted(set(sig_primary) - set(sig_viewer))}\n"
         f"viewerのみ: {sorted(set(sig_viewer) - set(sig_primary))}"
     )
+
+
+@pytest.mark.parametrize("name", ['EE6892-610-01B.dxf', 'EE6868-405-16A.dxf'])
+def test_local_rotation_results_match_across_projects(name):
+    """`local_rotation`（部分回転の名称探索＋デバイス矩形の橋渡し）の結果が両プロジェクトで一致すること。
+
+    2026-10-27: DXF-viewer へ移植した（既定で有効）。この2ファイルは `sample-dxf/problems/` に無く
+    上のパラメータ化テストの対象外のため、再帰探索で引いて面積・名称・頂点数を突き合わせる。
+    """
+    matches = glob.glob(os.path.join(TOOLS_ROOT, 'sample-dxf', '**', name), recursive=True)
+    assert matches, f"{name} が sample-dxf 配下に見つかりません"
+    cfg = dict(PRIMARY_CONFIG)
+    cfg.pop('name_filter_prefixes', None)
+    cfg['local_rotation'] = True
+
+    def _signature(analysis):
+        return sorted((round(r['area'], 1), r.get('default_name') or '', len(r['polygon']))
+                      for r in analysis['regions'])
+
+    assert _signature(analyze_primary(matches[0], cfg)) == _signature(analyze_viewer(matches[0], cfg))

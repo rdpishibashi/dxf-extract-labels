@@ -6,6 +6,7 @@
   1-00. ひらがな・カタカナ・漢字を含む（括弧内も含む）→ OTHER（2026-10-17。同日の最初の指定「括弧内は無視」を上書き）
   別称除去: `ELB(CB)001` のような先頭の「符号(別称)番号」形は別称を外して `ELB001` として判定（2026-10-17）
   1b. `CN`+ハイフンを含む・英字+数字2桁・`A`+数字1桁 → REGION_NAME（2026-10-16 追加）
+  1b2. `CN` で始まり空白を含む: `I/F` を含む → REGION_NAME／含まない → DESIGNATOR（2026-10-27。1b が先）
   2. 英字のみ以外の候補パターンに一致（括弧・` **` より前で判定）→ DESIGNATOR
   3. 英字のみ: unit_names → REGION_NAME／他の除外語・除外パターン → OTHER／
      追加機器符号（CN.*・MC.*・MOT.* 等）→ DESIGNATOR／それ以外 → REGION_NAME
@@ -48,6 +49,14 @@ from model.region_detector import _is_valid_name_candidate  # noqa: E402
     ('CN-IF2-1', REGION_NAME), ('CN-IF2', REGION_NAME), ('CN-IF3-1A', REGION_NAME), ('ＣＮ－ＩＦ２－１', REGION_NAME),
     ('CN-IF2-', OTHER),   # 末尾ハイフンは従来どおり OTHER
     ('CN1', DESIGNATOR), ('CNPG01A', DESIGNATOR),   # ハイフンなしの CN.* は機器符号のまま
+    # 1b2. `CN` で始まり空白を含む（2026-10-27 ユーザー指定）: `I/F` を含めば領域名候補、含まなければ機器符号候補。
+    #   ハイフンを含むもの（1b）が先に判定されるので `CN B.D-1B` は領域名候補のまま
+    ('CN I/F B.D TYPE2 (CN-IF2-1A)', REGION_NAME), ('CN I/F BOARD TYPE2 CN-IF2-1A', REGION_NAME),
+    ('CN CS', DESIGNATOR), ('CN PANEL1', DESIGNATOR), ('CN PANEL1~5', DESIGNATOR),
+    ('CN11 CN12', DESIGNATOR), ('CNP1 TB004', DESIGNATOR), ('CN11A or B', DESIGNATOR),
+    ('CN B.D-1B', REGION_NAME),
+    ('CN CS (I/F)', DESIGNATOR),   # 判定は括弧より前。括弧内の I/F は見ない
+    ('CN 日本語', OTHER),          # 日本語を含むものは従来どおり OTHER（1-00 が先）
     #   英大文字1字以上+数字ちょうど2桁（追加機器符号 CN.*・LS.*・DCPS.*・TH.* 等も含む）
     ('THM01', REGION_NAME), ('SX01 (NX-SIH400)', REGION_NAME), ('SX03 ** (NX-SID800)', REGION_NAME),
     ('LED16', REGION_NAME), ('CNE06', REGION_NAME), ('LS10', REGION_NAME), ('DCPS01', REGION_NAME),

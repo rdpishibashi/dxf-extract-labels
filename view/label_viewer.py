@@ -15,6 +15,7 @@ import streamlit as st
 
 from model import label_preview
 from view import region_confirm_viewer
+from view import viewer_popup
 
 LABEL_VIEWER_HEIGHT_PX = region_confirm_viewer.REGION_CONFIRM_HEIGHT_PX
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
@@ -43,7 +44,7 @@ def __getattr__(name):
 def _get_label_viewer(definition_sig):
     return st.components.v2.component(
         "label_viewer",
-        html=_read_asset('LABEL_HTML'),
+        html=viewer_popup.definition_html(_read_asset('LABEL_HTML'), 'lv'),
         css=_read_asset('LABEL_CSS'),
         js=_read_asset('LABEL_JS'),
     )
@@ -51,7 +52,8 @@ def _get_label_viewer(definition_sig):
 
 def mount_viewer(**kwargs):
     """viewer 部品を描く。テストは、この関数を差し替えて渡された data を調べる。"""
-    sig = hash((_read_asset('LABEL_HTML'), _read_asset('LABEL_CSS'), _read_asset('LABEL_JS')))
+    html = viewer_popup.definition_html(_read_asset('LABEL_HTML'), 'lv')
+    sig = hash((html, _read_asset('LABEL_CSS'), _read_asset('LABEL_JS')))
     return _get_label_viewer(sig)(**kwargs)
 
 

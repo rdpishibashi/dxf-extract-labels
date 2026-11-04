@@ -52,6 +52,25 @@ export default function(component) {
   // 外枠の高さを明示する（v2 部品の中では親の高さが確定せず、100% が効かないため）
   if (data.height) S.wrap.style.height = data.height + 'px';
 
+
+  // 別ウィンドウ（閲覧専用）: 押した時点の図面を複製して新しい窓に書き込む。ズームは全体表示に戻る
+  const openPopup = (note) => {
+    const tpl = parentElement.querySelector('#lv-popup');
+    const w = window.open('', 'lvPopup' + Date.now(), 'width=1280,height=860');
+    if (!w) { note.textContent = 'ポップアップがブロックされました。ブラウザーで許可してください'; return; }
+    const cv = S.svg.cloneNode(true);
+    cv.removeAttribute('style'); cv.setAttribute('class', 'pcv pcv-lv'); cv.setAttribute('data-popup-cv', '');
+    cv.setAttribute('viewBox', S.vb0.join(' '));
+    const html = '<!doctype html><html><head><meta charset="utf-8"><title>図面</title><style>' +
+      tpl.content.querySelector('style').textContent + '</style></head><body><div class="pwrap"><div class="pside">' +
+      (S.legendHtml || '') + '<h4>操作</h4><button id="fit">全体表示</button>' +
+      '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
+      '</div><div class="pstage">' + cv.outerHTML + '<div class="pnote">線幅は拡大しても一定です</div></div></div><script>' +
+      tpl.content.querySelector('script').textContent + '<\/script></body></html>';
+    try { w.document.open(); w.document.write(html); w.document.close(); }
+    catch (err) { w.close(); note.textContent = 'この環境では別ウィンドウを開けません'; }
+  };
+
   const render = () => {
     const d = S.data;
     if (d.empty) { S.wrap.innerHTML = '<div style="padding:16px;color:#aaa">描画対象のエンティティがありません</div>'; return; }
@@ -92,6 +111,7 @@ export default function(component) {
            (g.selected ? g.color : 'transparent') + '"></span><span>' + esc(g.mark) +
            (g.selected ? '' : '（選択なし）') + '</span><span class="lv-cnt">' + g.count + ' 件</span></div>';
     });
+    S.legendHtml = h + (d.unplaced > 0 ? '<div class="lv-warn">図面に描かれていないラベルが ' + d.unplaced + ' 件あります（色を付けられません）。</div>' : '');
     if (regs.length) {
       h += '<h4>領域線・領域名</h4><label class="lv-row"><input type="checkbox" data-regions ' + (S.showRegions ? 'checked' : '') +
            '><span class="lv-line" style="border-color:' + d.regionColor + '"></span><span>領域線・領域名を表示（' + regs.length + ' 個）</span></label>';
@@ -100,7 +120,7 @@ export default function(component) {
       h += '<div class="lv-warn">図面に描かれていないラベルが ' + d.unplaced + ' 件あります（色を付けられません）。</div>';
     }
     h += '<h4>操作</h4><button data-act="fit">全体表示</button><button data-act="fs">' +
-         (document.fullscreenElement ? '全画面を終了' : '全画面') + '</button><div id="lv-fsnote" style="color:#e8a"></div>' +
+         (document.fullscreenElement ? '全画面を終了' : '全画面') + '</button><button data-act="pop">別ウィンドウ</button><div id="lv-fsnote" style="color:#e8a"></div>' +
          '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
          (d.hasFont ? '' : '<div class="lv-warn" style="margin-top:8px">日本語フォントが見つからないため、日本語の文字は表示されません。</div>');
     S.side.innerHTML = h;
@@ -111,6 +131,7 @@ export default function(component) {
       const act = b.getAttribute('data-act');
       if (act === 'fit') { S.vb = S.vb0.slice(); S.apply(); return; }
       const note = S.side.querySelector('#lv-fsnote'); note.textContent = '';
+      if (act === 'pop') { openPopup(note); return; }
       if (document.fullscreenElement) { document.exitFullscreen(); return; }
       const p = S.wrap.requestFullscreen ? S.wrap.requestFullscreen() : null;
       if (!p) { note.textContent = 'この環境では全画面にできません'; return; }

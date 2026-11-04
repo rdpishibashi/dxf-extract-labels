@@ -25,6 +25,7 @@ from model import region_preview
 from model.ref_designator import unnamed_region_labels
 from model.region_detector import pending_candidates_for_region
 from view import region_selection as rs
+from view import viewer_popup
 
 REGION_CONFIRM_HEIGHT_PX = 600
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
@@ -61,7 +62,7 @@ def render_region_base(dxf_bytes: bytes, version: int = region_preview.BASE_REND
 def _get_region_confirm_viewer(definition_sig):
     return st.components.v2.component(
         "region_confirm_viewer",
-        html=_read_asset('CONFIRM_HTML'),
+        html=viewer_popup.definition_html(_read_asset('CONFIRM_HTML'), 'rp'),
         css=_read_asset('CONFIRM_CSS'),
         js=_read_asset('CONFIRM_JS'),
     )
@@ -69,7 +70,8 @@ def _get_region_confirm_viewer(definition_sig):
 
 def mount_viewer(**kwargs):
     """viewer 部品を描く。テストは、この関数を差し替えて viewer の戻り値（choice）を模擬する。"""
-    sig = hash((_read_asset('CONFIRM_HTML'), _read_asset('CONFIRM_CSS'), _read_asset('CONFIRM_JS')))
+    html = viewer_popup.definition_html(_read_asset('CONFIRM_HTML'), 'rp')
+    sig = hash((html, _read_asset('CONFIRM_CSS'), _read_asset('CONFIRM_JS')))
     return _get_region_confirm_viewer(sig)(**kwargs)
 
 

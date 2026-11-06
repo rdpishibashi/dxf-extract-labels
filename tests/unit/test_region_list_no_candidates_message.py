@@ -12,8 +12,8 @@
 `app._render_global_region_names_section()` は Streamlit のウィジェットを
 直接描画する関数のため、`streamlit.testing.v1.AppTest.from_string()` で
 実際にスクリプトとして実行し、描画された `st.info` の文言を検証する
-（`tests/regression/test_app_result_persistence.py` が使う Playwright 経由の
-ブラウザテストより軽量——ブラウザ起動不要でファイルアップロードも介さない）。
+（`tests/regression/test_app_result_persistence.py` の `app.py` 全体の実行より
+軽量——関数単体を描画し、ファイルアップロードも介さない）。
 
 **`from_function()` ではなく `from_string()` を使う理由**: 当初
 `AppTest.from_function()`（`inspect.getsourcelines()` でクロージャのソースを

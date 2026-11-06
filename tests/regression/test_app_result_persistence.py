@@ -20,120 +20,82 @@ Excelが生成されるようになった（`model/ref_designator.py` 参照）�
 これに合わせ、「ラベルを抽出」直後にExcelダウンロードボタンが表示され
 続けることを確認する形に更新した。
 
-実際のブラウザ（Playwright）で app.py を起動し、DXFアップロード→
-「ラベルを抽出」の操作後もExcelダウンロードボタンが表示され続けることを
-確認するブラックボックステスト。playwright未インストール/ブラウザ未
-ダウンロードの環境ではスキップする。
+Streamlit の `AppTest`（ブラウザもサーバーも使わずに app.py を実行する）で、
+DXFアップロード→「ラベルを抽出」の操作後に、さらに再描画してもExcel
+ダウンロードボタンが表示され続けることを確認するブラックボックステスト。
+
+**2026-11-06 Playwright から AppTest へ置き換え**（ユーザー決定: Playwright は
+入っていない前提にし、skip をなくす）。以前は実ブラウザで app.py を操作して
+おり、Playwright が無い環境では skip されていた（venv の作り直しで Playwright
+が抜け、skip が 51→52 件になって発覚）。`AppTest` のファイルアップロード操作
+（`file_uploader[...].set_value()`）は streamlit 1.67 で確認した。
 """
 import os
-import socket
-import subprocess
 import sys
-import time
 
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
+from streamlit.testing.v1 import AppTest  # noqa: E402
+
 from tests.sample_data import pool_exists, require_sample  # noqa: E402
 
 # sample-dxf 配下をファイル名で探す（無ければ、sample-dxf があるとき収集時に失敗する）
 SAMPLE_DXF = require_sample('EE6492-039-38A.dxf')
 
-pytest.importorskip('playwright.sync_api')
-from playwright.sync_api import sync_playwright  # noqa: E402
-
 pytestmark = pytest.mark.skipif(not pool_exists(), reason='共有 sample-dxf が無い環境')
 
-
-def _free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+APP_PATH = os.path.join(PROJECT_ROOT, 'app.py')
 
 
-@pytest.fixture(scope='module')
-def streamlit_server():
-    """app.py を別プロセスで起動する。"""
-    port = _free_port()
-    env = dict(os.environ)
-
-    proc = subprocess.Popen(
-        [sys.executable, '-m', 'streamlit', 'run', 'app.py',
-         '--server.headless', 'true', '--server.port', str(port)],
-        cwd=PROJECT_ROOT, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        deadline = time.time() + 30
-        connected = False
-        while time.time() < deadline:
-            try:
-                with socket.create_connection(('127.0.0.1', port), timeout=1):
-                    connected = True
-                    break
-            except OSError:
-                time.sleep(0.5)
-        if not connected:
-            proc.terminate()
-            pytest.skip('streamlit サーバーの起動に失敗（タイムアウト）')
-        time.sleep(1.5)  # Streamlit初回スクリプト実行の余裕
-        yield f'http://localhost:{port}'
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+def _app_with_sample_uploaded():
+    """app.py を起動し、サンプル DXF をアップロードした状態の AppTest を返す。"""
+    at = AppTest.from_file(APP_PATH, default_timeout=120).run()
+    with open(SAMPLE_DXF, 'rb') as f:
+        content = f.read()
+    at.file_uploader[0].set_value(
+        (os.path.basename(SAMPLE_DXF), content, 'application/octet-stream')).run()
+    return at
 
 
-@pytest.fixture(scope='module')
-def browser():
-    with sync_playwright() as p:
-        try:
-            b = p.chromium.launch(headless=True)
-        except Exception as e:  # ブラウザ未ダウンロード等
-            pytest.skip(f'Playwrightブラウザが利用できません: {e}')
-        yield b
-        b.close()
+def _checkbox(at, label):
+    return next(c for c in at.checkbox if c.label == label)
+
+
+def _button(at, label):
+    return next(b for b in at.button if b.label == label)
+
+
+def _assert_download_shown(at, message):
+    assert not at.exception, f'例外が発生した: {[e.value for e in at.exception]}'
+    assert not [e for e in at.error if 'エラーが発生しました' in str(e.value)], (
+        'ラベル抽出後にエラーが表示された')
+    assert any(d.label == '抽出結果をダウンロード' for d in at.download_button), message
 
 
 @pytest.mark.slow
-def test_excel_result_persists_after_extract(streamlit_server, browser):
+def test_excel_result_persists_after_extract():
     """通常モード（既定）+「端子一覧を抽出」ON、「領域を検出」OFF（既定）で
     「ラベルを抽出」を押した直後もExcelダウンロードボタンが表示され続けること
     （消えずに残ること）を確認する。
 
     v3.0.0で「図面番号・タイトル・サブタイトルを抽出」オプションは廃止された
     （常に抽出されるようになった）ため、このテストではチェックしない。"""
-    page = browser.new_page(viewport={'width': 1400, 'height': 1000})
-    try:
-        page.goto(streamlit_server, wait_until='networkidle')
-        page.wait_for_timeout(1000)
+    at = _app_with_sample_uploaded()
+    _checkbox(at, '端子一覧を抽出').check().run()
+    _button(at, 'ラベルを抽出').click().run()
+    _assert_download_shown(at, 'ラベル抽出後にExcelダウンロードボタンが表示されない')
 
-        page.locator('input[type="file"]').set_input_files(SAMPLE_DXF)
-        page.wait_for_timeout(1500)
-
-        # Streamlit のチェックボックスはネイティブ input を画面外へ視覚的に隠し、
-        # 独自スタイルの box（同じ label 内の兄弟要素）を表示する実装のため、
-        # input への click()（force=True でも）は要素がビューポート外にあり失敗する。
-        # input に click イベントを直接ディスパッチすることで、実際のマウス座標に
-        # 依存せず確実にチェック状態を切り替える。
-        page.get_by_role('checkbox', name='端子一覧を抽出').dispatch_event('click')
-        page.wait_for_timeout(300)
-
-        page.get_by_role('button', name='ラベルを抽出').click()
-        page.wait_for_timeout(6000)
-
-        assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
-            'ラベル抽出後にエラーが表示された')
-        assert page.get_by_role('button', name='抽出結果をダウンロード').count() > 0, (
-            'ラベル抽出後にExcelダウンロードボタンが表示されない'
+    # 抽出直後の再描画で excel_result が消えていた不具合（「領域を検出」OFF のガード）を
+    # 捕まえるため、何も操作せずにもう一度再描画しても残ることを確かめる
+    at.run()
+    _assert_download_shown(
+        at, '再描画後にExcelダウンロードボタンが消えた'
             '（excel_resultが「領域を検出」OFFガードで誤って消されるバグの再発）')
-    finally:
-        page.close()
 
 
-def test_region_mode_excel_result_produced(streamlit_server, browser):
+def test_region_mode_excel_result_produced():
     """領域検出モード（「領域を検出」ON）で、領域検出→領域選択を完了→
     ラベル抽出までエラーなくExcel出力されることを確認する。
 
@@ -155,34 +117,15 @@ def test_region_mode_excel_result_produced(streamlit_server, browser):
     2026-10-25（v3.18.0）更新: 「領域一覧」（抽出領域の選択）と「領域選択を完了」は廃止した。
     検出後は何も操作せず「ラベルを抽出」まで進めることを確認する。
     """
-    page = browser.new_page(viewport={'width': 1400, 'height': 1000})
-    try:
-        page.goto(streamlit_server, wait_until='networkidle')
-        page.wait_for_timeout(1000)
+    at = _app_with_sample_uploaded()
+    _checkbox(at, '領域を検出').check().run()
+    _button(at, '領域を検出').click().run()
 
-        page.locator('input[type="file"]').set_input_files(SAMPLE_DXF)
-        page.wait_for_timeout(1500)
+    # v3.18.0: 「抽出領域の選択」「領域選択を完了」は廃止。検出直後に「領域の確認」が出て、
+    # そのまま「ラベルを抽出」に進める
+    texts = [m.value for m in at.markdown] + [h.value for h in at.subheader] + [h.value for h in at.header]
+    assert any('領域の確認' in (t or '') for t in texts), (
+        '領域の確認セクションが表示されていない（テストの前提が崩れている）')
 
-        page.get_by_role('checkbox', name='領域を検出').dispatch_event('click')
-        page.wait_for_timeout(500)
-
-        # exact=True: 素の name マッチは部分一致のため、チェックボックス脇の
-        # ヘルプアイコン（アクセシブルネーム "Help for 領域を検出"）とも
-        # 曖昧一致してしまう。
-        page.get_by_role('button', name='領域を検出', exact=True).click()
-        page.wait_for_timeout(4000)
-
-        # v3.18.0: 「抽出領域の選択」「領域選択を完了」は廃止。検出直後に「領域の確認」が出て、
-        # そのまま「ラベルを抽出」に進める
-        assert page.get_by_text('領域の確認', exact=False).count() > 0, (
-            '領域の確認セクションが表示されていない（テストの前提が崩れている）')
-
-        page.get_by_role('button', name='ラベルを抽出').click()
-        page.wait_for_timeout(6000)
-
-        assert page.get_by_text('エラーが発生しました', exact=False).count() == 0, (
-            'ラベル抽出後にエラーが表示された（領域検出モードの回帰）')
-        assert page.get_by_role('button', name='抽出結果をダウンロード').count() > 0, (
-            '領域検出モードでExcelダウンロードボタンが表示されない')
-    finally:
-        page.close()
+    _button(at, 'ラベルを抽出').click().run()
+    _assert_download_shown(at, '領域検出モードでExcelダウンロードボタンが表示されない')

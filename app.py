@@ -115,6 +115,7 @@ _ASSEMBLY_COMPARE_CLEAR_KEYS = [
 
 # 抽出結果プレビューの図面表示（v3.17.0）: `extract_label_positions`（ファイルごとに抽出で残ったラベルの位置）と、
 # シートごとのトグル `extract_preview_viewer_<シート名>`。抽出結果と同じタイミングで無効化する
+# （ただし「領域を検出」OFF 中の毎回の消去 `_REGION_OFF_CLEAR_PREFIXES` には含めない）
 _PREVIEW_VIEWER_KEY_PREFIX = 'extract_preview_viewer_'
 
 _REGION_DETECT_CLEAR_KEYS = [
@@ -122,6 +123,10 @@ _REGION_DETECT_CLEAR_KEYS = [
     'extract_label_positions',
 ] + _ASSEMBLY_COMPARE_CLEAR_KEYS
 _REGION_DETECT_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_', _PREVIEW_VIEWER_KEY_PREFIX)
+# 「領域を検出」OFF 中に毎回の再実行で消すキー。`_PREVIEW_VIEWER_KEY_PREFIX` を含めてはならない
+# （含めると、OFF 中は再実行のたびに「図面を表示」トグルが False に戻り viewer が出ない。
+# 根拠: tests/regression/bugfix/test_preview_viewer_toggle_survives_rerun.py）
+_REGION_OFF_CLEAR_PREFIXES = ('rc_', 'grc_', 'gre_', 'regprev_')
 
 _EXTRACT_CLEAR_KEYS = [
     'excel_result', 'is_region_mode', 'region_results_summary',
@@ -318,9 +323,10 @@ def _render_options_section(locked):
             # ならない（含めると、通常モードで生成した抽出結果が直後の再描画で
             # 消えてしまう。2026-07-15ユーザー報告で発覚、v1.9.4で領域検出を
             # オプション化した際に混入した回帰）。
+            # 「図面を表示」トグルも同様に消してはならない（`_REGION_OFF_CLEAR_PREFIXES` 参照）。
             _clear_session_keys(
                 keys=['region_analyses'],
-                prefixes=_REGION_DETECT_CLEAR_PREFIXES)
+                prefixes=_REGION_OFF_CLEAR_PREFIXES)
 
         # b) 端子一覧を抽出
         extract_terminal_option = st.checkbox(
@@ -862,7 +868,7 @@ def _render_results_section(master_index_status=None, uploaded_files=()):
                 on_change=_mark_extract_preview_expanded,
                 width=sheet_select_width(preview_xl.sheet_names),
             )
-            sheet_df = preview_xl.parse(preview_sheet)
+            sheet_df = pd.read_excel(preview_xl, sheet_name=preview_sheet)
             selected_marks = render_candidate_pills(
                 sheet_df, key=f"extract_cand_filter_{preview_sheet}")
             _render_preview_viewer(

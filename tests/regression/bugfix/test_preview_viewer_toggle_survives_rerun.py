@@ -76,3 +76,15 @@ def test_sheet_selection_raises_no_pandas_parse_deprecation():
         _extracted_app()
     messages = [str(w.message) for w in caught if 'ExcelFile.parse' in str(w.message)]
     assert not messages, messages
+
+
+def test_viewer_shows_a_spinner_while_preparing(monkeypatch):
+    """図面の準備中（描画・データ作成）は `st.spinner` で「準備中」と示す（大きな図面は初回に数秒かかる）。"""
+    import streamlit as st
+    texts = []
+    real = st.spinner
+    monkeypatch.setattr(st, 'spinner', lambda text='', **kw: (texts.append(text), real(text, **kw))[1])
+    monkeypatch.setattr(label_viewer, 'mount_viewer', lambda **kw: None)
+    at = _extracted_app()
+    _toggle(at).set_value(True).run()
+    assert label_viewer.PREPARING_TEXT in texts

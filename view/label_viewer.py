@@ -18,6 +18,7 @@ from view import region_confirm_viewer
 from view import viewer_popup
 
 LABEL_VIEWER_HEIGHT_PX = region_confirm_viewer.REGION_CONFIRM_HEIGHT_PX
+PREPARING_TEXT = "図面を表示する準備をしています…（大きな図面は数秒〜数十秒かかることがあります）"
 ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 _ASSET_FILES = {
     'LABEL_HTML': 'label_viewer.html',
@@ -63,9 +64,12 @@ def render_label_viewer(fname, dxf_bytes, positions, mark_of, selected_marks, ke
     `named_regions`（領域付きモードで抽出された領域）があれば、その領域線を重ね、領域名のラベル（`region_labels` =
     検出時のラベルから探す）を同じ色（シアン）にする。"""
     try:
-        base = region_confirm_viewer.render_region_base(dxf_bytes)
-        data = label_preview.build_label_viewer_data(
-            base, fname, positions, mark_of, selected_marks, named_regions, region_labels)
+        # 大きな図面（17MB で約5秒）は初回の描画に時間がかかるため、円形の spinner で準備中と示す。
+        # 描画結果は `st.cache_data` に残るので、2回目以降（区分の選択変更など）は一瞬で消える
+        with st.spinner(PREPARING_TEXT):
+            base = region_confirm_viewer.render_region_base(dxf_bytes)
+            data = label_preview.build_label_viewer_data(
+                base, fname, positions, mark_of, selected_marks, named_regions, region_labels)
         data['height'] = LABEL_VIEWER_HEIGHT_PX  # viewer の外枠の高さ（JS が明示的に設定する）
         mount_viewer(key=key, data=data, height=LABEL_VIEWER_HEIGHT_PX)
     except Exception as e:

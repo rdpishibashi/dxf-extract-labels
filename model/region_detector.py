@@ -2231,8 +2231,11 @@ def _resolve_union_parents(regions, labels=None, cfg=None):
 # 11. トップレベル解析（公開API）
 # ============================================================
 
-def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
+def analyze_dxf_regions(dxf_file: str, config: dict | None = None, doc=None) -> dict:
     """DXFファイルを解析し、図面枠・閉領域（名称候補つき）・図面枠内ラベルを返す。
+
+    `doc`（`ezdxf` の `Drawing`）を渡すと、`dxf_file` を読み直さずその文書を使う（読み取りのみ。
+    `doc=None` なら従来どおり `dxf_file` を読む）。
 
     戻り値 dict:
       frames: [(xl,xr,y0,y1), ...]
@@ -2272,7 +2275,8 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
     result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [],
               'minor_regions': [], 'error': None}
     try:
-        doc = ezdxf.readfile(dxf_file)
+        if doc is None:
+            doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
         frame_lines, region_lines, region_lines_lp, label_entities, connection_points, lp_rects = \
             _collect_region_geometry(doc, cfg, check_layer=True)

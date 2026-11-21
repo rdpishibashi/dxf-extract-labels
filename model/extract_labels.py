@@ -760,8 +760,12 @@ def _build_label_and_drawing_number_candidates(unique_entities, selected_layers)
 def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=False,
                    selected_layers=None, validate_ref_designators=False,
                    extract_drawing_numbers_option=False, extract_title_option=False,
-                   include_coordinates=False, original_filename=None):
-    """DXFファイルからテキストラベルを抽出する"""
+                   include_coordinates=False, original_filename=None, doc=None):
+    """DXFファイルからテキストラベルを抽出する
+
+    `doc`（`ezdxf` の `Drawing`）を渡すと、`dxf_file` を読み直さずその文書を使う
+    （同じファイルを何度も解析しないため。`dxf_file` は `info['filename']` のために引き続き必要）。
+    文書は**読み取りのみ**で、書き換えない。`doc=None` なら従来どおり `dxf_file` を読む。"""
     info = {
         "total_extracted": 0,
         "filtered_count": 0,
@@ -778,7 +782,8 @@ def extract_labels(dxf_file, filter_non_parts=False, sort_order="asc", debug=Fal
     }
 
     try:
-        doc = ezdxf.readfile(dxf_file)
+        if doc is None:
+            doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
 
         all_layers = [layer.dxf.name for layer in doc.layers]

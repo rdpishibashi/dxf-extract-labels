@@ -420,12 +420,20 @@ def analyze_dxf_terminals(dxf_path, original_filename=None):
         'error': None,
     }
 
+    # 1回だけ解析して `extract_labels` と下の端子台解析で使い回す。読み込みに失敗したら
+    # `doc=None` のまま渡し、従来どおり各処理が自分で読み直して失敗を扱う（文言は変わらない）。
+    try:
+        doc = ezdxf.readfile(dxf_path)
+    except Exception:
+        doc = None
+
     try:
         _labels, info = extract_labels(
             dxf_path,
             extract_title_option=True,
             extract_drawing_numbers_option=True,
             original_filename=original_filename,
+            doc=doc,
         )
     except Exception as e:
         result['error'] = str(e)
@@ -449,11 +457,12 @@ def analyze_dxf_terminals(dxf_path, original_filename=None):
 
     result['is_target'] = True
 
-    try:
-        doc = ezdxf.readfile(dxf_path)
-    except Exception as e:
-        result['error'] = str(e)
-        return result
+    if doc is None:
+        try:
+            doc = ezdxf.readfile(dxf_path)
+        except Exception as e:
+            result['error'] = str(e)
+            return result
 
     texts, lines, circles = _collect_geometry(doc)
     tb_labels = [

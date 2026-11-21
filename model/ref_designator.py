@@ -478,8 +478,12 @@ def extract_ref_designator_data(
     frame_lineweight: int = 100,
     frame_color: int = _FRAME_COLOR,
     original_filename: Optional[str] = None,
+    doc=None,
 ) -> Dict:
     """通常モード（領域なし）用: 図面枠内・図面情報枠外の全ラベルを収集する。
+
+    `doc`（`ezdxf` の `Drawing`）を渡すと `dxf_file` を読み直さずその文書を使う（読み取りのみ。
+    `doc=None` なら従来どおり `dxf_file` を読む。失敗時は `doc=None` のまま各関数が従来の失敗処理をする）。
 
     v3.0.0（2026-08）で機器符号パターンによる絞り込みを廃止し、枠内・情報枠外の
     全ラベルを保持するように変更した（旧「機器符号（候補）以外も抽出」オプション
@@ -505,10 +509,11 @@ def extract_ref_designator_data(
     # 1回だけ読み込み、図面枠検出とフォールバックの両方で使い回す（従来はフォールバック
     # 時に同じファイルを2回読み込んでいた。40MBで約2.8秒の無駄）。読み込みに失敗した
     # ときは doc=None のまま渡し、各関数が従来どおりの失敗処理（error 設定・空リスト）を行う。
-    try:
-        doc = ezdxf.readfile(dxf_file)
-    except Exception:
-        doc = None
+    if doc is None:
+        try:
+            doc = ezdxf.readfile(dxf_file)
+        except Exception:
+            doc = None
     collected = collect_in_frame_labels(dxf_file, frame_lineweight, frame_color, doc=doc)
     info['frames'] = len(collected.get('frames', []))
     if collected['error']:

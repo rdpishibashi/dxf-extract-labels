@@ -74,7 +74,9 @@ DEFAULT_REGION_CONFIG = {
     'exclude_titleblock': True, # 図番枠（タイトルブロック）を領域から除外
     'exclude_circuit_symbols': True,   # 機器符号(候補)を名称候補から除外
     'circuit_symbol_keep_terms': ('RACK',),  # この語を含むラベルは機器符号扱いしない（例 RACK1）
-    'exclude_connection_point_regions': True,  # 境界に接続点(円)を持つ領域(配線ループ)を除外
+    'exclude_connection_point_regions': False,  # True: 境界に接続点(円)を持つ領域(配線ループ)を除外。既定は無効
+                                                # （ESC BOX 等、端子を持つ機器の箱が領域にならないため。EE6888-604-01A）
+    'stop_bridge_at_connection_points': False,  # True: 縦(回転図面は横)線の隙間に接続点(円)があれば橋渡ししない。既定は無効
     'connection_point_threshold': 1,    # 境界上の接続点がこの数(個数)以上なら除外
     'connection_point_margin': 0.05,   # 接続点が境界線上とみなす座標距離マージン
     'name_filter_prefixes': (),  # 指定した文字列のいずれかで名称候補が始まる領域は、
@@ -1098,11 +1100,17 @@ def _detect_regions(RH, RV, frame, frame_area, cfg, circles=None, raw_lines=None
         v_endpoints_swapped.append((vy0, vx))
         v_endpoints_swapped.append((vy1, vx))
     circles_swapped = [(cy, cx) for (cx, cy) in fcircles]
+    # 隙間の接続点で橋渡しを止める（配線ループの除外）のは設定で有効にしたときだけ。
+    # 対辺補完 `_complete_rectangles` は `fcircles` をそのまま使う（変えない）。
+    if cfg.get('stop_bridge_at_connection_points'):
+        bridge_circles, bridge_circles_swapped = fcircles, circles_swapped
+    else:
+        bridge_circles, bridge_circles_swapped = [], []
     span_levels = cfg.get('span_level_merge', False)
-    Hm = _merge_collinear(Hf, mtol, bridge=bridge_h, circles=circles_swapped, circle_band=cband,
+    Hm = _merge_collinear(Hf, mtol, bridge=bridge_h, circles=bridge_circles_swapped, circle_band=cband,
                           h_endpoints=v_endpoints_swapped, corner_tol=ctol,
                           span_levels=span_levels)
-    Vm = _merge_collinear(Vf, mtol, bridge=bridge_v, circles=fcircles, circle_band=cband,
+    Vm = _merge_collinear(Vf, mtol, bridge=bridge_v, circles=bridge_circles, circle_band=cband,
                           h_endpoints=h_endpoints, corner_tol=ctol,
                           span_levels=span_levels)
     if cfg.get('bridge_device_gaps'):
@@ -2231,8 +2239,11 @@ def _resolve_union_parents(regions, labels=None, cfg=None):
 # 11. トップレベル解析（公開API）
 # ============================================================
 
-def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
+def analyze_dxf_regions(dxf_file: str, config: dict | None = None, doc=None) -> dict:
     """DXFファイルを解析し、図面枠・閉領域（名称候補つき）・図面枠内ラベルを返す。
+
+    `doc`（`ezdxf` の `Drawing`）を渡すと、`dxf_file` を読み直さずその文書を使う（読み取りのみ。
+    `doc=None` なら従来どおり `dxf_file` を読む）。
 
     戻り値 dict:
       frames: [(xl,xr,y0,y1), ...]
@@ -2272,7 +2283,8 @@ def analyze_dxf_regions(dxf_file: str, config: dict | None = None) -> dict:
     result = {'frames': [], 'frame_area': 0.0, 'labels': [], 'regions': [],
               'minor_regions': [], 'error': None}
     try:
-        doc = ezdxf.readfile(dxf_file)
+        if doc is None:
+            doc = ezdxf.readfile(dxf_file)
         msp = doc.modelspace()
         frame_lines, region_lines, region_lines_lp, label_entities, connection_points, lp_rects = \
             _collect_region_geometry(doc, cfg, check_layer=True)

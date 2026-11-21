@@ -163,13 +163,16 @@ def test_mpd_rack1_region_is_recovered():
 
 @pytest.mark.skipif(not os.path.exists(SINGLE), reason='サンプル DXF が無い')
 def test_connection_point_region_excluded():
-    """返る領域はすべて境界上の接続点(円)が しきい値未満（配線ループは除外）。"""
+    """設定で有効にしたとき（`exclude_connection_point_regions`・`stop_bridge_at_connection_points`）、
+    返る領域はすべて境界上の接続点(円)が しきい値未満（配線ループは除外）。
+    既定は無効（v3.24.0）なので、除外の経路を守るために設定を明示して呼ぶ。既定の挙動は
+    `spec/test_connection_points_default_off.py`。"""
     from model.region_detector import (
         analyze_dxf_regions as _a, _collect_region_geometry,
         _count_connection_points_on_boundary, DEFAULT_REGION_CONFIG,
     )
     import ezdxf
-    a = _a(SINGLE)
+    a = _a(SINGLE, {'exclude_connection_point_regions': True, 'stop_bridge_at_connection_points': True})
     assert a['error'] is None
     assert len(a['regions']) >= 1
     doc = ezdxf.readfile(SINGLE)

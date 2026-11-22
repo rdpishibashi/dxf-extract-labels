@@ -22,7 +22,7 @@ from model import minor_selection
 from model import region_choices as rc
 from model import region_decisions as rd
 from model import region_preview
-from model.ref_designator import unnamed_region_labels
+from model.ref_designator import unnamed_output_names
 from model.region_detector import pending_candidates_for_region
 from view import region_selection as rs
 from view import viewer_popup
@@ -124,10 +124,14 @@ def _regions_with_status(analysis, decisions, *statuses):
 
 
 def unnamed_regions(analysis, decisions=None):
-    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`（「抽出領域の選択」の `no name N` と同じ表示名）。
-    「除外」した領域は含めない。"""
+    """名称の無い領域 `[(reg, 表示名, 特定ON?), ...]`。「除外」した領域は含めない。
+
+    表示名は出力名（`no name`／`no name N`。Excel の領域名と同じ）だけ。viewer の見出し
+    （`図面N / 領域M（P%）`）に面積が出ていて、どの図面かも明らかなので、「特定」「除外」の
+    キー（`d.name`＝`no name N（P%）図番`。共有の `unnamed_region_labels()`）は表示に使わない。"""
     decisions = decisions or rs.classify_file_regions(analysis)
-    return [(reg, d.name, d.adopted)
+    names = unnamed_output_names(analysis)
+    return [(reg, names.get(reg['id'], d.name), d.adopted)
             for reg, d in _regions_with_status(analysis, decisions, rd.UNNAMED)]
 
 
@@ -147,11 +151,11 @@ def inactive_regions(analysis, decisions=None):
     """抽出されない領域 `[(reg, 表示名, 注記), ...]`（「除外」、または名称候補を1つも特定していない
     領域。viewer では灰色で表示する）。"""
     decisions = decisions or rs.classify_file_regions(analysis)
-    labels = unnamed_region_labels(analysis)
+    names = unnamed_output_names(analysis)      # 名称なし領域の表示名は出力名だけ（`unnamed_regions()` と同じ）
     out = []
     for reg, d in _regions_with_status(analysis, decisions, rd.EXCLUDED, rd.UNSPECIFIED):
         cands = reg.get('name_candidates', [])
-        name = cands[0][1] if cands else labels.get(reg['id'], "（名称なし）")
+        name = cands[0][1] if cands else names.get(reg['id'], "（名称なし）")
         out.append((reg, name, "除外" if d.status == rd.EXCLUDED else "特定OFF"))
     return out
 

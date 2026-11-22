@@ -1,6 +1,47 @@
 
 // 抽出結果プレビューの「図面を表示」viewer（表示専用）。選んだ区分のラベルを、元の文字の色を変えて示す。
 // pan/zoom・全体表示・全画面は region_confirm_viewer.js から複製（共有しない。向こうはゴールデンテストの対象）。
+// zoom-sens:begin  ズーム感度（回転量に比例）。テストがこの範囲を Node で実行する
+var ZOOM_SENS_KEY = 'dxfViewerZoomSensitivity', ZOOM_SENS_MIN = 0.1, ZOOM_SENS_MAX = 3, ZOOM_SENS_DEFAULT = 1;
+var zoomSensMem = ZOOM_SENS_DEFAULT;
+function clampZoomSens(v) {
+  v = Number(v);
+  if (!isFinite(v)) return ZOOM_SENS_DEFAULT;
+  return Math.round(Math.min(ZOOM_SENS_MAX, Math.max(ZOOM_SENS_MIN, v)) * 10) / 10;
+}
+function getZoomSens() {
+  try { var s = localStorage.getItem(ZOOM_SENS_KEY); if (s !== null) return clampZoomSens(s); } catch (err) {}
+  return zoomSensMem;
+}
+function setZoomSens(v) {
+  zoomSensMem = clampZoomSens(v);
+  try { localStorage.setItem(ZOOM_SENS_KEY, String(zoomSensMem)); } catch (err) {}
+  return zoomSensMem;
+}
+// 戻り値は viewBox の幅に掛ける倍率（>1 で縮小表示、<1 で拡大表示）
+function zoomFactor(e, sens) {
+  var d = e.deltaY;
+  if (e.deltaMode === 1) d *= 40; else if (e.deltaMode === 2) d *= 800;  // 行・ページ単位をピクセルに換算
+  var rate = e.ctrlKey ? 0.01 : 0.002;  // ピンチ（ctrlKey 付き）は1回の回転量が小さいので係数を大きくする
+  var x = Math.max(-0.5, Math.min(0.5, d * rate * sens));  // 1回で跳びすぎないよう上限
+  return Math.exp(x);
+}
+// zoom-sens:end
+
+// ズーム感度スライダー（左パネルの「操作」欄と別ウィンドウに出す）。計算部は上の zoom-sens ブロック
+const zoomSliderHtml = () => {
+  const v = getZoomSens();
+  return '<div class="zoom-sens" style="margin-top:6px"><label style="display:flex;align-items:center;gap:6px;margin:0;cursor:default">' +
+    '<span>ズーム感度</span><input type="range" data-zoom-sens min="0.1" max="3" step="0.1" value="' + v + '" style="flex:1;min-width:60px">' +
+    '<span data-zoom-sens-val>\u00d7' + v.toFixed(1) + '</span></label>' +
+    '<div style="color:#888;font-size:11px">タッチパッドで速すぎるときは左へ</div></div>';
+};
+const bindZoomSlider = (root) => {
+  const el = root.querySelector('input[data-zoom-sens]'), out = root.querySelector('[data-zoom-sens-val]');
+  if (!el) return;
+  el.addEventListener('input', () => { const v = setZoomSens(el.value); el.value = v; if (out) out.textContent = '\u00d7' + v.toFixed(1); });
+};
+
 export default function(component) {
   const { data, parentElement } = component;
   const NS = 'http://www.w3.org/2000/svg';
@@ -28,7 +69,7 @@ export default function(component) {
     };
     svg.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const p = pt(e), k = e.deltaY < 0 ? 0.8 : 1.25;
+      const p = pt(e), k = zoomFactor(e, getZoomSens());
       const nw = S.vb[2] * k, nh = S.vb[3] * k;
       if (nw > S.vb0[2] * 20 || nw < S.vb0[2] / 2000) return;
       S.vb = [p.x - (p.x - S.vb[0]) * k, p.y - (p.y - S.vb[1]) * k, nw, nh]; S.apply();
@@ -64,7 +105,7 @@ export default function(component) {
     const html = '<!doctype html><html><head><meta charset="utf-8"><title>図面</title><style>' +
       tpl.content.querySelector('style').textContent + '</style></head><body><div class="pwrap"><div class="pside">' +
       (S.legendHtml || '') + '<h4>操作</h4><button id="fit">全体表示</button>' +
-      '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
+      zoomSliderHtml() + '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール・ピンチ: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
       '</div><div class="pstage">' + cv.outerHTML + '<div class="pnote">線幅は拡大しても一定です</div></div></div><script>' +
       tpl.content.querySelector('script').textContent + '<\/script></body></html>';
     try { w.document.open(); w.document.write(html); w.document.close(); }
@@ -121,9 +162,10 @@ export default function(component) {
     }
     h += '<h4>操作</h4><button data-act="fit">全体表示</button><button data-act="fs">' +
          (document.fullscreenElement ? '全画面を終了' : '全画面') + '</button><button data-act="pop">別ウィンドウ</button><div id="lv-fsnote" style="color:#e8a"></div>' +
-         '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
+         zoomSliderHtml() + '<div style="color:#888;margin-top:6px;line-height:1.5">ホイール・ピンチ: 拡大縮小<br>ドラッグ: 移動<br>ダブルクリック: 全体表示</div>' +
          (d.hasFont ? '' : '<div class="lv-warn" style="margin-top:8px">日本語フォントが見つからないため、日本語の文字は表示されません。</div>');
     S.side.innerHTML = h;
+    bindZoomSlider(S.side);
     S.side.querySelectorAll('input[data-regions]').forEach((el) => el.addEventListener('change', () => {
       S.showRegions = el.checked; render();
     }));

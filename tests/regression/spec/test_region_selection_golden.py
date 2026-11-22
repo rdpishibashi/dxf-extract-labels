@@ -22,6 +22,12 @@
     確認: `region_label_occurrences` を旧挙動（`resolve_labels`）に差し替えると旧記録と完全に一致し、
     新挙動では gather/targets/unconditional/minor が全60シード・全30手で一致、viewer は最終状態で
     geoms 以外が一致（差は d.dxf の領域1・2・3とその候補だけ）。
+  2026-11-22: 「領域の確認」の viewer が出す無名領域の表示名を、`no name N（P%）図番` から出力名 `no name`／`no name N` だけにした
+    （面積は見出し `図面N / 領域M（P%）` に出ていて、図番も明らかなため。ユーザー要望）。「特定」「除外」のキー
+    （`unnamed_region_labels()`）と Excel の領域名は変えていない。viewer データの無名領域（`unnamed`・`unnamed_off`）の `name` だけが変わる。
+    確認: 旧挙動（`unnamed_regions()`・`inactive_regions()` を旧実装に差し替え）で全60シード・全30手を流し、viewer の `name` だけを
+    `no name N` に正規化すると、操作列・各手の全観測値のハッシュ・最後の状態が新挙動と完全に一致した（正規化した名前は3380件）。
+    記録の `op`（操作の入力。キーとしての完全な表示名を含む）は変わっていない。
 """
 import contextlib
 import hashlib
